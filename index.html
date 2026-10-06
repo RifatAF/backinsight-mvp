@@ -598,17 +598,27 @@
   // Заполните после установки сервера, например: { host: 'turn.example.ru', username: 'bi', credential: '...' }
   const OWN_TURN = null;
 
-  const ICE_SERVERS = (OWN_TURN ? [
+  // Регион определяется автоматически по часовому поясу телефона, без запросов к внешним сервисам.
+  // libwebrtc даёт ретрансляторам из начала списка больший приоритет, поэтому порядок решает, через какой
+  // сервер пойдёт звонок, если прямой путь недоступен. Все серверы остаются в списке как запасные.
+  const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } })();
+  const IN_RUSSIA = /^(Europe\/(Moscow|Kaliningrad|Samara|Volgograd|Saratov|Ulyanovsk|Astrakhan|Kirov|Simferopol)|Asia\/(Yekaterinburg|Omsk|Novosibirsk|Barnaul|Tomsk|Novokuznetsk|Krasnoyarsk|Irkutsk|Chita|Yakutsk|Khandyga|Vladivostok|Ust-Nera|Magadan|Sakhalin|Srednekolymsk|Kamchatka|Anadyr))$/.test(TZ);
+
+  const OWN_TURN_SERVERS = OWN_TURN ? [
     { urls: 'turn:' + OWN_TURN.host + ':3478?transport=udp', username: OWN_TURN.username, credential: OWN_TURN.credential },
     { urls: 'turn:' + OWN_TURN.host + ':3478?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential },
     { urls: 'turns:' + OWN_TURN.host + ':443?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential }
-  ] : []).concat([
-    { urls: 'stun:stun.relay.metered.ca:80' },
+  ] : [];
+  const METERED_SERVERS = [
     { urls: 'turn:global.relay.metered.ca:80', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turn:global.relay.metered.ca:443', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' }
-  ]);
+  ];
+  const ICE_SERVERS = [{ urls: 'stun:stun.relay.metered.ca:80' }].concat(
+    IN_RUSSIA ? OWN_TURN_SERVERS.concat(METERED_SERVERS) : METERED_SERVERS.concat(OWN_TURN_SERVERS)
+  );
+  const REGION_LABEL = (IN_RUSSIA ? 'Россия' : 'вне России') + (OWN_TURN ? (IN_RUSSIA ? ' · свой TURN первым' : ' · Metered первым') : ' · Metered');
 
   const params = new URLSearchParams(location.search);
   const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
@@ -766,7 +776,7 @@
   function diagText(extra) {
     const s = lastStats || {};
     return JSON.stringify(Object.assign({
-      role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent,
+      role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent, tz: TZ, region: REGION_LABEL,
       route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
       inKbps: s.inKbps, outKbps: s.outKbps, codec: s.codec, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
       analysisFps: analysisFps
@@ -1472,9 +1482,9 @@
 
     function cameraInfo() {
       const t = localStream && localStream.getVideoTracks()[0];
-      if (!t) return { t: 'cam' };
+      if (!t) return { t: 'cam', region: REGION_LABEL };
       const s = t.getSettings ? t.getSettings() : {};
-      return { t: 'cam', label: t.label || '', facing: facing, w: s.width || 0, h: s.height || 0, zoom: s.zoom || null };
+      return { t: 'cam', label: t.label || '', facing: facing, w: s.width || 0, h: s.height || 0, zoom: s.zoom || null, region: REGION_LABEL };
     }
     function sendCtrl(msg) { try { if (ctrl && ctrl.open) ctrl.send(msg); } catch (e) { /* нет канала */ } }
 
@@ -1699,6 +1709,7 @@
         ['Ограничение', s && s.limit ? (s.limit === 'bandwidth' ? 'канал связи' : s.limit === 'cpu' ? 'процессор' : s.limit) : 'нет'],
         ['Камера', (info.label || '··') + (info.zoom ? ' · zoom ' + info.zoom : '')],
         ['Режим', relayOnly ? 'только TURN' : 'авто'],
+        ['Регион', REGION_LABEL],
         ['Качество', QUALITY[quality].label + (quality === 'auto' ? ' → ' + QUALITY[LEVELS[level]].label : '') + (s && s.outKbps != null ? ' · ' + s.outKbps + ' кбит/с' : '')],
         ['Кодек', s && s.codec || '··'],
         ['Звук от специалиста', s ? (s.audioIn ? 'приходит' : 'НЕ приходит') : '··'],
@@ -2836,6 +2847,7 @@
       const s = lastStats;
       renderKv($('netInfo'), [
         ['Маршрут', s && s.route || 'нет данных'],
+        ['Регион клиента', clientCam && clientCam.region || '··'],
         ['Задержка', s && s.rtt != null ? s.rtt + ' мс' : '··'],
         ['Потери', s && s.loss != null ? s.loss + '%' : '··'],
         ['Видео', s ? (s.inRes || '··') + (s.inFps != null ? ' · ' + s.inFps + ' к/с' : '') : '··'],
