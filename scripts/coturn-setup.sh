@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 
 echo "== Шаг 1/4: установка coturn и certbot"
 apt-get update -y
-apt-get install -y coturn certbot curl
+apt-get install -y -o Dpkg::Options::=--force-confold coturn certbot curl
 command -v turnserver >/dev/null || { echo "ОШИБКА: coturn не установился"; exit 1; }
 
 echo "== Шаг 2/4: определение адресов"
