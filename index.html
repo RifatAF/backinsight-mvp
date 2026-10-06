@@ -11,16 +11,18 @@
 <style>
   :root {
     --bg: #0b0f14;
-    --panel: rgba(12, 17, 24, 0.72);
-    --panel-solid: #141b24;
-    --line: rgba(255, 255, 255, 0.12);
+    --dock: #0f151d;
+    --glass: rgba(12, 17, 24, 0.66);
+    --card: #17202b;
+    --card-2: #1e2935;
+    --line: rgba(255, 255, 255, 0.10);
     --text: #eef2f6;
-    --muted: #93a1b2;
+    --muted: #8d9bad;
     --ok: #22c55e;
     --warn: #f59e0b;
     --err: #ef4444;
     --accent: #3b82f6;
-    --fit: cover;
+    --fit: contain;
     --safe-t: env(safe-area-inset-top, 0px);
     --safe-b: env(safe-area-inset-bottom, 0px);
     --safe-l: env(safe-area-inset-left, 0px);
@@ -33,13 +35,14 @@
     overflow: hidden; overscroll-behavior: none; touch-action: manipulation;
     -webkit-user-select: none; user-select: none;
   }
-  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; padding: 0; }
   .hidden { display: none !important; }
 
-  /* Сцена: video и canvas занимают один и тот же бокс и используют один и тот же object-fit,
-     а canvas имеет внутренний размер = videoWidth x videoHeight, поэтому браузер масштабирует
-     и обрезает их идентично: совпадение пиксель в пиксель при любом соотношении сторон экрана. */
-  #stage { position: fixed; inset: 0; background: #000; overflow: hidden; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* Сцена. video и canvas: один бокс, один object-fit, canvas = videoWidth x videoHeight,
+     поэтому масштаб и обрезка у них всегда совпадают пиксель в пиксель. */
+  #stage { position: relative; flex: 1 1 auto; min-height: 0; background: #000; overflow: hidden; }
   #video, #overlay {
     position: absolute; inset: 0; width: 100%; height: 100%;
     object-fit: var(--fit); object-position: 50% 50%;
@@ -49,127 +52,189 @@
 
   #placeholder {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    flex-direction: column; gap: 10px; color: var(--muted); text-align: center; padding: 24px;
+    flex-direction: column; gap: 12px; color: var(--muted); text-align: center; padding: 24px;
   }
   .spinner {
     width: 34px; height: 34px; border-radius: 50%;
     border: 3px solid rgba(255,255,255,.15); border-top-color: var(--accent);
-    animation: spin 0.9s linear infinite;
+    animation: spin .9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Верхний инфо-блок */
+  /* Верхний инфо-блок поверх видео */
   #hud {
-    position: fixed; left: 0; right: 0; top: 0; z-index: 10;
-    padding: calc(var(--safe-t) + 8px) calc(var(--safe-r) + 10px) 8px calc(var(--safe-l) + 10px);
-    background: linear-gradient(to bottom, rgba(0,0,0,.65), rgba(0,0,0,0));
-    pointer-events: none;
+    position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+    padding: calc(var(--safe-t) + 8px) calc(var(--safe-r) + 10px) 0 calc(var(--safe-l) + 10px);
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
   }
   #hud > * { pointer-events: auto; }
   .row { display: flex; align-items: center; gap: 8px; }
   .status {
-    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
-    padding: 6px 12px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; text-align: left;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 12px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
   .dot.warn { background: var(--warn); }
   .dot.err { background: var(--err); }
-  .status-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-  .status-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-body { min-width: 0; flex: 1; }
+  .status-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 600; }
+  .status-sub { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; flex: none; }
+  .bars i { width: 4px; border-radius: 1px; background: rgba(255,255,255,.2); }
+  .bars i:nth-child(1) { height: 5px; } .bars i:nth-child(2) { height: 9px; } .bars i:nth-child(3) { height: 14px; }
+  .bars[data-q="1"] i:nth-child(1) { background: var(--err); }
+  .bars[data-q="2"] i:nth-child(-n+2) { background: var(--warn); }
+  .bars[data-q="3"] i { background: var(--ok); }
+
   .icon-btn {
-    width: 38px; height: 38px; border-radius: 50%; flex: none;
-    background: var(--panel); border: 1px solid var(--line); font-size: 17px;
+    width: 40px; height: 40px; border-radius: 50%; flex: none;
+    background: var(--glass); border: 1px solid var(--line); font-size: 17px;
     display: flex; align-items: center; justify-content: center;
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   }
-  .icon-btn.off { background: rgba(239,68,68,.55); }
+  .icon-btn.off { background: rgba(239,68,68,.6); }
   .icon-btn.attn { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { transform: scale(1.08); } }
 
-  #angles {
-    margin-top: 8px; display: grid; grid-template-columns: auto 1fr 1fr; gap: 2px 10px;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 8px 12px; width: max-content; max-width: 100%;
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  #anglesCard {
+    align-self: flex-start; text-align: left;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 14px;
+    padding: 7px 10px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     font-variant-numeric: tabular-nums;
   }
-  #angles .h { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-  #angles .n { color: var(--muted); font-size: 13px; }
-  #angles .v { font-size: 17px; font-weight: 600; min-width: 52px; text-align: right; }
-  #angles .v.stale { opacity: .45; }
-  #modelState { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  #anglesCard table { border-collapse: collapse; }
+  #anglesCard th { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: right; padding: 0 0 2px 10px; }
+  #anglesCard td { padding: 1px 0 1px 10px; text-align: right; vertical-align: top; }
+  #anglesCard td.n { color: var(--muted); font-size: 12px; text-align: left; padding-left: 0; padding-top: 3px; }
+  #anglesCard .v { font-size: 16px; font-weight: 700; min-width: 44px; display: inline-block; }
+  #anglesCard .v.stale { opacity: .45; }
+  #anglesCard .rng { display: block; font-size: 10px; color: var(--muted); font-weight: 500; }
+  #anglesCard.compact .rng, #anglesCard.compact .foot { display: none; }
+  #anglesCard .foot { margin-top: 4px; font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  #anglesCard.off { opacity: .5; }
 
-  /* Нижняя сенсорная панель */
-  .bar {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-    padding: 10px calc(var(--safe-r) + 10px) calc(var(--safe-b) + 10px) calc(var(--safe-l) + 10px);
-    background: linear-gradient(to top, rgba(0,0,0,.7), rgba(0,0,0,0));
-    display: grid; gap: 8px;
+  #clientHint {
+    position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 4;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px;
+    font-size: 13px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   }
-  #bottombar { grid-template-columns: repeat(4, 1fr); }
-  #clientbar { grid-template-columns: repeat(3, 1fr); }
-  .bbtn {
-    position: relative; min-height: 58px; border-radius: 16px; padding: 6px 4px;
-    background: var(--panel); border: 1px solid var(--line);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-    font-size: 13px; font-weight: 600; line-height: 1.1; text-align: center;
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    transition: transform .08s ease, background .15s ease;
-  }
-  .bbtn .ic { font-size: 20px; }
-  .bbtn:active { transform: scale(.95); background: rgba(59,130,246,.45); }
-  .bbtn.snap { background: rgba(59,130,246,.55); }
-  .bbtn.off { background: rgba(239,68,68,.55); }
-  .badge {
-    position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; border-radius: 10px;
-    background: var(--err); color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center;
-    padding: 0 5px;
-  }
-  .badge:empty { display: none; }
 
-  /* Листы (кабинет, снимок) */
+  /* Нижняя панель специалиста: отдельный блок под видео, ноги клиента не перекрываются */
+  #dock, #clientDock {
+    flex: none; background: var(--dock); border-top: 1px solid var(--line);
+    padding: 8px calc(var(--safe-r) + 10px) calc(var(--safe-b) + 8px) calc(var(--safe-l) + 10px);
+  }
+  #dock { display: flex; flex-direction: column; gap: 8px; }
+  #dock.collapsed .collapsible { display: none; }
+  #clientDock { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .ctx { display: flex; gap: 6px; align-items: stretch; }
+  .pill {
+    min-height: 40px; border-radius: 12px; background: var(--card); border: 1px solid var(--line);
+    padding: 0 10px; font-size: 13px; font-weight: 600; white-space: nowrap;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pill b { font-size: 15px; margin-left: 4px; }
+  .pill:active, .chip:active, .act:active, .seg button:active, .tab:active { transform: scale(.96); }
+  #exBtn { flex: 1; min-width: 0; justify-content: flex-start; }
+  #exBtn span { overflow: hidden; text-overflow: ellipsis; }
+  .seg { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 2px; flex: none; }
+  .seg button { min-width: 34px; padding: 0 6px; border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .seg.wide { width: 100%; }
+  .seg.wide button { flex: 1; min-height: 40px; }
+
+  .tabrow { display: flex; gap: 6px; align-items: stretch; }
+  .tabrow .seg button { min-width: 30px; }
+  .tabs { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
+  .tab { min-height: 36px; border-radius: 10px; font-size: 12px; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; color: var(--muted); border: 1px solid transparent; }
+  .tab.on { color: #fff; background: var(--card-2); border-color: var(--line); box-shadow: inset 0 -2px 0 var(--c); }
+
+  .chips {
+    display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, 44px); grid-auto-columns: max-content;
+    gap: 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip {
+    height: 44px; border-radius: 12px; padding: 0 12px;
+    background: var(--card); border: 1px solid var(--line); font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); flex: none; }
+  .chip .cnt { font-size: 11px; color: var(--muted); font-weight: 700; }
+  .chip.flash { animation: flash .5s ease; }
+  @keyframes flash { 0% { background: var(--c); } 100% { background: var(--card); } }
+
+  .scale { display: flex; flex-direction: column; gap: 6px; }
+  .scale-title { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  .scale-row { display: grid; grid-template-columns: repeat(11, 1fr); gap: 3px; }
+  .scale-row button { height: 44px; border-radius: 10px; font-weight: 700; font-size: 14px; color: #0b0f14; }
+  .scale-skip { height: 36px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr 48px; gap: 6px; }
+  .act {
+    min-height: 50px; border-radius: 14px; background: var(--card-2); border: 1px solid var(--line);
+    font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .act.primary { background: var(--accent); border-color: transparent; }
+  .act.off { background: rgba(239,68,68,.55); }
+
+  /* Листы */
   .sheet-wrap {
     position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55);
     display: flex; align-items: flex-end; justify-content: center;
   }
   .sheet {
-    width: 100%; max-width: 560px; max-height: 92dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
-    background: var(--panel-solid); border-top-left-radius: 22px; border-top-right-radius: 22px;
+    width: 100%; max-width: 560px; max-height: 90dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    background: var(--dock); border-top-left-radius: 22px; border-top-right-radius: 22px;
     border: 1px solid var(--line); border-bottom: 0;
-    padding: 18px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 18px) calc(var(--safe-l) + 16px);
-    -webkit-user-select: text; user-select: text;
+    padding: 10px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 16px) calc(var(--safe-l) + 16px);
+    -webkit-user-select: text; user-select: text; animation: up .18s ease-out;
   }
+  @keyframes up { from { transform: translateY(24px); opacity: .6; } }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.2); margin: 0 auto 10px; }
   .sheet h2 { margin: 0 0 4px; font-size: 19px; }
-  .sheet h3 { margin: 18px 0 8px; font-size: 15px; color: var(--muted); font-weight: 600; }
+  .sheet h3 { margin: 18px 0 8px; font-size: 12px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .sheet p { margin: 6px 0; color: var(--muted); font-size: 13px; }
   .field {
     width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--line);
-    background: #0c1218; color: var(--text); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0a0f15; color: var(--text); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-all; margin: 8px 0;
   }
+  textarea.field, input.field { font: 16px -apple-system, BlinkMacSystemFont, Roboto, sans-serif; word-break: normal; resize: none; outline: none; }
+  textarea.field { min-height: 96px; }
   .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-  .btn {
-    min-height: 46px; border-radius: 12px; background: #1f2a37; border: 1px solid var(--line);
-    font-weight: 600; padding: 0 12px;
-  }
+  .btn { min-height: 46px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--line); font-weight: 600; padding: 0 12px; }
   .btn.primary { background: var(--accent); border-color: transparent; }
-  .btn.danger { background: rgba(239,68,68,.25); }
+  .btn.danger { background: rgba(239,68,68,.22); }
   .btn.full { width: 100%; margin-top: 12px; }
-  #logList { list-style: none; margin: 0; padding: 0; font-size: 13px; max-height: 32dvh; overflow-y: auto; }
-  #logList li { padding: 8px 0; border-bottom: 1px solid var(--line); }
-  #logList .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
-  #logList .a { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .grid-pick { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .grid-pick button { min-height: 46px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: 14px; text-align: left; padding: 0 12px; }
+  .grid-pick button.on { background: var(--accent); }
+  .templates { display: flex; flex-wrap: wrap; gap: 6px; }
+  .templates button { min-height: 36px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-size: 13px; padding: 0 10px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13px; margin-top: 8px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+
+  #logList { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  #logList li { padding: 8px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; }
+  #logList .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  #logList .tag { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  #logList .b { flex: 1; min-width: 0; }
+  #logList .a { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  #logList .del { color: var(--muted); font-size: 18px; padding: 0 6px; }
   #snapImg { width: 100%; border-radius: 12px; display: block; background: #000; -webkit-touch-callout: default; }
 
   #toast {
-    position: fixed; left: 50%; bottom: calc(var(--safe-b) + 96px); transform: translateX(-50%);
-    z-index: 40; background: rgba(20,27,36,.95); border: 1px solid var(--line); border-radius: 999px;
-    padding: 10px 16px; font-size: 14px; opacity: 0; transition: opacity .2s ease; pointer-events: none;
-    max-width: calc(100% - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    position: fixed; left: 50%; top: calc(var(--safe-t) + 60px); transform: translateX(-50%);
+    z-index: 40; background: rgba(20,27,36,.97); border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 4px 4px 16px; font-size: 14px; opacity: 0; transition: opacity .18s ease;
+    pointer-events: none; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
   }
-  #toast.show { opacity: 1; }
+  #toast.show { opacity: 1; pointer-events: auto; }
+  #toast .msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 8px 12px 8px 0; }
+  #toast button { background: var(--card-2); border-radius: 999px; padding: 8px 14px; font-weight: 700; font-size: 13px; flex: none; }
 
   #fatal {
     position: fixed; inset: 0; z-index: 50; background: var(--bg);
@@ -182,70 +247,154 @@
 </head>
 <body>
 
-<div id="stage">
-  <video id="video" playsinline webkit-playsinline autoplay></video>
-  <canvas id="overlay"></canvas>
-  <div id="placeholder"><div class="spinner"></div><div id="placeholderText">Загрузка…</div></div>
-</div>
+<div id="app">
+  <main id="stage">
+    <video id="video" playsinline webkit-playsinline autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="placeholder"><div class="spinner"></div><div id="placeholderText">Загрузка…</div></div>
 
-<header id="hud">
-  <div class="row">
-    <div class="status">
-      <span class="dot" id="statusDot"></span>
-      <div style="min-width:0">
-        <div class="status-text" id="statusText">Инициализация…</div>
-        <div class="status-sub" id="statusSub"></div>
+    <div id="hud">
+      <div class="row">
+        <button class="status" id="statusBtn" title="Связь">
+          <span class="dot" id="statusDot"></span>
+          <span class="status-body">
+            <span class="status-text" id="statusText">Инициализация…</span>
+            <span class="status-sub" id="statusSub"></span>
+          </span>
+          <span class="bars" id="qBars" data-q="0"><i></i><i></i><i></i></span>
+        </button>
+        <button class="icon-btn hidden" id="btnUnmute" title="Включить звук">🔊</button>
+        <button class="icon-btn spec-only" id="btnSkel" title="Скелет">🦴</button>
+        <button class="icon-btn" id="btnMic" title="Микрофон">🎙️</button>
+        <button class="icon-btn spec-only" id="btnMenu" title="Сессия">☰</button>
+      </div>
+      <button id="anglesCard" class="spec-only" title="Свернуть / развернуть">
+        <table>
+          <tr><th></th><th>Лев</th><th>Прав</th></tr>
+          <tr><td class="n">Колено</td><td><span class="v" id="a_knee_L">··</span><span class="rng" id="r_knee_L"></span></td><td><span class="v" id="a_knee_R">··</span><span class="rng" id="r_knee_R"></span></td></tr>
+          <tr><td class="n">Таз</td><td><span class="v" id="a_hip_L">··</span><span class="rng" id="r_hip_L"></span></td><td><span class="v" id="a_hip_R">··</span><span class="rng" id="r_hip_R"></span></td></tr>
+          <tr><td class="n">Локоть</td><td><span class="v" id="a_elbow_L">··</span><span class="rng" id="r_elbow_L"></span></td><td><span class="v" id="a_elbow_R">··</span><span class="rng" id="r_elbow_R"></span></td></tr>
+        </table>
+        <div class="foot"><span id="modelState">Модель: ожидание</span><span>мин–макс</span></div>
+      </button>
+    </div>
+
+    <div id="clientHint" class="client-only">
+      Поставьте телефон <b>вертикально в 2–3 м</b>, чтобы в кадре было видно <b>от головы до стоп</b>. Камера работает в режиме ×1.
+      <button class="btn full" id="btnHintOk" style="min-height:38px;margin-top:8px">Понятно</button>
+    </div>
+  </main>
+
+  <section id="dock" class="spec-only">
+    <div class="ctx collapsible">
+      <button class="pill" id="exBtn"><span id="exName">Упражнение</span>&nbsp;▾</button>
+      <button class="pill" id="repBtn" title="Нажатие +1, удержание −1">Повт<b id="repNum">0</b></button>
+      <button class="pill" id="setBtn" title="Завершить подход">Подход<b id="setNum">1</b>&nbsp;✓</button>
+    </div>
+    <div class="tabrow collapsible">
+      <div class="seg" id="sideSeg" title="Сторона для отметок">
+        <button data-side="L">Л</button><button data-side="B" class="on">Обе</button><button data-side="R">П</button>
+      </div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+    <div class="collapsible">
+      <div class="chips" id="chips"></div>
+      <div class="scale hidden" id="scale">
+        <div class="scale-title"><span id="scaleTitle">Интенсивность боли</span><span>0 нет · 10 макс</span></div>
+        <div class="scale-row" id="scaleRow"></div>
+        <button class="scale-skip" id="scaleSkip">Без оценки</button>
       </div>
     </div>
-    <button class="icon-btn hidden" id="btnUnmute" title="Включить звук">🔊</button>
-    <button class="icon-btn" id="btnMic" title="Микрофон">🎙️</button>
-    <button class="icon-btn spec-only" id="btnFit" title="Заполнить / вписать">⤢</button>
-    <button class="icon-btn spec-only" id="btnCabinet" title="Кабинет">☰</button>
-  </div>
-  <div id="angles" class="spec-only">
-    <span class="h"></span><span class="h" style="text-align:right">Лев</span><span class="h" style="text-align:right">Прав</span>
-    <span class="n">Колено</span><span class="v" id="a_knee_L">··</span><span class="v" id="a_knee_R">··</span>
-    <span class="n">Таз</span><span class="v" id="a_hip_L">··</span><span class="v" id="a_hip_R">··</span>
-    <span class="n">Локоть</span><span class="v" id="a_elbow_L">··</span><span class="v" id="a_elbow_R">··</span>
-  </div>
-  <div id="modelState" class="spec-only">Модель позы: ожидание</div>
-</header>
+    <div class="actions">
+      <button class="act" id="btnNote">✎ Заметка</button>
+      <button class="act primary" id="btnSnap">📸 Снимок</button>
+      <button class="act" id="btnDock" title="Свернуть панель">⌄</button>
+    </div>
+  </section>
 
-<nav id="bottombar" class="bar spec-only">
-  <button class="bbtn" data-complaint="Шея"><span class="ic">🦒</span>Шея<span class="badge" data-badge="Шея"></span></button>
-  <button class="bbtn" data-complaint="Поясница"><span class="ic">🔻</span>Поясница<span class="badge" data-badge="Поясница"></span></button>
-  <button class="bbtn" data-complaint="Колено/Таз"><span class="ic">🦵</span>Колено/Таз<span class="badge" data-badge="Колено/Таз"></span></button>
-  <button class="bbtn snap" id="btnSnap"><span class="ic">📸</span>Снимок</button>
-</nav>
+  <section id="clientDock" class="client-only">
+    <button class="act" id="btnFlip">🔄 Камера</button>
+    <button class="act" id="btnClientMic">🎙️ Микр.</button>
+    <button class="act" id="btnReconnect">↻ Связь</button>
+  </section>
+</div>
 
-<nav id="clientbar" class="bar client-only">
-  <button class="bbtn" id="btnFlip"><span class="ic">🔄</span>Камера</button>
-  <button class="bbtn" id="btnClientMic"><span class="ic">🎙️</span>Микрофон</button>
-  <button class="bbtn" id="btnReconnect"><span class="ic">↻</span>Переподключить</button>
-</nav>
-
-<div class="sheet-wrap hidden" id="cabinetWrap">
+<div class="sheet-wrap hidden" id="menuWrap">
   <section class="sheet">
-    <h2>Кабинет специалиста</h2>
-    <p>Отправьте ссылку клиенту. Клиент открывает её в Safari или Chrome на телефоне, держит телефон вертикально и разрешает доступ к камере и микрофону.</p>
+    <div class="grab"></div>
+    <h2>Сессия</h2>
+    <p>Ссылка для клиента: открыть на телефоне в Safari или Chrome, держать вертикально, разрешить камеру и микрофон.</p>
     <div class="field" id="linkField">Ожидание ID сессии…</div>
     <div class="btn-row">
       <button class="btn primary" id="btnCopy">Скопировать</button>
       <button class="btn" id="btnShare">Отправить</button>
     </div>
     <p id="peerIdLine"></p>
-    <h3>Журнал жалоб и снимков</h3>
-    <ul id="logList"></ul>
+    <h3>Отчёт</h3>
     <div class="btn-row">
-      <button class="btn" id="btnExport">Экспорт CSV</button>
-      <button class="btn danger" id="btnClearLog">Очистить</button>
+      <button class="btn primary" id="btnReport">Скопировать отчёт</button>
+      <button class="btn" id="btnExport">Скачать CSV</button>
     </div>
-    <button class="btn full" id="btnCloseCabinet">Закрыть</button>
+    <h3>Журнал</h3>
+    <ul id="logList"></ul>
+    <h3>Вид</h3>
+    <div class="seg wide" id="fitSeg">
+      <button data-fit="contain" class="on">Кадр целиком</button><button data-fit="cover">На весь экран</button>
+    </div>
+    <button class="btn full danger" id="btnNewSession">Новая сессия (очистить журнал)</button>
+    <button class="btn full" data-close>Закрыть</button>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="netWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2>Связь</h2>
+    <div class="kv" id="netInfo"></div>
+    <h3 class="spec-only">Качество видео клиента</h3>
+    <div class="seg wide spec-only" id="qualitySeg">
+      <button data-q="eco">Экономия</button><button data-q="auto" class="on">Авто</button><button data-q="hd">HD</button>
+    </div>
+    <p class="spec-only">«Экономия» стабильнее на слабом мобильном интернете: меньше разрешение и битрейт, меньше зависаний.</p>
+    <h3 class="spec-only">Камера клиента</h3>
+    <div class="btn-row spec-only">
+      <button class="btn" id="btnRemoteFlip">Переключить камеру</button>
+      <button class="btn" id="btnRemoteZoom">Зум ×1</button>
+    </div>
+    <button class="btn full spec-only" id="btnRemoteReconnect">Переподключить клиента</button>
+    <button class="btn full" data-close>Закрыть</button>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="exWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2>Упражнение</h2>
+    <p>Подходы, повторы, амплитуда и отметки будут привязаны к выбранному упражнению.</p>
+    <div class="grid-pick" id="exGrid"></div>
+    <input class="field" id="exCustom" placeholder="Своё упражнение…" enterkeyhint="done">
+    <button class="btn full primary" id="exCustomOk">Начать своё</button>
+    <button class="btn full" data-close>Закрыть</button>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="noteWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2>Заметка</h2>
+    <p id="noteCtx"></p>
+    <textarea class="field" id="noteText" placeholder="Текст или диктовка с клавиатуры 🎤" enterkeyhint="done"></textarea>
+    <div class="templates" id="noteTemplates"></div>
+    <div class="btn-row">
+      <button class="btn" data-close>Отмена</button>
+      <button class="btn primary" id="noteSave">Сохранить</button>
+    </div>
   </section>
 </div>
 
 <div class="sheet-wrap hidden" id="snapWrap">
   <section class="sheet">
+    <div class="grab"></div>
     <h2>Снимок</h2>
     <p>На iOS можно также удержать палец на изображении и выбрать «Сохранить в Фото».</p>
     <img id="snapImg" alt="Снимок с углами">
@@ -253,11 +402,11 @@
       <button class="btn primary" id="btnSnapSave">Сохранить</button>
       <button class="btn" id="btnSnapShare">Поделиться</button>
     </div>
-    <button class="btn full" id="btnSnapClose">Закрыть</button>
+    <button class="btn full" data-close>Закрыть</button>
   </section>
 </div>
 
-<div id="toast"></div>
+<div id="toast"><span class="msg" id="toastMsg"></span><button id="toastUndo" class="hidden">Отменить</button></div>
 <audio id="remoteAudio" playsinline autoplay></audio>
 
 <div id="fatal" class="hidden">
@@ -277,7 +426,6 @@
       'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js',
       'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js'
     ],
-    // Базовые пути пакетов MediaPipe; файлы модели/wasm грузятся с той же базы через locateFile.
     pose: [
       'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404',
       'https://unpkg.com/@mediapipe/pose@0.5.1675469404'
@@ -299,7 +447,6 @@
   const params = new URLSearchParams(location.search);
   const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
   const TARGET_PEER = (params.get('peer') || '').trim();
-  // ?relay=1 принудительно пускает весь трафик только через TURN (полезно при агрессивном DPI).
   const FORCE_RELAY = params.get('relay') === '1';
 
   // ?ps=https://host[:port]/path : собственный PeerServer вместо публичного 0.peerjs.com.
@@ -313,35 +460,44 @@
     } catch (e) { return {}; }
   })();
 
-  const PEER_OPTIONS = Object.assign({}, PEER_SERVER, {
-    debug: 1,
-    config: {
-      iceServers: ICE_SERVERS,
-      iceTransportPolicy: FORCE_RELAY ? 'relay' : 'all',
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require'
-    }
-  });
+  function peerOptions(relayOnly) {
+    return Object.assign({}, PEER_SERVER, {
+      debug: 1,
+      config: {
+        iceServers: ICE_SERVERS,
+        iceTransportPolicy: relayOnly ? 'relay' : 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
+      }
+    });
+  }
 
-  const CLIENT_CONSTRAINTS = {
-    video: {
-      width: { ideal: 720 },
-      height: { ideal: 1280 },
-      aspectRatio: { ideal: 9 / 16 },
-      frameRate: { ideal: 30 }
-    },
-    audio: true
+  // Нативный 16:9 режим сенсора без принудительного aspectRatio: телефон в портрете сам отдаёт 720x1280.
+  // Жёсткий 9:16 заставлял браузер вырезать узкую полосу из широкого сенсора и растягивать её (сильный зум).
+  // resizeMode 'none' запрещает браузеру кадрировать и масштабировать кадр.
+  const VIDEO_CONSTRAINTS = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30, max: 30 },
+    resizeMode: { ideal: 'none' }
+  };
+  const AUDIO_CONSTRAINTS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+
+  const QUALITY = {
+    eco:  { maxBitrate: 600000,  maxFramerate: 20, scale: 1.5, label: 'Экономия' },
+    auto: { maxBitrate: 1500000, maxFramerate: 30, scale: 1,   label: 'Авто' },
+    hd:   { maxBitrate: 2500000, maxFramerate: 30, scale: 1,   label: 'HD' }
   };
 
-  const VIDEO_MAX_BITRATE = 1800000;
-  const VIS_MIN = 0.5;          // минимальная видимость точки для расчёта угла
-  const FRAME_MARGIN = 0.02;    // допуск выхода точки за край кадра (доля кадра)
-  const HOLD_MS = 450;          // сколько держать последнее валидное значение при перекрытии
-  const ANGLE_EMA = 0.45;       // сглаживание отображаемого угла
+  const VIS_MIN = 0.5;
+  const FRAME_MARGIN = 0.02;
+  const HOLD_MS = 450;
+  const ANGLE_EMA = 0.45;
   const STORAGE_ID = 'bi_peer_id';
-  const STORAGE_LOG = 'bi_log_v1';
+  const STORAGE_SESSION = 'bi_session_v2';
+  const STORAGE_PREFS = 'bi_prefs_v2';
 
-  /* ===================== DOM ===================== */
+  /* ===================== DOM и UI-утилиты ===================== */
 
   const $ = (id) => document.getElementById(id);
   const video = $('video');
@@ -353,14 +509,13 @@
   document.querySelectorAll(ROLE === 'client' ? '.spec-only' : '.client-only')
     .forEach((el) => el.classList.add('hidden'));
 
-  /* ===================== Утилиты UI ===================== */
-
   function setStatus(text, level, sub) {
     $('statusText').textContent = text;
     $('statusDot').className = 'dot' + (level ? ' ' + level : '');
     if (sub !== undefined) $('statusSub').textContent = sub;
   }
   function setSub(text) { $('statusSub').textContent = text; }
+  function setBars(q) { $('qBars').setAttribute('data-q', String(q)); }
 
   function setPlaceholder(text, spinner) {
     const ph = $('placeholder');
@@ -371,12 +526,15 @@
   }
 
   let toastTimer = 0;
-  function toast(text) {
-    const t = $('toast');
-    t.textContent = text;
-    t.classList.add('show');
+  function hideToast() { $('toast').classList.remove('show'); }
+  function toast(text, undo) {
+    $('toastMsg').textContent = text;
+    const ub = $('toastUndo');
+    ub.classList.toggle('hidden', !undo);
+    ub.onclick = undo ? () => { undo(); hideToast(); } : null;
+    $('toast').classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+    toastTimer = setTimeout(hideToast, undo ? 3500 : 1800);
   }
 
   function fatal(title, text) {
@@ -385,21 +543,38 @@
     $('fatal').classList.remove('hidden');
   }
 
-  function vibrate(ms) { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* нет поддержки */ } }
+  function openSheet(id) { $(id).classList.remove('hidden'); }
+  function closeSheet(id) { $(id).classList.add('hidden'); }
+  function isOpen(id) { return !$(id).classList.contains('hidden'); }
+  document.querySelectorAll('.sheet-wrap').forEach((w) => {
+    w.addEventListener('click', (e) => { if (e.target === w) w.classList.add('hidden'); });
+    w.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => w.classList.add('hidden')));
+  });
 
+  function vibrate(ms) { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* нет поддержки */ } }
   function pad(n) { return String(n).padStart(2, '0'); }
   function fmtTime(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+  function fmtHM(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
   function fmtDate(d) { return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear(); }
   function fileStamp(d) {
     return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  }
+  function store(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* приватный режим */ } }
+  function load(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? def : v; } catch (e) { return def; } }
+
+  function renderKv(el, rows) {
+    el.innerHTML = '';
+    rows.forEach(([k, v]) => {
+      const a = document.createElement('span'); a.textContent = k;
+      const b = document.createElement('span'); b.textContent = v;
+      el.append(a, b);
+    });
   }
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.crossOrigin = 'anonymous';
+      s.src = src; s.async = true; s.crossOrigin = 'anonymous';
       s.onload = () => resolve(src);
       s.onerror = () => { s.remove(); reject(new Error('Не удалось загрузить ' + src)); };
       document.head.appendChild(s);
@@ -407,9 +582,7 @@
   }
   async function loadFirst(urls) {
     let lastErr;
-    for (const u of urls) {
-      try { return await loadScript(u); } catch (e) { lastErr = e; }
-    }
+    for (const u of urls) { try { return await loadScript(u); } catch (e) { lastErr = e; } }
     throw lastErr;
   }
 
@@ -420,6 +593,21 @@
     let s = '';
     for (const b of bytes) s += alphabet[b % alphabet.length];
     return 'bi-' + s;
+  }
+
+  // Короткое нажатие вызывает onTap, удержание 450 мс вызывает onLong.
+  function bindPress(el, onTap, onLong) {
+    let timer = 0, long = false;
+    el.addEventListener('pointerdown', () => {
+      long = false;
+      timer = setTimeout(() => { long = true; vibrate(25); onLong(); }, 450);
+    });
+    const cancel = () => clearTimeout(timer);
+    el.addEventListener('pointerup', cancel);
+    el.addEventListener('pointerleave', cancel);
+    el.addEventListener('pointercancel', cancel);
+    el.addEventListener('click', () => { if (!long) onTap(); });
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   /* ===================== Wake Lock ===================== */
@@ -433,29 +621,24 @@
       try {
         this.sentinel = await navigator.wakeLock.request('screen');
         this.sentinel.addEventListener('release', () => { this.sentinel = null; });
-      } catch (e) {
-        // Отказ (энергосбережение, неактивная вкладка): повторим при возврате на вкладку.
-      }
+      } catch (e) { /* повторим при возврате на вкладку */ }
     }
   };
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && Wake.wanted && !Wake.sentinel) Wake.enable();
   });
 
-  /* ===================== Воспроизведение с учётом autoplay-политик ===================== */
+  /* ===================== Звук ===================== */
 
   async function playWithSound(el) {
     el.muted = false;
-    try {
-      await el.play();
-      return true;
-    } catch (e) {
+    try { await el.play(); return true; }
+    catch (e) {
       el.muted = true;
-      try { await el.play(); } catch (e2) { /* дождёмся жеста пользователя */ }
+      try { await el.play(); } catch (e2) { /* ждём жеста */ }
       return false;
     }
   }
-
   function showUnmute(el) {
     const b = $('btnUnmute');
     b.classList.remove('hidden');
@@ -467,113 +650,120 @@
     };
   }
 
-  /* ===================== Диагностика соединения ===================== */
+  /* ===================== Статистика и качество связи ===================== */
 
-  function describeRoute(pc) {
-    return pc.getStats().then((stats) => {
+  function createStatsReader(pc) {
+    let prevLost = 0, prevRecv = 0;
+    return async function read() {
+      let stats;
+      try { stats = await pc.getStats(); } catch (e) { return null; }
       const byId = new Map();
       stats.forEach((r) => byId.set(r.id, r));
       let pair = null;
-      stats.forEach((r) => {
-        if (r.type === 'transport' && r.selectedCandidatePairId) pair = byId.get(r.selectedCandidatePairId) || pair;
-      });
-      if (!pair) {
-        stats.forEach((r) => {
-          if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected) && !pair) pair = r;
-        });
-      }
-      const out = { route: '', rtt: null, inFps: null, inRes: '', outFps: null, outRes: '' };
+      stats.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = byId.get(r.selectedCandidatePairId) || pair; });
+      if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected) && !pair) pair = r; });
+      const out = { route: '', rtt: null, loss: null, inFps: null, inRes: '', outFps: null, outRes: '', limit: '' };
       if (pair) {
         const lc = byId.get(pair.localCandidateId);
         const rc = byId.get(pair.remoteCandidateId);
-        if (lc && lc.candidateType === 'relay') {
-          out.route = 'TURN ' + String(lc.relayProtocol || lc.protocol || '').toUpperCase();
-        } else if (rc && rc.candidateType === 'relay') {
-          out.route = 'TURN (удал.)';
-        } else if (lc) {
-          out.route = 'P2P ' + String(lc.protocol || '').toUpperCase();
-        }
+        if (lc && lc.candidateType === 'relay') out.route = 'TURN ' + String(lc.relayProtocol || lc.protocol || '').toUpperCase();
+        else if (rc && rc.candidateType === 'relay') out.route = 'TURN (удал.)';
+        else if (lc) out.route = 'P2P ' + String(lc.protocol || '').toUpperCase();
         if (typeof pair.currentRoundTripTime === 'number') out.rtt = Math.round(pair.currentRoundTripTime * 1000);
       }
+      let lost = 0, recv = 0, hasIn = false, remoteLoss = null;
       stats.forEach((r) => {
-        if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+        const isVideo = r.kind === 'video' || r.mediaType === 'video';
+        if (r.type === 'inbound-rtp' && isVideo) {
+          hasIn = true;
+          lost += r.packetsLost || 0;
+          recv += r.packetsReceived || 0;
           if (r.framesPerSecond != null) out.inFps = Math.round(r.framesPerSecond);
           if (r.frameWidth) out.inRes = r.frameWidth + '×' + r.frameHeight;
         }
-        if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+        if (r.type === 'outbound-rtp' && isVideo) {
           if (r.framesPerSecond != null) out.outFps = Math.round(r.framesPerSecond);
           if (r.frameWidth) out.outRes = r.frameWidth + '×' + r.frameHeight;
+          if (r.qualityLimitationReason && r.qualityLimitationReason !== 'none') out.limit = r.qualityLimitationReason;
         }
+        if (r.type === 'remote-inbound-rtp' && isVideo && typeof r.fractionLost === 'number') remoteLoss = Math.round(r.fractionLost * 100);
       });
+      if (hasIn) {
+        const dl = lost - prevLost, dr = recv - prevRecv;
+        if (dl + dr > 0) out.loss = Math.max(0, Math.round(dl * 100 / (dl + dr)));
+        prevLost = lost; prevRecv = recv;
+      } else if (remoteLoss != null) {
+        out.loss = remoteLoss;
+      }
       return out;
-    }).catch(() => null);
+    };
+  }
+
+  function qualityLevel(s) {
+    if (!s) return 0;
+    const fps = ROLE === 'specialist' ? s.inFps : s.outFps;
+    if ((s.rtt != null && s.rtt > 450) || (s.loss != null && s.loss > 8) || (fps != null && fps < 10)) return 1;
+    if ((s.rtt != null && s.rtt > 220) || (s.loss != null && s.loss > 3) || (fps != null && fps < 18)) return 2;
+    return 3;
   }
 
   let statsTimer = 0;
+  let lastStats = null;
   let analysisFps = 0;
+  let onStats = null;
   function startStats(pc) {
     clearInterval(statsTimer);
+    const read = createStatsReader(pc);
     statsTimer = setInterval(async () => {
       if (!pc || pc.connectionState === 'closed') return;
-      const s = await describeRoute(pc);
+      const s = await read();
       if (!s) return;
+      lastStats = s;
+      setBars(qualityLevel(s));
       const parts = [];
       if (s.route) parts.push(s.route);
       if (s.rtt != null) parts.push(s.rtt + ' мс');
       if (ROLE === 'specialist') {
         if (s.inRes) parts.push(s.inRes);
         if (s.inFps != null) parts.push(s.inFps + ' к/с');
-        if (analysisFps) parts.push('анализ ' + analysisFps + ' к/с');
       } else {
         if (s.outRes) parts.push(s.outRes);
         if (s.outFps != null) parts.push(s.outFps + ' к/с');
       }
       setSub(parts.join(' · '));
+      if (onStats) onStats(s);
     }, 2000);
   }
-  function stopStats() { clearInterval(statsTimer); }
+  function stopStats() { clearInterval(statsTimer); lastStats = null; setBars(0); }
 
-  // Отслеживание ICE: callback onFail вызывается при необратимом разрыве.
   function watchPeerConnection(pc, onUp, onFail) {
-    let downTimer = 0;
+    let downTimer = 0, checkTimer = 0, done = false;
+    const fail = (why) => { if (done) return; done = true; clearTimeout(downTimer); clearTimeout(checkTimer); onFail(why); };
     const handler = () => {
+      if (done) return;
       const st = pc.iceConnectionState;
+      clearTimeout(checkTimer);
       if (st === 'connected' || st === 'completed') {
         clearTimeout(downTimer);
         onUp();
       } else if (st === 'disconnected') {
         setStatus('Связь прерывается…', 'warn');
         clearTimeout(downTimer);
-        downTimer = setTimeout(() => {
-          if (pc.iceConnectionState === 'disconnected') onFail('ICE disconnected');
-        }, 8000);
+        downTimer = setTimeout(() => { if (pc.iceConnectionState === 'disconnected') fail('ICE disconnected'); }, 7000);
       } else if (st === 'failed') {
-        clearTimeout(downTimer);
-        onFail('ICE failed');
-      } else if (st === 'checking') {
-        setStatus('Установка канала (TURN 443)…', 'warn');
+        fail('ICE failed');
+      } else if (st === 'checking' || st === 'new') {
+        setStatus('Установка канала…', 'warn');
+        // Зависание в checking (DPI молча режет пакеты): не ждём бесконечно.
+        checkTimer = setTimeout(() => {
+          if (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new') fail('ICE timeout');
+        }, 20000);
       }
     };
     pc.addEventListener('iceconnectionstatechange', handler);
     handler();
   }
 
-  async function tuneVideoSender(pc) {
-    try {
-      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (!sender) return;
-      const p = sender.getParameters();
-      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-      p.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
-      p.encodings[0].maxFramerate = 30;
-      try { p.degradationPreference = 'balanced'; } catch (e) { /* только чтение */ }
-      await sender.setParameters(p);
-    } catch (e) {
-      // Safari старых версий может не поддерживать setParameters: оставляем дефолт браузера.
-    }
-  }
-
-  // PeerJS создаёт RTCPeerConnection синхронно, но страхуемся ожиданием.
   function whenPc(call) {
     return new Promise((resolve) => {
       const t0 = Date.now();
@@ -585,7 +775,7 @@
     });
   }
 
-  /* ===================== Микрофон (общий) ===================== */
+  /* ===================== Микрофон ===================== */
 
   let micStream = null;
   function setMicButton(enabled) {
@@ -593,8 +783,7 @@
     $('btnClientMic').classList.toggle('off', !enabled);
   }
   function toggleMic(stream) {
-    if (!stream) { toast('Микрофон недоступен'); return; }
-    const tracks = stream.getAudioTracks();
+    const tracks = stream ? stream.getAudioTracks() : [];
     if (!tracks.length) { toast('Микрофон недоступен'); return; }
     const enabled = !tracks[0].enabled;
     tracks.forEach((t) => { t.enabled = enabled; });
@@ -606,10 +795,38 @@
      РЕЖИМ КЛИЕНТА
      ========================================================= */
 
+  // Основная камера (×1): исключаем теле, сверхширокий, макро, ИК и виртуальные мультикамеры.
+  async function pickMainCamera(facing) {
+    let devs = [];
+    try { devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'); } catch (e) { return null; }
+    if (devs.length < 2 || !devs.some((d) => d.label)) return null;
+    const back = /back|rear|environment|задн|тыл/i;
+    const front = /front|user|face|фронт|передн|селфи/i;
+    const bad = /tele|zoom|ultra|macro|depth|infrared|\bir\b|телефото|сверхширок|макро|глубин/i;
+    const virt = /dual|triple|двойн|тройн/i;
+    const cands = devs.filter((d) => facing === 'environment' ? back.test(d.label) : front.test(d.label));
+    if (!cands.length) return null;
+    const num = (l) => { const m = l.match(/camera\s*2?\s*(\d+)/i) || l.match(/(\d+)/); return m ? Number(m[1]) : 50; };
+    const score = (d) => (bad.test(d.label) ? 1000 : 0) + (virt.test(d.label) ? 100 : 0) + num(d.label) + d.label.length / 100;
+    cands.sort((a, b) => score(a) - score(b));
+    return cands[0].deviceId || null;
+  }
+
+  // Сброс зума к ×1, где браузер поддерживает constraint zoom (Chrome Android, Safari 17+).
+  async function resetZoom(track) {
+    if (!track || !track.getCapabilities) return null;
+    try {
+      const caps = track.getCapabilities();
+      if (!caps || !caps.zoom) return null;
+      const target = Math.min(Math.max(1, caps.zoom.min), caps.zoom.max);
+      await track.applyConstraints({ advanced: [{ zoom: target }] });
+      return target;
+    } catch (e) { return null; }
+  }
+
   async function startClient() {
-    $('btnFit').classList.add('hidden');
     if (!TARGET_PEER) {
-      fatal('Неверная ссылка', 'В ссылке нет идентификатора специалиста. Попросите специалиста прислать ссылку заново.');
+      fatal('Неверная ссылка', 'В ссылке нет идентификатора специалиста. Попросите прислать ссылку заново.');
       return;
     }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -621,27 +838,110 @@
     let localStream = null;
     let peer = null;
     let call = null;
+    let ctrl = null;
     let retryTimer = 0;
     let retryDelay = 2000;
+    let failCount = 0;
+    let relayOnly = FORCE_RELAY;
     let destroyed = false;
+    let quality = 'auto';
+
+    $('btnHintOk').onclick = () => $('clientHint').classList.add('hidden');
+
+    async function openCamera(facingMode) {
+      const base = Object.assign({}, VIDEO_CONSTRAINTS, { facingMode: { ideal: facingMode } });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: base, audio: AUDIO_CONSTRAINTS });
+      } catch (e) {
+        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) throw e;
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: true });
+      }
+      // Названия камер доступны только после разрешения: при необходимости переходим на основной модуль.
+      const cur = stream.getVideoTracks()[0];
+      const mainId = await pickMainCamera(facingMode);
+      const curId = cur && cur.getSettings ? cur.getSettings().deviceId : '';
+      if (mainId && curId && mainId !== curId) {
+        try {
+          cur.stop();
+          const v = await navigator.mediaDevices.getUserMedia({ video: Object.assign({}, VIDEO_CONSTRAINTS, { deviceId: { exact: mainId } }) });
+          stream.removeTrack(cur);
+          stream.addTrack(v.getVideoTracks()[0]);
+        } catch (e) {
+          if (cur.readyState === 'ended') {
+            const v = await navigator.mediaDevices.getUserMedia({ video: base });
+            stream.removeTrack(cur);
+            stream.addTrack(v.getVideoTracks()[0]);
+          }
+        }
+      }
+      const vt = stream.getVideoTracks()[0];
+      try { vt.contentHint = 'motion'; } catch (e) { /* нет */ }
+      await resetZoom(vt);
+      return stream;
+    }
+
+    function cameraInfo() {
+      const t = localStream && localStream.getVideoTracks()[0];
+      if (!t) return { t: 'cam' };
+      const s = t.getSettings ? t.getSettings() : {};
+      return { t: 'cam', label: t.label || '', facing: facing, w: s.width || 0, h: s.height || 0, zoom: s.zoom || null };
+    }
+    function sendCtrl(msg) { try { if (ctrl && ctrl.open) ctrl.send(msg); } catch (e) { /* нет канала */ } }
+
+    async function applyQuality(name) {
+      quality = QUALITY[name] ? name : 'auto';
+      const q = QUALITY[quality];
+      if (!call || !call.peerConnection) return;
+      try {
+        const sender = call.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (!sender) return;
+        const p = sender.getParameters();
+        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+        p.encodings[0].maxBitrate = q.maxBitrate;
+        p.encodings[0].maxFramerate = q.maxFramerate;
+        p.encodings[0].scaleResolutionDownBy = q.scale;
+        try { p.degradationPreference = 'balanced'; } catch (e) { /* только чтение */ }
+        await sender.setParameters(p);
+      } catch (e) { /* старый Safari: адаптацию делает браузер */ }
+    }
+
+    async function flipCamera() {
+      const next = facing === 'user' ? 'environment' : 'user';
+      const old = localStream.getVideoTracks()[0];
+      const sender = call && call.peerConnection
+        ? (call.peerConnection.getSenders().find((x) => x.track === old) || call.peerConnection.getSenders().find((x) => x.track && x.track.kind === 'video'))
+        : null;
+      if (old) old.stop(); // часть Android не открывает вторую камеру, пока занята первая
+      let newTrack = null;
+      const mainId = await pickMainCamera(next);
+      const tries = [];
+      if (mainId) tries.push(Object.assign({}, VIDEO_CONSTRAINTS, { deviceId: { exact: mainId } }));
+      tries.push(Object.assign({}, VIDEO_CONSTRAINTS, { facingMode: { exact: next } }));
+      tries.push({ facingMode: next });
+      tries.push(Object.assign({}, VIDEO_CONSTRAINTS, { facingMode: { ideal: facing } }));
+      for (const c of tries) {
+        try { newTrack = (await navigator.mediaDevices.getUserMedia({ video: c })).getVideoTracks()[0]; break; } catch (e) { /* следующий вариант */ }
+      }
+      if (!newTrack) { toast('Не удалось открыть камеру'); return; }
+      const realFacing = (newTrack.getSettings && newTrack.getSettings().facingMode) || (tries.length && newTrack ? next : facing);
+      try { newTrack.contentHint = 'motion'; } catch (e) { /* нет */ }
+      await resetZoom(newTrack);
+      try { if (sender) await sender.replaceTrack(newTrack); } catch (e) { /* отправим при переподключении */ }
+      if (old) localStream.removeTrack(old);
+      localStream.addTrack(newTrack);
+      facing = realFacing === 'user' ? 'user' : 'environment';
+      video.srcObject = localStream;
+      video.classList.toggle('mirror', facing === 'user');
+      video.play().catch(() => {});
+      toast(facing === 'user' ? 'Фронтальная камера ×1' : 'Основная камера ×1');
+      sendCtrl(cameraInfo());
+    }
 
     setStatus('Запрос камеры…', 'warn', '');
     setPlaceholder('Разрешите доступ к камере и микрофону', true);
-
-    async function getCamera(facingMode) {
-      const c = JSON.parse(JSON.stringify(CLIENT_CONSTRAINTS));
-      c.video.facingMode = { ideal: facingMode };
-      try {
-        return await navigator.mediaDevices.getUserMedia(c);
-      } catch (e) {
-        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) throw e;
-        // Камера не поддерживает запрошенные ideal-параметры: упрощаем запрос.
-        return await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: true });
-      }
-    }
-
     try {
-      localStream = await getCamera(facing);
+      localStream = await openCamera(facing);
     } catch (e) {
       setPlaceholder(null);
       fatal('Нет доступа к камере', 'Разрешите доступ к камере и микрофону в настройках браузера и перезагрузите страницу. (' + (e && e.name ? e.name : e) + ')');
@@ -649,28 +949,22 @@
     }
     micStream = localStream;
     setMicButton(true);
-
-    localStream.getVideoTracks().forEach((t) => { try { t.contentHint = 'motion'; } catch (e) { /* нет поддержки */ } });
     video.muted = true;
     video.srcObject = localStream;
     video.classList.toggle('mirror', facing === 'user');
-    try { await video.play(); } catch (e) { /* muted autoplay разрешён везде */ }
+    try { await video.play(); } catch (e) { /* muted autoplay разрешён */ }
     setPlaceholder(null);
     Wake.enable();
 
-    try {
-      await loadFirst(LIBS.peerjs);
-    } catch (e) {
-      fatal('Сеть', 'Не удалось загрузить модуль связи. Проверьте интернет и перезагрузите страницу.');
-      return;
-    }
+    try { await loadFirst(LIBS.peerjs); }
+    catch (e) { fatal('Сеть', 'Не удалось загрузить модуль связи. Проверьте интернет и перезагрузите страницу.'); return; }
 
     function scheduleRetry(reason) {
       if (destroyed) return;
       clearTimeout(retryTimer);
       setStatus('Повторное подключение…', 'warn', reason || '');
       retryTimer = setTimeout(() => {
-        retryDelay = Math.min(retryDelay * 1.6, 15000);
+        retryDelay = Math.min(retryDelay * 1.6, 12000);
         if (peer && !peer.destroyed && !peer.disconnected) placeCall();
         else if (peer && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch (e) { createPeer(); } }
         else createPeer();
@@ -678,20 +972,37 @@
     }
 
     function closeCall() {
-      if (call) {
-        const c = call;
-        call = null;
-        try { c.close(); } catch (e) { /* уже закрыт */ }
-      }
+      if (call) { const c = call; call = null; try { c.close(); } catch (e) { /* закрыт */ } }
+      if (ctrl) { const d = ctrl; ctrl = null; try { d.close(); } catch (e) { /* закрыт */ } }
       stopStats();
+    }
+
+    function openControl() {
+      try {
+        const d = peer.connect(TARGET_PEER, { reliable: true, serialization: 'json', metadata: { role: 'client' } });
+        ctrl = d;
+        d.on('open', () => sendCtrl(cameraInfo()));
+        d.on('data', async (m) => {
+          if (!m || typeof m !== 'object') return;
+          if (m.t === 'quality') { await applyQuality(m.q); toast('Качество: ' + QUALITY[quality].label); }
+          else if (m.t === 'flip') flipCamera();
+          else if (m.t === 'zoom1') {
+            const z = await resetZoom(localStream.getVideoTracks()[0]);
+            toast(z ? 'Зум ×1' : 'Зум на этом телефоне не регулируется');
+            sendCtrl(cameraInfo());
+          } else if (m.t === 'reconnect') { retryDelay = 1000; closeCall(); scheduleRetry('По запросу специалиста'); }
+        });
+        d.on('error', () => { /* канал управления необязателен */ });
+      } catch (e) { /* без канала управления */ }
     }
 
     function placeCall() {
       closeCall();
-      setStatus('Звоним специалисту…', 'warn');
-      const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client', ts: Date.now() } });
+      setStatus(relayOnly ? 'Звоним через защищённый ретранслятор…' : 'Звоним специалисту…', 'warn');
+      const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client' } });
       if (!c) { scheduleRetry('Не удалось создать вызов'); return; }
       call = c;
+      openControl();
 
       c.on('stream', async (remote) => {
         if (call !== c) return;
@@ -707,11 +1018,21 @@
         watchPeerConnection(pc, () => {
           if (call !== c) return;
           retryDelay = 2000;
+          failCount = 0;
           setStatus('На связи со специалистом', 'ok');
-          tuneVideoSender(pc);
+          applyQuality(quality);
           startStats(pc);
         }, (why) => {
           if (call !== c) return;
+          failCount++;
+          // Две неудачи подряд: DPI режет прямые маршруты, остаёмся только на TURN (в т.ч. TLS 443).
+          if (failCount >= 2 && !relayOnly) {
+            relayOnly = true;
+            closeCall();
+            setStatus('Переход на защищённый ретранслятор…', 'warn', why);
+            createPeer();
+            return;
+          }
           closeCall();
           scheduleRetry(why);
         });
@@ -722,7 +1043,7 @@
       if (peer) { try { peer.destroy(); } catch (e) { /* нет */ } }
       setStatus('Подключение к серверу…', 'warn');
       // Свой ID без HTTP-запроса /peerjs/id: на один запрос к сигнальному серверу меньше.
-      peer = new window.Peer(randomId(), PEER_OPTIONS);
+      peer = new window.Peer(randomId(), peerOptions(relayOnly));
       peer.on('open', () => placeCall());
       peer.on('disconnected', () => {
         if (destroyed || peer.destroyed) return;
@@ -732,49 +1053,36 @@
         const type = err && err.type;
         if (type === 'peer-unavailable') {
           closeCall();
-          setPlaceholder(null);
           scheduleRetry('Специалист ещё не в сети');
         } else if (type === 'browser-incompatible') {
           fatal('Браузер не поддерживается', 'Обновите Safari или Chrome до последней версии.');
+        } else if (type === 'unavailable-id') {
+          createPeer();
         } else {
           scheduleRetry('Ошибка сети: ' + (type || 'unknown'));
         }
       });
     }
 
-    $('btnFlip').onclick = async () => {
-      const next = facing === 'user' ? 'environment' : 'user';
-      try {
-        const c = JSON.parse(JSON.stringify(CLIENT_CONSTRAINTS));
-        c.video.facingMode = { exact: next };
-        delete c.audio;
-        let s;
-        try { s = await navigator.mediaDevices.getUserMedia({ video: c.video }); }
-        catch (e) { c.video.facingMode = { ideal: next }; s = await navigator.mediaDevices.getUserMedia({ video: c.video }); }
-        const newTrack = s.getVideoTracks()[0];
-        try { newTrack.contentHint = 'motion'; } catch (e) { /* нет */ }
-        const oldTrack = localStream.getVideoTracks()[0];
-        if (call && call.peerConnection) {
-          const sender = call.peerConnection.getSenders().find((x) => x.track && x.track.kind === 'video');
-          if (sender) await sender.replaceTrack(newTrack);
-        }
-        if (oldTrack) { localStream.removeTrack(oldTrack); oldTrack.stop(); }
-        localStream.addTrack(newTrack);
-        facing = next;
-        video.srcObject = localStream;
-        video.classList.toggle('mirror', facing === 'user');
-        video.play().catch(() => {});
-        toast(facing === 'user' ? 'Фронтальная камера' : 'Основная камера');
-      } catch (e) {
-        toast('Не удалось переключить камеру');
-      }
-    };
+    $('btnFlip').onclick = flipCamera;
     $('btnClientMic').onclick = () => toggleMic(localStream);
     $('btnMic').onclick = () => toggleMic(localStream);
-    $('btnReconnect').onclick = () => { retryDelay = 2000; closeCall(); createPeer(); };
+    $('btnReconnect').onclick = () => { retryDelay = 2000; failCount = 0; closeCall(); createPeer(); };
+    $('statusBtn').onclick = () => {
+      const s = lastStats;
+      const info = cameraInfo();
+      renderKv($('netInfo'), [
+        ['Маршрут', s && s.route || 'нет данных'],
+        ['Задержка', s && s.rtt != null ? s.rtt + ' мс' : '··'],
+        ['Отправка', s ? (s.outRes || '··') + (s.outFps != null ? ' · ' + s.outFps + ' к/с' : '') : '··'],
+        ['Ограничение', s && s.limit ? (s.limit === 'bandwidth' ? 'канал связи' : s.limit === 'cpu' ? 'процессор' : s.limit) : 'нет'],
+        ['Камера', (info.label || '··') + (info.zoom ? ' · zoom ' + info.zoom : '')],
+        ['Режим', relayOnly ? 'только TURN' : 'авто']
+      ]);
+      openSheet('netWrap');
+    };
 
     window.addEventListener('pagehide', () => { destroyed = true; closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } });
-
     createPeer();
   }
 
@@ -782,7 +1090,6 @@
      РЕЖИМ СПЕЦИАЛИСТА
      ========================================================= */
 
-  // Индексы BlazePose (left/right = левая/правая сторона тела клиента).
   const JOINTS = [
     { key: 'knee_L',  a: 23, b: 25, c: 27 },
     { key: 'knee_R',  a: 24, b: 26, c: 28 },
@@ -791,12 +1098,11 @@
     { key: 'elbow_L', a: 11, b: 13, c: 15 },
     { key: 'elbow_R', a: 12, b: 14, c: 16 }
   ];
-  const JOINT_NAMES = { knee: 'Колено', hip: 'Таз', elbow: 'Локоть' };
+  const BODY_POINTS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
   const angleState = {};
   JOINTS.forEach((j) => { angleState[j.key] = { value: null, t: 0, stale: true }; });
 
-  // Угол в вершине b между векторами b→a и b→c, градусы [0..180].
-  // atan2(|u×v|, u·v) не имеет проблем acos с выходом за [-1, 1] из-за погрешности и точен около 0° и 180°.
+  // Угол в вершине b, градусы [0..180]. atan2(|u×v|, u·v) устойчив у 0° и 180° и не выходит за домен, как acos.
   function angle3D(a, b, c, eps) {
     const ux = a.x - b.x, uy = a.y - b.y, uz = a.z - b.z;
     const vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
@@ -811,7 +1117,6 @@
     return Number.isFinite(deg) ? deg : null;
   }
 
-  // Точка пригодна, если модель уверена в её видимости и она внутри кадра.
   function usable(lm) {
     if (!lm) return false;
     if (!Number.isFinite(lm.x) || !Number.isFinite(lm.y) || !Number.isFinite(lm.z)) return false;
@@ -819,118 +1124,183 @@
     return lm.x >= -FRAME_MARGIN && lm.x <= 1 + FRAME_MARGIN && lm.y >= -FRAME_MARGIN && lm.y <= 1 + FRAME_MARGIN;
   }
 
+  /* -------- Каталог быстрых отметок для ЛФК и тренировок -------- */
+
+  const CATS = {
+    pain: { label: 'Боль', hex: '#f87171', scale: true, items: [
+      'Шея', 'Плечо', 'Грудной отдел', 'Поясница', 'Крестец/таз', 'Тазобедренный', 'Колено', 'Голеностоп/стопа',
+      'Локоть/кисть', 'Онемение/покалывание', 'Прострел', 'Головная боль'
+    ] },
+    tech: { label: 'Техника', hex: '#fbbf24', items: [
+      'Вальгус колена', 'Колено за носок', 'Округление поясницы', 'Гиперлордоз', 'Перекос таза', 'Подъём плеч',
+      'Голова вперёд', 'Смещение веса', 'Задержка дыхания', 'Потеря баланса', 'Мало амплитуды', 'Слишком быстро',
+      'Асимметрия Л/П', 'Техника ✓'
+    ] },
+    load: { label: 'Нагрузка', hex: '#a78bfa', items: [
+      'Легко · RPE 3', 'Умеренно · RPE 5', 'Тяжело · RPE 7', 'Очень тяжело · RPE 9', 'До отказа',
+      'Одышка', 'Головокружение', 'Утомление', 'Нужен отдых', 'Увеличить нагрузку', 'Снизить нагрузку'
+    ] },
+    prog: { label: 'Прогресс', hex: '#34d399', items: [
+      'Амплитуда ↑', 'Боль ↓', 'Контроль лучше', 'Баланс лучше', 'Без изменений', 'Хуже, чем в прошлый раз',
+      'Упражнение освоено', 'Дать на дом'
+    ] },
+    note: { label: 'Заметка', hex: '#93c5fd' },
+    set:  { label: 'Подход', hex: '#60a5fa' },
+    ex:   { label: 'Упражнение', hex: '#3b82f6' },
+    snap: { label: 'Снимок', hex: '#e5e7eb' }
+  };
+  const TAB_ORDER = ['pain', 'tech', 'load', 'prog'];
+
+  const EXERCISES = [
+    'Присед', 'Выпад', 'Ягодичный мост', 'Наклон / хип-хинж', 'Планка', 'Боковая планка', 'Кошка-корова',
+    'Птица-собака', 'Мёртвый жук', 'Подъём рук', 'Отведение бедра', 'Подъём на носки', 'Баланс на одной ноге',
+    'Ходьба', 'Растяжка', 'Тест амплитуды'
+  ];
+
+  const NOTE_TEMPLATES = ['На дом: ', 'В следующий раз: ', 'Ограничить: ', 'Клиент сообщает: ', 'Корректировка: ', 'Хорошо получается: '];
+
+  /* -------- Сессия, журнал, амплитуда -------- */
+
+  const Session = {
+    data: null,
+    side: 'B',
+    romDirty: false,
+    romSaved: 0,
+
+    init() {
+      const d = load(STORAGE_SESSION, null);
+      this.data = d && Array.isArray(d.log) ? d : this.fresh();
+      this.data.rom = this.data.rom || {};
+    },
+    fresh() { return { startedAt: Date.now(), exercise: '', set: 1, reps: 0, log: [], rom: {} }; },
+    save() { store(STORAGE_SESSION, this.data); },
+    reset() { this.data = this.fresh(); this.save(); },
+
+    add(cat, label, extra) {
+      const e = Object.assign({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        ts: Date.now(), cat: cat, label: label,
+        side: (cat === 'pain' || cat === 'tech') && this.side !== 'B' ? this.side : '',
+        exercise: this.data.exercise, set: this.data.set, angles: anglesSnapshot()
+      }, extra || {});
+      this.data.log.push(e);
+      this.save();
+      return e;
+    },
+    remove(id) {
+      const i = this.data.log.findIndex((e) => e.id === id);
+      if (i >= 0) { this.data.log.splice(i, 1); this.save(); }
+    },
+    update(id, patch) {
+      const e = this.data.log.find((x) => x.id === id);
+      if (e) { Object.assign(e, patch); this.save(); }
+    },
+
+    trackRom(key, v) {
+      if (v == null) return;
+      const k = this.data.exercise || '_';
+      const r = this.data.rom[k] || (this.data.rom[k] = {});
+      const cur = r[key];
+      if (!cur) r[key] = [v, v];
+      else { if (v < cur[0]) cur[0] = v; if (v > cur[1]) cur[1] = v; }
+      this.romDirty = true;
+    },
+    romFor(ex) { return this.data.rom[ex || '_'] || {}; },
+
+    setExercise(name) {
+      this.data.exercise = name;
+      this.data.set = 1;
+      this.data.reps = 0;
+      if (name) this.add('ex', name);
+      this.save();
+    },
+    counts() {
+      const c = {};
+      this.data.log.forEach((e) => { const k = e.cat + '|' + e.label; c[k] = (c[k] || 0) + 1; });
+      return c;
+    }
+  };
+
   function computeAngles(lm, world, W, H, now) {
     const useWorld = Array.isArray(world) && world.length === 33;
-    // poseWorldLandmarks: метрические 3D-координаты (м) с центром в тазу, без перспективных искажений.
-    // Фолбэк: нормализованные координаты переводим в пиксели (x*W, y*H, z*W), иначе в кадре 9:16
-    // ось Y сжата относительно X в 1.78 раза и углы искажаются.
-    const P = (i) => useWorld
-      ? world[i]
-      : { x: lm[i].x * W, y: lm[i].y * H, z: lm[i].z * W };
+    // Мировые координаты (метры, центр в тазу) без перспективы; фолбэк: пиксели (x*W, y*H, z*W),
+    // иначе в кадре 9:16 ось Y сжата относительно X и углы искажаются.
+    const P = (i) => useWorld ? world[i] : { x: lm[i].x * W, y: lm[i].y * H, z: lm[i].z * W };
     const eps = useWorld ? 0.01 : 2;
-
     for (const j of JOINTS) {
       const st = angleState[j.key];
       let raw = null;
-      if (lm && usable(lm[j.a]) && usable(lm[j.b]) && usable(lm[j.c])) {
-        raw = angle3D(P(j.a), P(j.b), P(j.c), eps);
-      }
+      if (lm && usable(lm[j.a]) && usable(lm[j.b]) && usable(lm[j.c])) raw = angle3D(P(j.a), P(j.b), P(j.c), eps);
       if (raw != null) {
-        st.value = st.value == null || st.stale && now - st.t > HOLD_MS ? raw : st.value + ANGLE_EMA * (raw - st.value);
+        st.value = st.value == null || (st.stale && now - st.t > HOLD_MS) ? raw : st.value + ANGLE_EMA * (raw - st.value);
         st.t = now;
         st.stale = false;
+        Session.trackRom(j.key, st.value);
       } else {
         st.stale = true;
         if (now - st.t > HOLD_MS) st.value = null;
       }
     }
   }
-
+  function clearAngles() { JOINTS.forEach((j) => { angleState[j.key].value = null; angleState[j.key].stale = true; }); }
   function anglesSnapshot() {
     const o = {};
     JOINTS.forEach((j) => { const v = angleState[j.key].value; o[j.key] = v == null ? null : Math.round(v); });
     return o;
   }
 
-  let hudLast = 0;
-  function updateHud(now, force) {
-    if (!force && now - hudLast < 120) return;
-    hudLast = now;
-    JOINTS.forEach((j) => {
-      const el = $('a_' + j.key);
-      const st = angleState[j.key];
-      el.textContent = st.value == null ? '··' : Math.round(st.value) + '°';
-      el.classList.toggle('stale', st.value != null && st.stale);
-    });
+  /* -------- Отчёт и CSV -------- */
+
+  function sideText(s) { return s === 'L' ? 'слева' : s === 'R' ? 'справа' : ''; }
+
+  function buildReport() {
+    const d = Session.data;
+    const start = new Date(d.startedAt);
+    const end = d.log.length ? new Date(d.log[d.log.length - 1].ts) : new Date();
+    const mins = Math.max(1, Math.round((end - start) / 60000));
+    const lines = ['BackInsight · сессия ' + fmtDate(start) + ', ' + fmtHM(start) + '–' + fmtHM(end) + ' (' + mins + ' мин)'];
+
+    const exOrder = [];
+    d.log.forEach((e) => { if (e.exercise && exOrder.indexOf(e.exercise) === -1) exOrder.push(e.exercise); });
+    if (exOrder.length) {
+      lines.push('', 'УПРАЖНЕНИЯ');
+      exOrder.forEach((ex) => {
+        const sets = d.log.filter((e) => e.cat === 'set' && e.exercise === ex);
+        let s = '• ' + ex;
+        if (sets.length) s += ': ' + sets.length + ' подх. (' + sets.map((x) => x.reps || 0).join(', ') + ' повт.)';
+        const rom = Session.romFor(ex);
+        const r = [];
+        [['knee', 'колено'], ['hip', 'таз'], ['elbow', 'локоть']].forEach(([k, n]) => {
+          const L = rom[k + '_L'], R = rom[k + '_R'];
+          const f = (x) => x ? Math.round(x[0]) + '–' + Math.round(x[1]) + '°' : '··';
+          if (L || R) r.push(n + ' Л ' + f(L) + ' / П ' + f(R));
+        });
+        if (r.length) s += '\n   амплитуда: ' + r.join('; ');
+        lines.push(s);
+      });
+    }
+    const section = (cat, title) => {
+      const items = d.log.filter((e) => e.cat === cat);
+      if (!items.length) return;
+      lines.push('', title);
+      items.forEach((e) => {
+        let s = '• ' + fmtHM(new Date(e.ts)) + ' ' + (e.text || e.label);
+        if (e.side) s += ' (' + sideText(e.side) + ')';
+        if (e.score != null) s += ' ' + e.score + '/10';
+        if (e.exercise) s += ' · ' + e.exercise + (e.set ? ', подход ' + e.set : '');
+        lines.push(s);
+      });
+    };
+    section('pain', 'БОЛЬ И ЖАЛОБЫ');
+    section('tech', 'ТЕХНИКА');
+    section('load', 'НАГРУЗКА И САМОЧУВСТВИЕ');
+    section('prog', 'ПРОГРЕСС');
+    section('note', 'ЗАМЕТКИ');
+    const snaps = d.log.filter((e) => e.cat === 'snap').length;
+    if (snaps) lines.push('', 'Снимков: ' + snaps);
+    return lines.join('\n');
   }
 
-  function drawAngleLabels(ctx, lm, W, H) {
-    const fs = Math.max(14, Math.round(Math.min(W, H) * 0.035));
-    ctx.font = '600 ' + fs + 'px -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
-    ctx.textBaseline = 'middle';
-    for (const j of JOINTS) {
-      const st = angleState[j.key];
-      if (st.value == null || !usable(lm[j.b])) continue;
-      const x = lm[j.b].x * W;
-      const y = lm[j.b].y * H;
-      const text = Math.round(st.value) + '°';
-      const tw = ctx.measureText(text).width;
-      const isLeft = j.key.endsWith('_L');
-      // Левая сторона тела клиента на кадре справа (камера смотрит на клиента): подпись наружу.
-      const dx = isLeft ? fs * 0.8 : -fs * 0.8 - tw - fs * 0.6;
-      const bx = x + dx, by = y - fs * 0.75;
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(bx, by, tw + fs * 0.6, fs * 1.5, fs * 0.35);
-      else ctx.rect(bx, by, tw + fs * 0.6, fs * 1.5);
-      ctx.fill();
-      ctx.fillStyle = st.stale ? 'rgba(255,255,255,0.55)' : '#ffffff';
-      ctx.fillText(text, bx + fs * 0.3, y);
-    }
-  }
-
-  /* -------- Журнал -------- */
-
-  let log = [];
-  try { log = JSON.parse(localStorage.getItem(STORAGE_LOG) || '[]') || []; } catch (e) { log = []; }
-  function saveLog() { try { localStorage.setItem(STORAGE_LOG, JSON.stringify(log)); } catch (e) { /* приватный режим */ } }
-  function anglesLine(a) {
-    const f = (v) => v == null ? '··' : v + '°';
-    return 'Колено ' + f(a.knee_L) + '/' + f(a.knee_R) +
-      ', Таз ' + f(a.hip_L) + '/' + f(a.hip_R) +
-      ', Локоть ' + f(a.elbow_L) + '/' + f(a.elbow_R);
-  }
-  function renderLog() {
-    const counts = {};
-    log.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
-    document.querySelectorAll('[data-badge]').forEach((b) => {
-      const n = counts[b.getAttribute('data-badge')] || 0;
-      b.textContent = n ? String(n) : '';
-    });
-    const ul = $('logList');
-    ul.innerHTML = '';
-    if (!log.length) {
-      const li = document.createElement('li');
-      li.textContent = 'Записей пока нет';
-      li.style.color = 'var(--muted)';
-      ul.appendChild(li);
-      return;
-    }
-    for (let i = log.length - 1; i >= 0; i--) {
-      const e = log[i];
-      const li = document.createElement('li');
-      const t = document.createElement('span'); t.className = 't'; t.textContent = fmtTime(new Date(e.ts));
-      const n = document.createElement('strong'); n.textContent = e.type;
-      const a = document.createElement('span'); a.className = 'a'; a.textContent = anglesLine(e.angles);
-      li.append(t, n, a);
-      ul.appendChild(li);
-    }
-  }
-  function addLog(type) {
-    log.push({ ts: Date.now(), type: type, angles: anglesSnapshot() });
-    saveLog();
-    renderLog();
-  }
   function downloadBlob(blob, name) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -938,24 +1308,99 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
+
   function exportCsv() {
+    const log = Session.data.log;
     if (!log.length) { toast('Журнал пуст'); return; }
-    const head = ['Дата', 'Время', 'Событие', 'Колено Л', 'Колено П', 'Таз Л', 'Таз П', 'Локоть Л', 'Локоть П'];
+    const head = ['Дата', 'Время', 'Категория', 'Отметка', 'Сторона', 'Оценка', 'Повторы', 'Упражнение', 'Подход', 'Текст',
+      'Колено Л', 'Колено П', 'Таз Л', 'Таз П', 'Локоть Л', 'Локоть П'];
+    const v = (x) => x == null ? '' : String(x);
     const rows = log.map((e) => {
-      const d = new Date(e.ts);
-      const a = e.angles;
-      const v = (x) => x == null ? '' : String(x);
-      return [fmtDate(d), fmtTime(d), e.type, v(a.knee_L), v(a.knee_R), v(a.hip_L), v(a.hip_R), v(a.elbow_L), v(a.elbow_R)];
+      const d = new Date(e.ts), a = e.angles || {};
+      return [fmtDate(d), fmtTime(d), (CATS[e.cat] || {}).label || e.cat, e.label, sideText(e.side), v(e.score), v(e.reps),
+        e.exercise || '', v(e.set), e.text || '', v(a.knee_L), v(a.knee_R), v(a.hip_L), v(a.hip_R), v(a.elbow_L), v(a.elbow_R)];
     });
     const csv = '﻿' + [head].concat(rows).map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(';')).join('\r\n');
-    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'backinsight_log_' + fileStamp(new Date()) + '.csv');
+    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'backinsight_' + fileStamp(new Date()) + '.csv');
+  }
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+  }
+
+  /* -------- Скелет -------- */
+
+  // ghost: полупрозрачный (по умолчанию); full: яркий; off: анализ остановлен, процессор свободен.
+  const SKEL_MODES = ['ghost', 'full', 'off'];
+  const prefs = Object.assign({ skel: 'ghost', fit: 'contain', dockCollapsed: false, angles: 'full' }, load(STORAGE_PREFS, {}));
+  if (SKEL_MODES.indexOf(prefs.skel) === -1) prefs.skel = 'ghost';
+  function savePrefs() { store(STORAGE_PREFS, prefs); }
+
+  function drawSkeleton(ctx, lm, W, H) {
+    const ghost = prefs.skel === 'ghost';
+    const conns = (window.POSE_CONNECTIONS || []).filter((c) => c[0] > 10 && c[1] > 10);
+    const pts = BODY_POINTS.map((i) => lm[i]);
+    ctx.save();
+    ctx.globalAlpha = ghost ? 0.45 : 0.95;
+    window.drawConnectors(ctx, lm, conns, { color: '#00FF00', lineWidth: Math.max(1.5, W / (ghost ? 300 : 190)), visibilityMin: VIS_MIN });
+    window.drawLandmarks(ctx, pts, { color: '#FF0000', fillColor: '#FF0000', lineWidth: 1, radius: Math.max(2, W / (ghost ? 260 : 170)), visibilityMin: VIS_MIN });
+    ctx.restore();
+    drawAngleLabels(ctx, lm, W, H, ghost);
+  }
+
+  function drawAngleLabels(ctx, lm, W, H, ghost) {
+    const fs = Math.max(13, Math.round(Math.min(W, H) * (ghost ? 0.03 : 0.035)));
+    ctx.save();
+    ctx.font = '700 ' + fs + 'px -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (const j of JOINTS) {
+      const st = angleState[j.key];
+      if (st.value == null || !usable(lm[j.b])) continue;
+      const x = lm[j.b].x * W, y = lm[j.b].y * H;
+      const text = Math.round(st.value) + '°';
+      const tw = ctx.measureText(text).width;
+      // Левая сторона тела клиента на кадре справа: подпись выносим наружу от тела.
+      const dx = j.key.endsWith('_L') ? fs * 0.8 : -fs * 0.8 - tw - fs * 0.6;
+      const bx = x + dx, by = y - fs * 0.75;
+      ctx.globalAlpha = ghost ? 0.7 : 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, tw + fs * 0.6, fs * 1.5, fs * 0.35); else ctx.rect(bx, by, tw + fs * 0.6, fs * 1.5);
+      ctx.fill();
+      ctx.fillStyle = st.stale ? 'rgba(255,255,255,0.55)' : '#ffffff';
+      ctx.fillText(text, bx + fs * 0.3, y);
+    }
+    ctx.restore();
+  }
+
+  let hudLast = 0;
+  function updateHud(now, force) {
+    if (!force && now - hudLast < 120) return;
+    hudLast = now;
+    const rom = Session.romFor(Session.data.exercise);
+    JOINTS.forEach((j) => {
+      const el = $('a_' + j.key);
+      const st = angleState[j.key];
+      el.textContent = st.value == null ? '··' : Math.round(st.value) + '°';
+      el.classList.toggle('stale', st.value != null && st.stale);
+      const r = rom[j.key];
+      $('r_' + j.key).textContent = r ? Math.round(r[0]) + '–' + Math.round(r[1]) + '°' : '';
+    });
+    if (Session.romDirty && now - Session.romSaved > 3000) { Session.save(); Session.romDirty = false; Session.romSaved = now; }
   }
 
   /* -------- Снимок -------- */
 
-  let snapRequest = null;
-  let snapFile = null;
-  let snapDataUrl = '';
+  let snapRequest = null, snapFile = null;
 
   function dataUrlToFile(dataUrl, name) {
     const comma = dataUrl.indexOf(',');
@@ -967,59 +1412,53 @@
   }
 
   function composeSnapshot(source) {
-    const W = overlay.width, H = overlay.height;
+    const W = video.videoWidth || overlay.width, H = video.videoHeight || overlay.height;
     if (!W || !H) { toast('Нет видео'); return; }
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     const x = c.getContext('2d');
     try { x.drawImage(source, 0, 0, W, H); } catch (e) { x.drawImage(video, 0, 0, W, H); }
-    x.drawImage(overlay, 0, 0, W, H);
+    if (prefs.skel !== 'off' && overlay.width) x.drawImage(overlay, 0, 0, W, H);
 
     const now = new Date();
     const a = anglesSnapshot();
     const f = (v) => v == null ? '··' : v + '°';
-    const lines = [
-      'BackInsight · ' + fmtDate(now) + ' ' + fmtTime(now),
-      'Колено   Л ' + f(a.knee_L) + '   П ' + f(a.knee_R),
-      'Таз      Л ' + f(a.hip_L) + '   П ' + f(a.hip_R),
-      'Локоть   Л ' + f(a.elbow_L) + '   П ' + f(a.elbow_R)
-    ];
-    const counts = {};
-    log.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
-    const complaints = ['Шея', 'Поясница', 'Колено/Таз'].map((k) => k + ': ' + (counts[k] || 0)).join('  ');
-    lines.push('Жалобы  ' + complaints);
-
-    const fs = Math.max(14, Math.round(W * 0.032));
+    const d = Session.data;
+    const lines = ['BackInsight · ' + fmtDate(now) + ' ' + fmtTime(now)];
+    if (d.exercise) lines.push(d.exercise + ' · подход ' + d.set + (d.reps ? ' · повт ' + d.reps : ''));
+    if (prefs.skel !== 'off') {
+      lines.push('Колено  Л ' + f(a.knee_L) + '  П ' + f(a.knee_R));
+      lines.push('Таз     Л ' + f(a.hip_L) + '  П ' + f(a.hip_R));
+      lines.push('Локоть  Л ' + f(a.elbow_L) + '  П ' + f(a.elbow_R));
+    }
+    const fs = Math.max(14, Math.round(W * 0.03));
     x.font = '600 ' + fs + 'px ui-monospace, Menlo, Consolas, monospace';
     x.textBaseline = 'top';
-    const lh = Math.round(fs * 1.35);
-    const pad = Math.round(fs * 0.7);
-    const boxW = Math.min(W - pad * 2, Math.max.apply(null, lines.map((l) => x.measureText(l).width)) + pad * 2);
-    const boxH = lines.length * lh + pad * 2 - (lh - fs);
-    x.fillStyle = 'rgba(0,0,0,0.62)';
-    x.fillRect(pad, pad, boxW, boxH);
+    const lh = Math.round(fs * 1.35), p = Math.round(fs * 0.7);
+    const boxW = Math.min(W - p * 2, Math.max.apply(null, lines.map((l) => x.measureText(l).width)) + p * 2);
+    const boxH = lines.length * lh + p * 2 - (lh - fs);
+    x.fillStyle = 'rgba(0,0,0,0.6)';
+    x.fillRect(p, p, boxW, boxH);
     x.fillStyle = '#ffffff';
-    lines.forEach((l, i) => x.fillText(l, pad * 2, pad * 2 + i * lh - Math.round((lh - fs) / 2), boxW - pad * 2));
+    lines.forEach((l, i) => x.fillText(l, p * 2, p * 2 + i * lh - Math.round((lh - fs) / 2), boxW - p * 2));
 
-    snapDataUrl = c.toDataURL('image/jpeg', 0.92);
-    const name = 'backinsight_' + fileStamp(now) + '.jpg';
-    try { snapFile = dataUrlToFile(snapDataUrl, name); } catch (e) { snapFile = null; }
-    $('snapImg').src = snapDataUrl;
+    const dataUrl = c.toDataURL('image/jpeg', 0.92);
+    try { snapFile = dataUrlToFile(dataUrl, 'backinsight_' + fileStamp(now) + '.jpg'); } catch (e) { snapFile = null; }
+    $('snapImg').src = dataUrl;
     $('btnSnapShare').classList.toggle('hidden', !(snapFile && navigator.canShare && navigator.canShare({ files: [snapFile] })));
-    $('snapWrap').classList.remove('hidden');
-    addLog('Снимок');
+    openSheet('snapWrap');
+    Session.add('snap', 'Снимок');
+    renderLog();
   }
 
   function requestSnapshot() {
     if (!video.videoWidth) { toast('Видео ещё не получено'); return; }
     vibrate(20);
-    if (Analyzer.ready && Analyzer.running) {
-      // Берём кадр, на котором реально считалась поза (results.image): скелет совпадает с изображением точно.
-      const req = { t: performance.now() };
+    if (Analyzer.ready && Analyzer.running && prefs.skel !== 'off') {
+      // Берём кадр, на котором реально считалась поза (results.image): скелет совпадает с изображением.
+      const req = {};
       snapRequest = req;
-      setTimeout(() => {
-        if (snapRequest === req) { snapRequest = null; composeSnapshot(video); }
-      }, 900);
+      setTimeout(() => { if (snapRequest === req) { snapRequest = null; composeSnapshot(video); } }, 900);
     } else {
       composeSnapshot(video);
     }
@@ -1028,69 +1467,65 @@
   /* -------- MediaPipe Pose -------- */
 
   const Analyzer = {
-    pose: null,
-    ready: false,
-    running: false,
-    busy: false,
-    complexity: 1,
-    lastSend: 0,
-    interval: 1000 / 20,
-    avgMs: 0,
-    samples: 0,
-    frames: 0,
-    fpsT0: 0,
-    errors: 0,
-    base: '',
+    pose: null, ready: false, running: false, busy: false, loading: null,
+    complexity: 1, lastSend: 0, interval: 1000 / 20, avgMs: 0, samples: 0,
+    frames: 0, fpsT0: 0, errors: 0, base: '', loopId: 0, lastTick: 0, watchdog: 0,
 
-    async init() {
-      $('modelState').textContent = 'Модель позы: загрузка…';
-      let poseSrc = null;
-      for (const base of LIBS.pose) {
-        try { await loadScript(base + '/pose.js'); poseSrc = base; break; } catch (e) { /* следующий CDN */ }
-      }
-      if (!poseSrc) throw new Error('pose.js недоступен');
-      this.base = poseSrc;
-      await loadFirst(LIBS.drawing);
-      if (typeof window.Pose !== 'function' || typeof window.drawConnectors !== 'function') {
-        throw new Error('MediaPipe не инициализирован');
-      }
-      this.pose = new window.Pose({ locateFile: (file) => this.base + '/' + file });
-      this.pose.setOptions({
-        modelComplexity: this.complexity,
-        smoothLandmarks: true,
-        enableSegmentation: false,
-        smoothSegmentation: false,
-        selfieMode: false,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+    init() {
+      if (this.ready) return Promise.resolve();
+      if (this.loading) return this.loading;
+      this.loading = (async () => {
+        $('modelState').textContent = 'Модель: загрузка…';
+        let base = null;
+        for (const b of LIBS.pose) { try { await loadScript(b + '/pose.js'); base = b; break; } catch (e) { /* следующий CDN */ } }
+        if (!base) throw new Error('pose.js недоступен');
+        this.base = base;
+        await loadFirst(LIBS.drawing);
+        if (typeof window.Pose !== 'function' || typeof window.drawConnectors !== 'function') throw new Error('MediaPipe не инициализирован');
+        this.pose = new window.Pose({ locateFile: (file) => this.base + '/' + file });
+        this.pose.setOptions({
+          modelComplexity: this.complexity, smoothLandmarks: true, enableSegmentation: false,
+          smoothSegmentation: false, selfieMode: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5
+        });
+        this.pose.onResults((r) => onPoseResults(r));
+        await this.pose.initialize();
+        this.ready = true;
+        $('modelState').textContent = prefs.skel === 'off' ? 'Анализ выключен' : 'Модель: готова';
+        if (prefs.skel !== 'off') this.start();
+      })();
+      this.loading.catch((e) => {
+        this.loading = null;
+        $('modelState').textContent = 'Модель недоступна';
       });
-      this.pose.onResults((r) => onPoseResults(r));
-      await this.pose.initialize();
-      this.ready = true;
-      $('modelState').textContent = 'Модель позы: готова (full)';
-      this.start();
+      return this.loading;
     },
 
     start() {
       if (this.running || !this.ready) return;
       this.running = true;
       this.fpsT0 = performance.now();
+      this.lastTick = performance.now();
+      this.loopId++;
       this.schedule();
-      // Сторож: requestVideoFrameCallback может «зависнуть» при смене/потере srcObject.
-      setInterval(() => {
+      clearInterval(this.watchdog);
+      // Сторож: requestVideoFrameCallback может не сработать после смены srcObject.
+      this.watchdog = setInterval(() => {
         if (this.running && performance.now() - this.lastTick > 1500) { this.loopId++; this.schedule(); }
       }, 1000);
     },
 
-    loopId: 0,
-    lastTick: 0,
+    stop() {
+      this.running = false;
+      this.loopId++;
+      clearInterval(this.watchdog);
+      analysisFps = 0;
+    },
 
     schedule() {
       if (!this.running) return;
       const id = this.loopId;
       const cb = (now) => { if (id === this.loopId) this.tick(now); };
       if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && video.srcObject && !video.paused && video.readyState >= 2) {
-        // Срабатывает только на новый декодированный кадр: без повторной обработки одного кадра.
         video.requestVideoFrameCallback(cb);
       } else if (video.srcObject) {
         requestAnimationFrame(cb);
@@ -1112,19 +1547,14 @@
         await this.pose.send({ image: video });
         this.errors = 0;
       } catch (e) {
-        this.errors++;
-        if (this.errors > 30) {
-          this.running = false;
-          $('modelState').textContent = 'Модель позы: остановлена из-за ошибок';
-        }
+        if (++this.errors > 30) { this.stop(); $('modelState').textContent = 'Модель остановлена (ошибки)'; }
       } finally {
         this.busy = false;
         this.adapt(performance.now() - t0);
       }
     },
 
-    // Адаптивная частота: интервал = 1.3 × среднее время инференса, в пределах 8..24 к/с.
-    // Так основной поток не забивается очередью, и UI с видео остаются плавными.
+    // Интервал = 1.3 × среднее время инференса, в пределах 8–24 к/с: очередь не копится, UI плавный.
     adapt(ms) {
       this.avgMs = this.samples ? this.avgMs * 0.85 + ms * 0.15 : ms;
       this.samples++;
@@ -1133,15 +1563,12 @@
       const t = performance.now();
       if (t - this.fpsT0 >= 1000) {
         analysisFps = Math.round(this.frames * 1000 / (t - this.fpsT0));
-        this.frames = 0;
-        this.fpsT0 = t;
+        this.frames = 0; this.fpsT0 = t;
+        if (this.running) $('modelState').textContent = 'Модель ' + (this.complexity ? 'full' : 'lite') + ' · ' + analysisFps + ' к/с';
       }
-      // Слабый процессор: переключаемся на облегчённую модель один раз.
       if (this.complexity === 1 && this.samples > 40 && this.avgMs > 85) {
-        this.complexity = 0;
-        this.samples = 0;
+        this.complexity = 0; this.samples = 0;
         try { this.pose.setOptions({ modelComplexity: 0 }); } catch (e) { /* нет */ }
-        $('modelState').textContent = 'Модель позы: lite (слабый процессор)';
       }
     }
   };
@@ -1149,31 +1576,199 @@
   function syncCanvasSize() {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return;
-    if (overlay.width !== w || overlay.height !== h) {
-      overlay.width = w;
-      overlay.height = h;
-    }
+    if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
   }
 
   function onPoseResults(res) {
+    if (prefs.skel === 'off' || !Analyzer.running) return;
     const now = performance.now();
     syncCanvasSize();
     const W = overlay.width, H = overlay.height;
     octx.clearRect(0, 0, W, H);
     const lm = res.poseLandmarks;
     computeAngles(lm || null, res.poseWorldLandmarks, W, H, now);
-    if (lm && lm.length === 33) {
-      const lw = Math.max(2, Math.round(W / 180));
-      const r = Math.max(2, Math.round(W / 170));
-      window.drawConnectors(octx, lm, window.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: lw, visibilityMin: VIS_MIN });
-      window.drawLandmarks(octx, lm, { color: '#FF0000', fillColor: '#FF0000', lineWidth: 1, radius: r, visibilityMin: VIS_MIN });
-      drawAngleLabels(octx, lm, W, H);
-    }
+    if (lm && lm.length === 33) drawSkeleton(octx, lm, W, H);
     updateHud(now, false);
-    if (snapRequest) {
-      snapRequest = null;
-      composeSnapshot(res.image || video);
+    if (snapRequest) { snapRequest = null; composeSnapshot(res.image || video); }
+  }
+
+  /* -------- Панель специалиста -------- */
+
+  let activeCat = 'pain';
+  let scaleFor = null;
+  let scaleTimer = 0;
+
+  function buildTabs() {
+    const box = $('tabs');
+    TAB_ORDER.forEach((cat) => {
+      const b = document.createElement('button');
+      b.className = 'tab' + (cat === activeCat ? ' on' : '');
+      b.textContent = CATS[cat].label;
+      b.style.setProperty('--c', CATS[cat].hex);
+      b.addEventListener('click', () => {
+        activeCat = cat;
+        box.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+        hideScale();
+        $('chips').scrollLeft = 0;
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function renderChips() {
+    const cat = CATS[activeCat];
+    const counts = Session.counts();
+    const box = $('chips');
+    box.innerHTML = '';
+    cat.items.forEach((label) => {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.style.setProperty('--c', cat.hex);
+      const t = document.createElement('span'); t.textContent = label;
+      b.appendChild(t);
+      const n = counts[activeCat + '|' + label];
+      if (n) { const c = document.createElement('span'); c.className = 'cnt'; c.textContent = '×' + n; b.appendChild(c); }
+      b.addEventListener('click', () => onChip(activeCat, label, b));
+      box.appendChild(b);
+    });
+  }
+
+  function onChip(cat, label, el) {
+    vibrate(15);
+    const e = Session.add(cat, label);
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+    toast(label + (e.side ? ' (' + sideText(e.side) + ')' : '') + ' · записано', () => { Session.remove(e.id); renderChips(); renderLog(); });
+    renderLog();
+    if (CATS[cat].scale) showScale(e);
+    else setTimeout(renderChips, 450);
+  }
+
+  function showScale(entry) {
+    scaleFor = entry;
+    $('scaleTitle').textContent = entry.label + (entry.side ? ' (' + sideText(entry.side) + ')' : '') + ': сила боли';
+    $('chips').classList.add('hidden');
+    $('scale').classList.remove('hidden');
+    clearTimeout(scaleTimer);
+    scaleTimer = setTimeout(hideScale, 6000);
+  }
+  function hideScale() {
+    clearTimeout(scaleTimer);
+    scaleFor = null;
+    $('scale').classList.add('hidden');
+    $('chips').classList.remove('hidden');
+    renderChips();
+  }
+  function buildScale() {
+    const row = $('scaleRow');
+    for (let i = 0; i <= 10; i++) {
+      const b = document.createElement('button');
+      b.textContent = String(i);
+      b.style.background = 'hsl(' + (130 - i * 13) + ', 70%, 58%)';
+      b.addEventListener('click', () => {
+        if (scaleFor) { Session.update(scaleFor.id, { score: i }); toast(scaleFor.label + ': ' + i + '/10'); }
+        vibrate(15);
+        hideScale();
+        renderLog();
+      });
+      row.appendChild(b);
     }
+    $('scaleSkip').onclick = hideScale;
+  }
+
+  function renderContext() {
+    const d = Session.data;
+    $('exName').textContent = d.exercise || 'Упражнение';
+    $('setNum').textContent = String(d.set);
+    $('repNum').textContent = String(d.reps);
+  }
+
+  function renderLog() {
+    const ul = $('logList');
+    ul.innerHTML = '';
+    const log = Session.data.log;
+    if (!log.length) {
+      const li = document.createElement('li');
+      li.textContent = 'Записей пока нет';
+      li.style.color = 'var(--muted)';
+      ul.appendChild(li);
+      return;
+    }
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      const li = document.createElement('li');
+      const t = document.createElement('span'); t.className = 't'; t.textContent = fmtHM(new Date(e.ts));
+      const tag = document.createElement('span'); tag.className = 'tag'; tag.style.background = (CATS[e.cat] || {}).hex || '#999';
+      const b = document.createElement('span'); b.className = 'b';
+      let main = e.cat === 'set' ? e.label + ' · ' + (e.reps || 0) + ' повт.' : e.cat === 'ex' ? '▶ ' + e.label : (e.text || e.label);
+      if (e.side) main += ' (' + sideText(e.side) + ')';
+      if (e.score != null) main += ' · ' + e.score + '/10';
+      b.textContent = main;
+      if (e.exercise && e.cat !== 'ex') {
+        const a = document.createElement('span'); a.className = 'a';
+        a.textContent = e.exercise + (e.set && e.cat !== 'set' ? ' · подход ' + e.set : '');
+        b.appendChild(a);
+      }
+      const del = document.createElement('button'); del.className = 'del'; del.textContent = '×'; del.title = 'Удалить';
+      del.addEventListener('click', () => { Session.remove(e.id); renderLog(); renderChips(); });
+      li.append(t, tag, b, del);
+      ul.appendChild(li);
+    }
+  }
+
+  function setSkelMode(mode) {
+    prefs.skel = mode;
+    savePrefs();
+    const btn = $('btnSkel');
+    btn.classList.toggle('off', mode === 'off');
+    btn.textContent = mode === 'off' ? '🚫' : '🦴';
+    btn.style.opacity = mode === 'ghost' ? '0.75' : '1';
+    $('anglesCard').classList.toggle('off', mode === 'off');
+    if (mode === 'off') {
+      Analyzer.stop();
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      clearAngles();
+      updateHud(performance.now(), true);
+      $('modelState').textContent = 'Анализ выключен';
+    } else if (Analyzer.ready) {
+      Analyzer.start();
+    } else {
+      Analyzer.init().catch(() => {});
+    }
+  }
+
+  function setFit(fit) {
+    prefs.fit = fit === 'cover' ? 'cover' : 'contain';
+    savePrefs();
+    document.documentElement.style.setProperty('--fit', prefs.fit);
+    $('fitSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-fit') === prefs.fit));
+  }
+
+  function setDockCollapsed(c) {
+    prefs.dockCollapsed = c;
+    savePrefs();
+    $('dock').classList.toggle('collapsed', c);
+    $('btnDock').textContent = c ? '⌃' : '⌄';
+  }
+
+  function buildExerciseSheet() {
+    const grid = $('exGrid');
+    grid.innerHTML = '';
+    EXERCISES.concat(['Без упражнения']).forEach((name) => {
+      const value = name === 'Без упражнения' ? '' : name;
+      const b = document.createElement('button');
+      b.textContent = name;
+      b.classList.toggle('on', Session.data.exercise === value);
+      b.addEventListener('click', () => pickExercise(value));
+      grid.appendChild(b);
+    });
+  }
+  function pickExercise(name) {
+    Session.setExercise(name);
+    closeSheet('exWrap');
+    renderContext();
+    renderLog();
+    updateHud(performance.now(), true);
+    if (name) toast('▶ ' + name);
   }
 
   /* -------- Сигналинг и звонок специалиста -------- */
@@ -1181,18 +1776,29 @@
   async function startSpecialist() {
     let peer = null;
     let currentCall = null;
+    let ctrl = null;
     let peerId = '';
     let idRetries = 0;
     let destroyed = false;
+    let clientCam = null;
+    let quality = 'auto';
 
+    Session.init();
+    buildTabs();
+    buildScale();
+    renderContext();
+    renderChips();
     renderLog();
+    setFit(prefs.fit);
+    setDockCollapsed(!!prefs.dockCollapsed);
+    $('anglesCard').classList.toggle('compact', prefs.angles === 'compact');
+
     setPlaceholder('Ожидание клиента. Нажмите ☰, чтобы получить ссылку.', true);
     setStatus('Подключение к серверу…', 'warn', '');
     Wake.enable();
 
-    // Звук и микрофон специалиста: запрашиваем заранее, чтобы ответ на звонок не ждал разрешения.
     const micPromise = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia
-      ? navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })
+      ? navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false })
       : Promise.reject(new Error('no media')))
       .then((s) => { micStream = s; setMicButton(true); return s; })
       .catch(() => { setMicButton(false); return null; });
@@ -1200,104 +1806,148 @@
     $('btnMic').onclick = async () => {
       if (!micStream) {
         try {
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
           setMicButton(true);
-          // Аудио-трансивер уже согласован как recvonly: голос пойдёт со следующего входа клиента.
           toast(currentCall ? 'Микрофон заработает после переподключения клиента' : 'Микрофон включён');
         } catch (e) { toast('Нет доступа к микрофону'); }
         return;
       }
       toggleMic(micStream);
     };
-
-    $('btnFit').onclick = () => {
-      const root = document.documentElement;
-      const cur = getComputedStyle(root).getPropertyValue('--fit').trim();
-      const next = cur === 'contain' ? 'cover' : 'contain';
-      root.style.setProperty('--fit', next);
-      toast(next === 'cover' ? 'Заполнение экрана' : 'Кадр целиком');
+    $('btnSkel').onclick = () => {
+      const next = SKEL_MODES[(SKEL_MODES.indexOf(prefs.skel) + 1) % SKEL_MODES.length];
+      setSkelMode(next);
+      toast(next === 'ghost' ? 'Скелет: прозрачный' : next === 'full' ? 'Скелет: яркий' : 'Скелет и анализ выключены');
     };
+    $('anglesCard').onclick = () => {
+      prefs.angles = prefs.angles === 'compact' ? 'full' : 'compact';
+      savePrefs();
+      $('anglesCard').classList.toggle('compact', prefs.angles === 'compact');
+    };
+    $('btnMenu').onclick = () => { renderLog(); openSheet('menuWrap'); };
+    $('fitSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setFit(b.getAttribute('data-fit'))));
+    $('btnDock').onclick = () => setDockCollapsed(!prefs.dockCollapsed);
 
-    const openCabinet = () => $('cabinetWrap').classList.remove('hidden');
-    const closeCabinet = () => $('cabinetWrap').classList.add('hidden');
-    $('btnCabinet').onclick = openCabinet;
-    $('btnCloseCabinet').onclick = closeCabinet;
-    $('cabinetWrap').addEventListener('click', (e) => { if (e.target === $('cabinetWrap')) closeCabinet(); });
+    $('sideSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      Session.side = b.getAttribute('data-side');
+      $('sideSeg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    }));
 
-    document.querySelectorAll('[data-complaint]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const type = btn.getAttribute('data-complaint');
-        addLog(type);
-        vibrate(30);
-        toast(type + ' · ' + fmtTime(new Date()) + ' записано');
-      });
+    $('exBtn').onclick = () => { buildExerciseSheet(); $('exCustom').value = ''; openSheet('exWrap'); };
+    $('exCustomOk').onclick = () => { const v = $('exCustom').value.trim(); if (v) pickExercise(v); };
+    $('exCustom').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('exCustomOk').click(); });
+
+    bindPress($('repBtn'), () => {
+      Session.data.reps++; Session.save(); renderContext(); vibrate(10);
+    }, () => {
+      Session.data.reps = Math.max(0, Session.data.reps - 1); Session.save(); renderContext();
     });
-    $('btnSnap').onclick = requestSnapshot;
-    $('btnExport').onclick = exportCsv;
-    $('btnClearLog').onclick = () => {
-      if (!log.length) return;
-      if (confirm('Удалить все записи журнала?')) { log = []; saveLog(); renderLog(); }
+    $('setBtn').onclick = () => {
+      const d = Session.data;
+      const prev = { set: d.set, reps: d.reps };
+      const e = Session.add('set', 'Подход ' + d.set, { reps: d.reps });
+      d.set++; d.reps = 0; Session.save();
+      renderContext(); renderLog(); vibrate(25);
+      toast('Подход ' + prev.set + ' · ' + prev.reps + ' повт.', () => {
+        Session.remove(e.id); Session.data.set = prev.set; Session.data.reps = prev.reps; Session.save(); renderContext(); renderLog();
+      });
     };
 
-    $('btnSnapClose').onclick = () => $('snapWrap').classList.add('hidden');
-    $('btnSnapSave').onclick = () => {
-      if (!snapDataUrl) return;
-      if (snapFile) downloadBlob(snapFile, snapFile.name);
-      else {
-        const a = document.createElement('a');
-        a.href = snapDataUrl; a.download = 'backinsight_' + fileStamp(new Date()) + '.jpg';
-        document.body.appendChild(a); a.click(); a.remove();
-      }
+    NOTE_TEMPLATES.forEach((tpl) => {
+      const b = document.createElement('button');
+      b.textContent = tpl.trim();
+      b.addEventListener('click', () => {
+        const ta = $('noteText');
+        ta.value = (ta.value ? ta.value.replace(/\s*$/, '\n') : '') + tpl;
+        ta.focus();
+      });
+      $('noteTemplates').appendChild(b);
+    });
+    $('btnNote').onclick = () => {
+      const d = Session.data;
+      $('noteCtx').textContent = d.exercise ? d.exercise + ' · подход ' + d.set : 'Общая заметка по сессии';
+      $('noteText').value = '';
+      openSheet('noteWrap');
+      setTimeout(() => $('noteText').focus(), 60);
     };
+    const saveNote = () => {
+      const text = $('noteText').value.trim();
+      closeSheet('noteWrap');
+      if (!text) return;
+      const e = Session.add('note', 'Заметка', { text: text });
+      renderLog();
+      toast('Заметка сохранена', () => { Session.remove(e.id); renderLog(); });
+    };
+    $('noteSave').onclick = saveNote;
+    $('noteText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveNote(); } });
+
+    $('btnSnap').onclick = requestSnapshot;
+    $('btnSnapSave').onclick = () => { if (snapFile) downloadBlob(snapFile, snapFile.name); };
     $('btnSnapShare').onclick = () => {
-      if (!snapFile || !navigator.share) return;
-      // share вызывается синхронно в обработчике клика: iOS требует живой пользовательский жест.
-      navigator.share({ files: [snapFile], title: 'BackInsight снимок' }).catch(() => {});
+      // share вызывается синхронно в обработчике клика: iOS требует живой жест пользователя.
+      if (snapFile && navigator.share) navigator.share({ files: [snapFile], title: 'BackInsight снимок' }).catch(() => {});
+    };
+
+    $('btnReport').onclick = async () => { toast(await copyText(buildReport()) ? 'Отчёт скопирован' : 'Не удалось скопировать'); };
+    $('btnExport').onclick = exportCsv;
+    $('btnNewSession').onclick = () => {
+      if (!confirm('Начать новую сессию? Текущий журнал будет удалён.')) return;
+      Session.reset(); renderContext(); renderChips(); renderLog(); updateHud(performance.now(), true);
+      toast('Новая сессия');
     };
 
     function clientLink() {
       const u = new URL(location.href);
-      u.search = '';
-      u.hash = '';
+      u.search = ''; u.hash = '';
       u.searchParams.set('role', 'client');
       u.searchParams.set('peer', peerId);
       if (FORCE_RELAY) u.searchParams.set('relay', '1');
       if (params.get('ps')) u.searchParams.set('ps', params.get('ps'));
       return u.toString();
     }
-
-    $('btnCopy').onclick = async () => {
-      if (!peerId) return;
-      const link = clientLink();
-      try { await navigator.clipboard.writeText(link); toast('Ссылка скопирована'); }
-      catch (e) {
-        const r = document.createRange();
-        r.selectNodeContents($('linkField'));
-        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
-        try { document.execCommand('copy'); toast('Ссылка скопирована'); } catch (e2) { toast('Скопируйте ссылку вручную'); }
-      }
-    };
+    $('btnCopy').onclick = async () => { if (peerId) toast(await copyText(clientLink()) ? 'Ссылка скопирована' : 'Скопируйте ссылку вручную'); };
     $('btnShare').onclick = () => {
       if (!peerId) return;
-      const link = clientLink();
-      if (navigator.share) navigator.share({ title: 'Сеанс BackInsight', text: 'Откройте ссылку на телефоне и разрешите камеру:', url: link }).catch(() => {});
+      if (navigator.share) navigator.share({ title: 'Сеанс BackInsight', text: 'Откройте ссылку на телефоне и разрешите камеру:', url: clientLink() }).catch(() => {});
       else $('btnCopy').click();
     };
 
-    // Видео клиента
+    /* Связь и управление камерой клиента */
+    function sendCtrl(msg) {
+      if (!ctrl || !ctrl.open) { toast('Клиент не подключён'); return false; }
+      try { ctrl.send(msg); return true; } catch (e) { return false; }
+    }
+    function renderNet() {
+      const s = lastStats;
+      renderKv($('netInfo'), [
+        ['Маршрут', s && s.route || 'нет данных'],
+        ['Задержка', s && s.rtt != null ? s.rtt + ' мс' : '··'],
+        ['Потери', s && s.loss != null ? s.loss + '%' : '··'],
+        ['Видео', s ? (s.inRes || '··') + (s.inFps != null ? ' · ' + s.inFps + ' к/с' : '') : '··'],
+        ['Анализ', prefs.skel === 'off' ? 'выключен' : (analysisFps ? analysisFps + ' к/с' : '··')],
+        ['Камера клиента', clientCam ? (clientCam.label || (clientCam.facing === 'user' ? 'фронтальная' : 'основная')) + (clientCam.zoom ? ' · zoom ' + clientCam.zoom : '') : '··']
+      ]);
+      $('qualitySeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-q') === quality));
+    }
+    onStats = () => { if (isOpen('netWrap')) renderNet(); };
+    $('statusBtn').onclick = () => { renderNet(); openSheet('netWrap'); };
+    $('qualitySeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      const q = b.getAttribute('data-q');
+      if (sendCtrl({ t: 'quality', q: q })) { quality = q; renderNet(); toast('Качество: ' + QUALITY[q].label); }
+    }));
+    $('btnRemoteFlip').onclick = () => { if (sendCtrl({ t: 'flip' })) toast('Переключаем камеру клиента…'); };
+    $('btnRemoteZoom').onclick = () => { if (sendCtrl({ t: 'zoom1' })) toast('Сброс зума ×1…'); };
+    $('btnRemoteReconnect').onclick = () => { if (sendCtrl({ t: 'reconnect' })) { closeSheet('netWrap'); toast('Клиент переподключается…'); } };
+
     video.addEventListener('loadedmetadata', syncCanvasSize);
     video.addEventListener('resize', syncCanvasSize);
 
     function endCall(reason) {
-      if (currentCall) {
-        const c = currentCall;
-        currentCall = null;
-        try { c.close(); } catch (e) { /* закрыт */ }
-      }
+      if (currentCall) { const c = currentCall; currentCall = null; try { c.close(); } catch (e) { /* закрыт */ } }
       stopStats();
       video.srcObject = null;
       octx.clearRect(0, 0, overlay.width, overlay.height);
-      JOINTS.forEach((j) => { angleState[j.key].value = null; angleState[j.key].stale = true; });
+      clearAngles();
       updateHud(performance.now(), true);
       setPlaceholder('Клиент отключился. Ожидание повторного подключения…', true);
       setStatus('Ожидание клиента', 'warn', reason || '');
@@ -1315,10 +1965,11 @@
         if (currentCall !== call) return;
         video.srcObject = stream;
         setPlaceholder(null);
-        closeCabinet();
+        closeSheet('menuWrap');
         const ok = await playWithSound(video);
         if (!ok && stream.getAudioTracks().length) showUnmute(video);
         syncCanvasSize();
+        if (prefs.skel !== 'off' && Analyzer.ready) Analyzer.start();
       });
       call.on('close', () => { if (currentCall === call) endCall('Звонок завершён'); });
       call.on('error', () => { if (currentCall === call) endCall('Ошибка звонка'); });
@@ -1329,14 +1980,20 @@
         if (currentCall !== call) return;
         setStatus('Клиент на связи', 'ok');
         startStats(pc);
-      }, (why) => {
-        if (currentCall === call) endCall(why);
-      });
+      }, (why) => { if (currentCall === call) endCall(why); });
+    }
+
+    function onControl(conn) {
+      if (ctrl && ctrl !== conn) { try { ctrl.close(); } catch (e) { /* закрыт */ } }
+      ctrl = conn;
+      conn.on('open', () => { if (quality !== 'auto') { try { conn.send({ t: 'quality', q: quality }); } catch (e) { /* нет */ } } });
+      conn.on('data', (m) => { if (m && m.t === 'cam') { clientCam = m; if (isOpen('netWrap')) renderNet(); } });
+      conn.on('close', () => { if (ctrl === conn) ctrl = null; });
     }
 
     function createPeer(id) {
       if (peer) { try { peer.destroy(); } catch (e) { /* нет */ } }
-      peer = new window.Peer(id, PEER_OPTIONS);
+      peer = new window.Peer(id, peerOptions(FORCE_RELAY));
       peer.on('open', (openId) => {
         peerId = openId;
         idRetries = 0;
@@ -1346,11 +2003,12 @@
         if (!currentCall) {
           setStatus('Ожидание клиента', 'warn', 'Сервер связи подключён');
           let shown = false;
-          try { shown = !!sessionStorage.getItem('bi_cab_shown'); sessionStorage.setItem('bi_cab_shown', '1'); } catch (e) { /* нет */ }
-          if (!shown) openCabinet();
+          try { shown = !!sessionStorage.getItem('bi_menu_shown'); sessionStorage.setItem('bi_menu_shown', '1'); } catch (e) { /* нет */ }
+          if (!shown) openSheet('menuWrap');
         }
       });
       peer.on('call', onIncomingCall);
+      peer.on('connection', onControl);
       peer.on('disconnected', () => {
         if (destroyed || peer.destroyed) return;
         if (!currentCall) setStatus('Переподключение к серверу…', 'warn');
@@ -1359,24 +2017,15 @@
       peer.on('error', (err) => {
         const type = err && err.type;
         if (type === 'unavailable-id') {
-          // После перезагрузки сервер ещё держит старый ID несколько секунд: пробуем тот же ID, чтобы ссылка клиента осталась рабочей.
+          // После перезагрузки сервер ещё держит старый ID: ждём, чтобы ссылка клиента осталась рабочей.
           idRetries++;
-          if (idRetries <= 6) {
-            setStatus('ID занят, повтор ' + idRetries + '/6…', 'warn');
-            setTimeout(() => createPeer(id), 3000);
-          } else {
-            idRetries = 0;
-            const nid = randomId();
-            toast('Создан новый ID, отправьте клиенту новую ссылку');
-            createPeer(nid);
-          }
+          if (idRetries <= 6) { setStatus('ID занят, повтор ' + idRetries + '/6…', 'warn'); setTimeout(() => createPeer(id), 3000); }
+          else { idRetries = 0; toast('Создан новый ID, отправьте клиенту новую ссылку'); createPeer(randomId()); }
         } else if (type === 'invalid-id') {
           createPeer(randomId());
         } else if (type === 'browser-incompatible') {
           fatal('Браузер не поддерживается', 'Обновите Safari или Chrome до последней версии.');
-        } else if (type === 'peer-unavailable') {
-          // Не относится к специалисту.
-        } else {
+        } else if (type !== 'peer-unavailable') {
           setStatus('Ошибка сети: ' + (type || 'unknown'), 'err');
           setTimeout(() => { if (!peer || peer.destroyed || peer.disconnected) createPeer(peerId || id); }, 4000);
         }
@@ -1389,17 +2038,12 @@
       try { peer && peer.destroy(); } catch (e) { /* нет */ }
     });
 
-    // Модель грузим параллельно с ожиданием клиента.
-    Analyzer.init().catch((e) => {
-      $('modelState').textContent = 'Модель позы недоступна: ' + (e && e.message ? e.message : e);
-    });
+    setSkelMode(prefs.skel);
+    // Модель грузим заранее даже при выключенном анализе: включение будет мгновенным.
+    Analyzer.init().catch(() => {});
 
-    try {
-      await loadFirst(LIBS.peerjs);
-    } catch (e) {
-      fatal('Сеть', 'Не удалось загрузить модуль связи PeerJS. Проверьте интернет и перезагрузите страницу.');
-      return;
-    }
+    try { await loadFirst(LIBS.peerjs); }
+    catch (e) { fatal('Сеть', 'Не удалось загрузить модуль связи PeerJS. Проверьте интернет и перезагрузите страницу.'); return; }
     let savedId = '';
     try { savedId = localStorage.getItem(STORAGE_ID) || ''; } catch (e) { savedId = ''; }
     createPeer(/^bi-[a-z0-9]{6,}$/.test(savedId) ? savedId : randomId());
@@ -1407,14 +2051,8 @@
 
   /* ===================== Запуск ===================== */
 
-  if (!window.isSecureContext) {
-    fatal('Нужен HTTPS', 'Камера и WebRTC работают только по HTTPS. Откройте страницу через https://');
-    return;
-  }
-  if (typeof RTCPeerConnection === 'undefined') {
-    fatal('Браузер не поддерживается', 'Нужен браузер с поддержкой WebRTC: Safari 15+ или Chrome.');
-    return;
-  }
+  if (!window.isSecureContext) { fatal('Нужен HTTPS', 'Камера и WebRTC работают только по HTTPS.'); return; }
+  if (typeof RTCPeerConnection === 'undefined') { fatal('Браузер не поддерживается', 'Нужен Safari 15+ или Chrome.'); return; }
 
   if (ROLE === 'client') startClient();
   else startSpecialist();
