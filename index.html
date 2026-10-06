@@ -396,7 +396,7 @@
     <div id="pointHint" class="spec-only hidden">👆 Нажмите на видео, чтобы показать клиенту место</div>
 
     <div id="clientHint" class="client-only">
-      Поставьте телефон <b>вертикально в 2–3 м</b>, чтобы в кадре было видно <b>от головы до стоп</b>. Подсказки специалиста появятся крупно на экране и прозвучат голосом.
+      Поставьте телефон <b>вертикально в 2–3 м</b>, чтобы в кадре было видно <b>от головы до стоп</b>. Подсказки специалиста появятся крупно на экране и прозвучат голосом. <b>Не сворачивайте браузер</b> во время занятия: телефон отключит камеру.
       <button class="btn full primary" id="btnHintOk" style="min-height:44px;margin-top:8px">Начать (включить звук подсказок)</button>
     </div>
   </main>
@@ -593,13 +593,22 @@
     ]
   };
 
-  const ICE_SERVERS = [
+  // Собственный TURN-сервер в России (VPS с coturn, см. scripts/coturn-setup.sh). Клиент из РФ ходит к нему
+  // по внутреннему маршруту, без иностранного трафика с мобильного, а дальше до Аргентины идёт канал дата-центра.
+  // Заполните после установки сервера, например: { host: 'turn.example.ru', username: 'bi', credential: '...' }
+  const OWN_TURN = null;
+
+  const ICE_SERVERS = (OWN_TURN ? [
+    { urls: 'turn:' + OWN_TURN.host + ':3478?transport=udp', username: OWN_TURN.username, credential: OWN_TURN.credential },
+    { urls: 'turn:' + OWN_TURN.host + ':3478?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential },
+    { urls: 'turns:' + OWN_TURN.host + ':443?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential }
+  ] : []).concat([
     { urls: 'stun:stun.relay.metered.ca:80' },
     { urls: 'turn:global.relay.metered.ca:80', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turn:global.relay.metered.ca:443', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' }
-  ];
+  ]);
 
   const params = new URLSearchParams(location.search);
   const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
@@ -616,6 +625,37 @@
       return { host: u.hostname, port: Number(u.port) || (secure ? 443 : 80), path: u.pathname || '/', secure: secure };
     } catch (e) { return {}; }
   })();
+
+  // H.264 первым: у iPhone для него аппаратный кодер (меньше нагрев и разряд, стабильнее кадры), Pixel тоже
+  // декодирует его аппаратно. VP8 и остальные кодеки остаются в списке как запасные.
+  function preferH264(sdp) {
+    try {
+      const lines = sdp.split('\r\n');
+      const mIdx = lines.findIndex((l) => l.startsWith('m=video'));
+      if (mIdx < 0) return sdp;
+      let end = lines.findIndex((l, i) => i > mIdx && l.startsWith('m='));
+      if (end < 0) end = lines.length;
+      const sect = lines.slice(mIdx, end);
+      const h264 = [], rtx = {};
+      sect.forEach((l) => {
+        let m = l.match(/^a=rtpmap:(\d+) H264\/90000/i);
+        if (m) h264.push(m[1]);
+        m = l.match(/^a=fmtp:(\d+) apt=(\d+)/);
+        if (m) rtx[m[2]] = m[1];
+      });
+      if (!h264.length) return sdp;
+      const fmtp = (pt) => sect.find((l) => l.startsWith('a=fmtp:' + pt + ' ')) || '';
+      // Предпочтение: packetization-mode=1 и constrained baseline (42e0xx), он есть везде.
+      const rank = (pt) => { const f = fmtp(pt); return (/packetization-mode=1/.test(f) ? 0 : 2) + (/profile-level-id=42e0/i.test(f) ? 0 : 1); };
+      h264.sort((a, b) => rank(a) - rank(b));
+      const first = [];
+      h264.forEach((pt) => { first.push(pt); if (rtx[pt]) first.push(rtx[pt]); });
+      const parts = lines[mIdx].split(' ');
+      const pts = parts.slice(3);
+      lines[mIdx] = parts.slice(0, 3).concat(first, pts.filter((pt) => first.indexOf(pt) === -1)).join(' ');
+      return lines.join('\r\n');
+    } catch (e) { return sdp; }
+  }
 
   function peerOptions(relayOnly) {
     return Object.assign({}, PEER_SERVER, {
@@ -728,7 +768,7 @@
     return JSON.stringify(Object.assign({
       role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent,
       route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
-      inKbps: s.inKbps, outKbps: s.outKbps, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
+      inKbps: s.inKbps, outKbps: s.outKbps, codec: s.codec, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
       analysisFps: analysisFps
     }, extra || {}));
   }
@@ -1110,6 +1150,9 @@
           if (typeof r.audioLevel === 'number') out.audioInLevel = r.audioLevel;
         }
         if (r.type === 'media-source' && isAudio && typeof r.audioLevel === 'number') out.micLevel = r.audioLevel;
+        if ((r.type === 'inbound-rtp' || r.type === 'outbound-rtp') && isVideo && r.codecId && byId.get(r.codecId)) {
+          out.codec = String(byId.get(r.codecId).mimeType || '').replace(/^video\//i, '');
+        }
         if (r.type === 'inbound-rtp' && isVideo) {
           hasIn = true;
           lost += r.packetsLost || 0;
@@ -1576,7 +1619,7 @@
     function placeCall() {
       closeCall();
       setStatus(relayOnly ? 'Звоним через защищённый ретранслятор…' : 'Звоним специалисту…', 'warn');
-      const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client' } });
+      const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client' }, sdpTransform: preferH264 });
       if (!c) { scheduleRetry('Не удалось создать вызов'); return; }
       call = c;
       openControl();
@@ -1657,11 +1700,47 @@
         ['Камера', (info.label || '··') + (info.zoom ? ' · zoom ' + info.zoom : '')],
         ['Режим', relayOnly ? 'только TURN' : 'авто'],
         ['Качество', QUALITY[quality].label + (quality === 'auto' ? ' → ' + QUALITY[LEVELS[level]].label : '') + (s && s.outKbps != null ? ' · ' + s.outKbps + ' кбит/с' : '')],
+        ['Кодек', s && s.codec || '··'],
         ['Звук от специалиста', s ? (s.audioIn ? 'приходит' : 'НЕ приходит') : '··'],
         ['Мой микрофон', s && s.micLevel != null ? Math.round(s.micLevel * 100) + '%' : '··']
       ]);
       openSheet('netWrap');
     };
+
+    // iOS Safari останавливает камеру, когда вкладку свернули или заблокировали экран. При возврате
+    // поднимаем камеру и микрофон заново и подменяем дорожки в звонке без переподключения.
+    async function restoreMedia() {
+      if (!localStream) return;
+      const pc = call && call.peerConnection;
+      const vt = localStream.getVideoTracks()[0];
+      if (!vt || vt.readyState === 'ended') {
+        try {
+          const nv = (await navigator.mediaDevices.getUserMedia({ video: Object.assign({}, VIDEO_CONSTRAINTS, { facingMode: { ideal: facing } }) })).getVideoTracks()[0];
+          try { nv.contentHint = 'motion'; } catch (e) { /* нет */ }
+          await resetZoom(nv);
+          const sender = pc && pc.getSenders().find((x) => x.track === vt || (x.track && x.track.kind === 'video'));
+          if (sender) await sender.replaceTrack(nv);
+          if (vt) localStream.removeTrack(vt);
+          localStream.addTrack(nv);
+          video.srcObject = localStream;
+          video.play().catch(() => {});
+          toast('Камера снова включена');
+        } catch (e) { toast('Камера не включилась, нажмите «Связь»'); }
+      }
+      const at = localStream.getAudioTracks()[0];
+      if (!at || at.readyState === 'ended') {
+        try {
+          const na = (await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS })).getAudioTracks()[0];
+          const sender = pc && pc.getSenders().find((x) => x.track === at || (x.track && x.track.kind === 'audio'));
+          if (sender) await sender.replaceTrack(na);
+          if (at) localStream.removeTrack(at);
+          localStream.addTrack(na);
+          setMicButton(true);
+        } catch (e) { /* микрофон недоступен */ }
+      }
+      if (remoteAudio.srcObject && remoteAudio.paused) remoteAudio.play().catch(() => {});
+    }
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(restoreMedia, 300); });
 
     window.addEventListener('pagehide', () => { destroyed = true; closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } });
     createPeer();
@@ -2763,6 +2842,7 @@
         ['Анализ', prefs.skel === 'off' ? 'выключен' : (analysisFps ? analysisFps + ' к/с' : '··')],
         ['Камера клиента', clientCam ? (clientCam.label || (clientCam.facing === 'user' ? 'фронтальная' : 'основная')) + (clientCam.zoom ? ' · zoom ' + clientCam.zoom : '') : '··'],
         ['Качество', QUALITY[quality].label + (quality === 'auto' && clientLevel ? ' → ' + QUALITY[clientLevel].label : '') + (s && s.inKbps != null ? ' · ' + s.inKbps + ' кбит/с' : '')],
+        ['Кодек', s && s.codec || '··'],
         ['Звук от клиента', s ? (s.audioIn ? 'приходит' : 'НЕ приходит') + (s.audioInLevel != null ? ' · ' + Math.round(s.audioInLevel * 100) + '%' : '') : '··'],
         ['Мой микрофон', micStream ? (s && s.micLevel != null ? Math.round(s.micLevel * 100) + '%' : 'включён') : 'НЕТ доступа']
       ]);
@@ -2813,7 +2893,7 @@
         answerStream = t ? new MediaStream([t]) : undefined;
         micPromise.then((s) => { if (s && currentCall === call) attachMic(call, s); });
       }
-      call.answer(answerStream);
+      call.answer(answerStream, { sdpTransform: preferH264 });
 
       call.on('stream', async (stream) => {
         if (currentCall !== call) return;
