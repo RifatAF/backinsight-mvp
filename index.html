@@ -250,7 +250,32 @@
     background: rgba(11,15,20,.88); border: 2px solid var(--tc, #a78bfa); border-radius: 22px; padding: 8px 18px 10px;
   }
   body.client #timerBox { left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 64px); }
-  body.specialist #timerBox { right: 10px; top: calc(var(--safe-t) + 58px); min-width: 0; padding: 4px 12px 6px; border-radius: 14px; }
+  /* Секундомер */
+  .row2 { display: flex; align-items: flex-start; gap: 8px; }
+  #swBox {
+    margin-left: auto; display: flex; align-items: center; gap: 4px; flex: none;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 16px; padding: 4px 4px 4px 12px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  #swNum { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; min-width: 78px; }
+  #swNum small, #swClientNum small { font-size: .55em; opacity: .7; }
+  #swBox.run #swNum { color: #4ade80; }
+  #swBox button { width: 40px; height: 40px; border-radius: 12px; background: var(--card-2); font-size: 16px; font-weight: 800; }
+  #swToggle { background: #16a34a !important; }
+  #swBox.run #swToggle { background: #dc2626 !important; }
+  #swClient {
+    position: absolute; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 64px); z-index: 6;
+    text-align: center; min-width: 170px; background: rgba(11,15,20,.88); border: 2px solid #4ade80;
+    border-radius: 22px; padding: 6px 18px 10px;
+  }
+  #swClient .lbl { font-size: clamp(13px, 4vw, 20px); font-weight: 700; color: #4ade80; text-transform: uppercase; letter-spacing: .06em; }
+  #swClient.paused { border-color: var(--warn); }
+  #swClient.paused .lbl { color: var(--warn); }
+  #swClientNum { font-size: clamp(56px, 22vw, 120px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  body.client.has-sw #timerBox { top: calc(var(--safe-t) + 64px + clamp(110px, 32vw, 180px)); }
+  body.client.has-sw #lastCue, body.client.has-sw #clientCounter { top: auto; bottom: 12px; }
+  body.client.has-sw.has-timer #clientCounter { display: none; }
+  body.specialist #timerBox { right: 10px; top: calc(var(--safe-t) + 108px); min-width: 0; padding: 4px 12px 6px; border-radius: 14px; }
   #timerBox .lbl { font-size: clamp(14px, 4.5vw, 22px); font-weight: 700; color: var(--tc); text-transform: uppercase; letter-spacing: .06em; }
   #timerBox .num { font-size: clamp(56px, 22vw, 120px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
   body.specialist #timerBox .num { font-size: 28px; }
@@ -344,7 +369,8 @@
         <button class="icon-btn" id="btnMic" title="Микрофон">🎙️</button>
         <button class="icon-btn spec-only" id="btnMenu" title="Сессия">☰</button>
       </div>
-      <button id="anglesCard" class="spec-only" title="Свернуть / развернуть">
+      <div class="row2 spec-only">
+      <button id="anglesCard" title="Свернуть / развернуть">
         <table>
           <tr><th></th><th>Лев</th><th>Прав</th></tr>
           <tr><td class="n">Колено</td><td><span class="v" id="a_knee_L">··</span><span class="rng" id="r_knee_L"></span></td><td><span class="v" id="a_knee_R">··</span><span class="rng" id="r_knee_R"></span></td></tr>
@@ -353,10 +379,17 @@
         </table>
         <div class="foot"><span id="modelState">Модель: ожидание</span><span>мин–макс</span></div>
       </button>
+      <div id="swBox" title="Секундомер: видит и клиент">
+        <span id="swNum">0:00<small>.0</small></span>
+        <button id="swToggle" title="Старт / стоп">▶</button>
+        <button id="swReset" title="Сброс">↺</button>
+      </div>
+      </div>
     </div>
 
     <div id="cueCard" class="hidden"><div class="ico" id="cueIco"></div><div class="txt" id="cueTxt"></div><div class="sub" id="cueSub"></div></div>
     <div id="timerBox" class="hidden"><div class="lbl" id="timerLbl"></div><div class="num" id="timerNum"></div><div class="bar"><i id="timerBar"></i></div></div>
+    <div id="swClient" class="client-only hidden"><div class="lbl" id="swClientLbl">Секундомер</div><div id="swClientNum">0:00</div></div>
     <div id="clientCounter" class="client-only hidden"><div class="ex" id="ccEx"></div><div class="big" id="ccReps">0</div><div class="lbl" id="ccSet"></div></div>
     <button id="lastCue" class="client-only hidden" title="Показать ещё раз"></button>
     <div id="pointMarker" class="hidden"></div>
@@ -795,6 +828,29 @@
   $('lastCue').addEventListener('click', () => { if (lastCueMsg) showCue(Object.assign({}, lastCueMsg, { dur: 6000 }), true); });
 
   // Таймер работы/отдыха и обратный отсчёт. Идёт локально на обеих сторонах, звук только у клиента.
+  // Секундомер: у специалиста управление, у клиента копия. Передаём прошедшее время, а не часы устройства,
+  // поэтому расхождение часов телефонов не влияет; погрешность равна задержке сети (доли секунды).
+  const Stopwatch = {
+    running: false, base: 0, acc: 0, t: 0, onRender: null,
+    value() { return this.running ? Date.now() - this.base : this.acc; },
+    apply(state, elapsed) {
+      clearInterval(this.t);
+      this.acc = Math.max(0, elapsed || 0);
+      this.running = state === 'run';
+      if (this.running) {
+        this.base = Date.now() - this.acc;
+        this.t = setInterval(() => this.onRender && this.onRender(), 100);
+      }
+      if (this.onRender) this.onRender();
+    }
+  };
+  function fmtSw(ms, tenths) {
+    const total = Math.floor(ms / 1000);
+    const m = Math.floor(total / 60), sec = total % 60;
+    const main = (m >= 60 ? Math.floor(m / 60) + ':' + pad(m % 60) : m) + ':' + pad(sec);
+    return tenths ? main + '<small>.' + Math.floor((ms % 1000) / 100) + '</small>' : main;
+  }
+
   const Timer = {
     t: 0, endAt: 0, total: 0, kind: '', onEnd: null, countT: [],
     start(m, onEnd) {
@@ -1252,6 +1308,21 @@
       else if (m.t === 'ctx') showCounter(m);
       else if (m.t === 'point') { placeMarker(m.x, m.y); Sound.beep(1200, 60, 0.15); }
       else if (m.t === 'summary') showSummary(m.text);
+      else if (m.t === 'sw') applyClientStopwatch(m);
+    }
+
+    Stopwatch.onRender = () => { $('swClientNum').innerHTML = fmtSw(Stopwatch.value(), true); };
+    function applyClientStopwatch(m) {
+      const box = $('swClient');
+      const wasRunning = Stopwatch.running;
+      Stopwatch.apply(m.state, m.elapsed);
+      const visible = m.state !== 'reset';
+      box.classList.toggle('hidden', !visible);
+      box.classList.toggle('paused', m.state === 'pause');
+      document.body.classList.toggle('has-sw', visible);
+      $('swClientLbl').textContent = m.state === 'pause' ? 'Стоп' : 'Секундомер';
+      if (m.state === 'run' && !wasRunning) { Sound.tone('go'); vibrate(80); if (m.tts) Sound.say('Старт'); }
+      else if (m.state === 'pause' && wasRunning) { Sound.tone('stop'); vibrate([150, 60, 150]); if (m.tts) Sound.say('Стоп'); }
     }
 
     async function openCamera(facingMode) {
@@ -1554,7 +1625,8 @@
     note: { label: 'Заметка', hex: '#93c5fd' },
     set:  { label: 'Подход', hex: '#60a5fa' },
     ex:   { label: 'Упражнение', hex: '#3b82f6' },
-    snap: { label: 'Снимок', hex: '#e5e7eb' }
+    snap: { label: 'Снимок', hex: '#e5e7eb' },
+    time: { label: 'Время', hex: '#4ade80' }
   };
   CATS.cue = { label: 'Подсказка', hex: '#38bdf8' };
   const TAB_ORDER = ['pain', 'tech', 'load', 'prog'];
@@ -1741,6 +1813,7 @@
     section('tech', 'ТЕХНИКА');
     section('load', 'НАГРУЗКА И САМОЧУВСТВИЕ');
     section('prog', 'ПРОГРЕСС');
+    section('time', 'ВРЕМЯ (секундомер)');
     section('note', 'ЗАМЕТКИ');
     const snaps = d.log.filter((e) => e.cat === 'snap').length;
     if (snaps) lines.push('', 'Снимков: ' + snaps);
@@ -1757,7 +1830,9 @@
       lines.push('', 'Вы выполнили:');
       exOrder.forEach((ex) => {
         const sets = d.log.filter((e) => e.cat === 'set' && e.exercise === ex);
-        lines.push('• ' + ex + (sets.length ? ': ' + sets.length + ' подх. (' + sets.map((x) => x.reps || 0).join(', ') + ' повт.)' : ''));
+        const times = d.log.filter((e) => e.cat === 'time' && e.exercise === ex).map((e) => fmtSw(e.ms || 0, false));
+        lines.push('• ' + ex + (sets.length ? ': ' + sets.length + ' подх. (' + sets.map((x) => x.reps || 0).join(', ') + ' повт.)' : '') +
+          (times.length ? (sets.length ? ', ' : ': ') + 'время ' + times.join(', ') : ''));
       });
     }
     const home = d.log.filter((e) => e.cat === 'prog' && e.label === 'Дать на дом' && e.exercise).map((e) => e.exercise)
@@ -2437,6 +2512,31 @@
     if (prefs.tts === undefined) prefs.tts = true;
     const pending = {};
     function msgId() { return Math.random().toString(36).slice(2, 9); }
+    Stopwatch.onRender = () => {
+      $('swNum').innerHTML = fmtSw(Stopwatch.value(), true);
+      $('swBox').classList.toggle('run', Stopwatch.running);
+      $('swToggle').textContent = Stopwatch.running ? '■' : '▶';
+    };
+    function pushStopwatch() {
+      const state = Stopwatch.running ? 'run' : (Stopwatch.acc > 0 ? 'pause' : 'reset');
+      sendCtrl({ t: 'sw', state: state, elapsed: Stopwatch.value(), tts: !!prefs.tts }, true);
+    }
+    $('swToggle').onclick = () => {
+      vibrate(20);
+      if (Stopwatch.running) {
+        const ms = Stopwatch.value();
+        Stopwatch.apply('pause', ms);
+        const e = Session.add('time', 'Время ' + fmtSw(ms, false), { ms: ms });
+        renderLog();
+        toast('⏱ ' + fmtSw(ms, false) + ' · записано', () => { Session.remove(e.id); renderLog(); });
+      } else {
+        Stopwatch.apply('run', Stopwatch.acc);
+      }
+      pushStopwatch();
+    };
+    $('swReset').onclick = () => { vibrate(20); Stopwatch.apply('reset', 0); pushStopwatch(); };
+    Stopwatch.onRender();
+
     function pushCtx() {
       const d = Session.data;
       sendCtrl({ t: 'ctx', ex: d.exercise, set: d.set, reps: d.reps }, true);
@@ -2616,6 +2716,7 @@
       conn.on('open', () => {
         if (quality !== 'auto') { try { conn.send({ t: 'quality', q: quality }); } catch (e) { /* нет */ } }
         pushCtx();
+        if (Stopwatch.running || Stopwatch.acc > 0) pushStopwatch();
       });
       conn.on('data', (m) => { if (m && typeof m === 'object') onClientMessage(m); });
       conn.on('close', () => { if (ctrl === conn) ctrl = null; });
