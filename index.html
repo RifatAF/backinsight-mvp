@@ -474,9 +474,10 @@
     <div class="kv" id="netInfo"></div>
     <h3 class="spec-only">Качество видео клиента</h3>
     <div class="seg wide spec-only" id="qualitySeg">
-      <button data-q="eco">Экономия</button><button data-q="auto" class="on">Авто</button><button data-q="hd">HD</button>
+      <button data-q="low">Минимум</button><button data-q="eco">Экономия</button><button data-q="auto" class="on">Авто</button><button data-q="hd">HD</button>
     </div>
-    <p class="spec-only">«Экономия» стабильнее на слабом мобильном интернете: меньше разрешение и битрейт, меньше зависаний.</p>
+    <p class="spec-only">«Авто» само снижает качество при лагах и повышает, когда канал свободен. «Минимум» и «Экономия» фиксируют низкий битрейт: картинка проще, зато без задержек.</p>
+    <button class="btn full" id="btnDiag">Скопировать диагностику</button>
     <h3 class="spec-only">Камера клиента</h3>
     <div class="btn-row spec-only">
       <button class="btn" id="btnRemoteFlip">Переключить камеру</button>
@@ -639,11 +640,15 @@
   };
   const AUDIO_CONSTRAINTS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 
+  // Ступени качества видео клиента. «Авто» ходит по ступеням low..auto сам, по фактическому состоянию канала.
   const QUALITY = {
+    low:  { maxBitrate: 300000,  maxFramerate: 15, scale: 2,   label: 'Минимум' },
     eco:  { maxBitrate: 600000,  maxFramerate: 20, scale: 1.5, label: 'Экономия' },
-    auto: { maxBitrate: 1500000, maxFramerate: 30, scale: 1,   label: 'Авто' },
+    auto: { maxBitrate: 1200000, maxFramerate: 25, scale: 1,   label: 'Авто' },
     hd:   { maxBitrate: 2500000, maxFramerate: 30, scale: 1,   label: 'HD' }
   };
+  const LEVELS = ['low', 'eco', 'auto'];
+  const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
 
   const VIS_MIN = 0.5;
   const FRAME_MARGIN = 0.02;
@@ -717,6 +722,20 @@
   }
   function store(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* приватный режим */ } }
   function load(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? def : v; } catch (e) { return def; } }
+
+  function diagText(extra) {
+    const s = lastStats || {};
+    return JSON.stringify(Object.assign({
+      role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent,
+      route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
+      inKbps: s.inKbps, outKbps: s.outKbps, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
+      analysisFps: analysisFps
+    }, extra || {}));
+  }
+  $('btnDiag').addEventListener('click', async () => {
+    const ok = await copyText(diagText());
+    toast(ok ? 'Диагностика скопирована' : 'Не удалось скопировать');
+  });
 
   function renderKv(el, rows) {
     el.innerHTML = '';
@@ -1019,17 +1038,50 @@
     const b = $('btnUnmute');
     b.classList.remove('hidden');
     b.classList.add('attn');
-    b.onclick = async () => {
+    toast('🔊 Нажмите в любом месте, чтобы включить звук');
+    const enable = async () => {
       el.muted = false;
-      try { await el.play(); b.classList.add('hidden'); b.classList.remove('attn'); }
-      catch (e) { toast('Не удалось включить звук'); }
+      try { await el.play(); b.classList.add('hidden'); b.classList.remove('attn'); document.removeEventListener('pointerdown', enable, true); }
+      catch (e) { /* ждём следующего касания */ }
     };
+    b.onclick = enable;
+    // Браузер разрешает звук после любого касания страницы: не заставляем искать кнопку.
+    document.addEventListener('pointerdown', enable, true);
+  }
+
+  // Звук важнее картинки: при нехватке канала браузер урежет видео, а голос сохранит.
+  async function prioritizeAudio(pc) {
+    for (const sender of pc.getSenders()) {
+      if (!sender.track) continue;
+      try {
+        const p = sender.getParameters();
+        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+        const hi = sender.track.kind === 'audio';
+        p.encodings[0].priority = hi ? 'high' : 'low';
+        p.encodings[0].networkPriority = hi ? 'high' : 'low';
+        await sender.setParameters(p);
+      } catch (e) { /* не поддерживается */ }
+    }
+  }
+
+  // Беззвучная дорожка: звонок всегда принимается с аудиоканалом, микрофон подставляется в него позже.
+  function silentAudioTrack() {
+    try {
+      const C = window.AudioContext || window.webkitAudioContext;
+      const ctx = new C();
+      const dst = ctx.createMediaStreamDestination();
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      osc.connect(g); g.connect(dst); osc.start();
+      return dst.stream.getAudioTracks()[0];
+    } catch (e) { return null; }
   }
 
   /* ===================== Статистика и качество связи ===================== */
 
   function createStatsReader(pc) {
-    let prevLost = 0, prevRecv = 0;
+    let prevLost = 0, prevRecv = 0, prevT = 0, prevBytesIn = 0, prevBytesOut = 0, prevAudio = 0;
     return async function read() {
       let stats;
       try { stats = await pc.getStats(); } catch (e) { return null; }
@@ -1038,7 +1090,7 @@
       let pair = null;
       stats.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = byId.get(r.selectedCandidatePairId) || pair; });
       if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected) && !pair) pair = r; });
-      const out = { route: '', rtt: null, loss: null, inFps: null, inRes: '', outFps: null, outRes: '', limit: '' };
+      const out = { route: '', rtt: null, loss: null, inFps: null, inRes: '', outFps: null, outRes: '', limit: '', inKbps: null, outKbps: null, audioIn: null, audioInLevel: null, micLevel: null };
       if (pair) {
         const lc = byId.get(pair.localCandidateId);
         const rc = byId.get(pair.remoteCandidateId);
@@ -1047,9 +1099,17 @@
         else if (lc) out.route = 'P2P ' + String(lc.protocol || '').toUpperCase();
         if (typeof pair.currentRoundTripTime === 'number') out.rtt = Math.round(pair.currentRoundTripTime * 1000);
       }
-      let lost = 0, recv = 0, hasIn = false, remoteLoss = null;
+      let lost = 0, recv = 0, hasIn = false, remoteLoss = null, bytesIn = 0, bytesOut = 0, audioBytes = 0;
       stats.forEach((r) => {
         const isVideo = r.kind === 'video' || r.mediaType === 'video';
+        const isAudio = r.kind === 'audio' || r.mediaType === 'audio';
+        if (r.type === 'inbound-rtp') bytesIn += r.bytesReceived || 0;
+        if (r.type === 'outbound-rtp') bytesOut += r.bytesSent || 0;
+        if (r.type === 'inbound-rtp' && isAudio) {
+          audioBytes += r.bytesReceived || 0;
+          if (typeof r.audioLevel === 'number') out.audioInLevel = r.audioLevel;
+        }
+        if (r.type === 'media-source' && isAudio && typeof r.audioLevel === 'number') out.micLevel = r.audioLevel;
         if (r.type === 'inbound-rtp' && isVideo) {
           hasIn = true;
           lost += r.packetsLost || 0;
@@ -1064,6 +1124,14 @@
         }
         if (r.type === 'remote-inbound-rtp' && isVideo && typeof r.fractionLost === 'number') remoteLoss = Math.round(r.fractionLost * 100);
       });
+      const now = Date.now();
+      if (prevT) {
+        const dt = (now - prevT) / 1000;
+        out.inKbps = Math.round((bytesIn - prevBytesIn) * 8 / 1000 / dt);
+        out.outKbps = Math.round((bytesOut - prevBytesOut) * 8 / 1000 / dt);
+        out.audioIn = audioBytes > prevAudio; // приходит ли звук прямо сейчас
+      }
+      prevT = now; prevBytesIn = bytesIn; prevBytesOut = bytesOut; prevAudio = audioBytes;
       if (hasIn) {
         const dl = lost - prevLost, dr = recv - prevRecv;
         if (dl + dr > 0) out.loss = Math.max(0, Math.round(dl * 100 / (dl + dr)));
@@ -1106,6 +1174,7 @@
         if (s.outRes) parts.push(s.outRes);
         if (s.outFps != null) parts.push(s.outFps + ' к/с');
       }
+      if (s.audioIn === false) parts.unshift('⚠ нет звука');
       setSub(parts.join(' · '));
       if (onStats) onStats(s);
     }, 2000);
@@ -1366,9 +1435,31 @@
     }
     function sendCtrl(msg) { try { if (ctrl && ctrl.open) ctrl.send(msg); } catch (e) { /* нет канала */ } }
 
-    async function applyQuality(name) {
-      quality = QUALITY[name] ? name : 'auto';
-      const q = QUALITY[quality];
+    // Адаптация: при лагах шаг вниз через 4 с, при чистом канале шаг вверх через 10 с.
+    // На TURN по TCP/TLS (обход DPI) потолок «Экономия»: по TCP очередь растёт быстрее, чем браузер успевает снизить битрейт.
+    let level = 1, badN = 0, goodN = 0;
+    function adaptQuality(s) {
+      if (quality !== 'auto' || !s) return;
+      const tcp = /TURN (TCP|TLS)/.test(s.route);
+      const cap = tcp ? 1 : 2;
+      // «Ограничено каналом» браузер показывает и при нашем же потолке битрейта, поэтому решаем по задержке,
+      // потерям и фактической частоте кадров.
+      const curFps = QUALITY[LEVELS[level]].maxFramerate;
+      const bad = (s.rtt != null && s.rtt > 400) || (s.loss != null && s.loss > 4) || (s.outFps != null && s.outFps < curFps * 0.55);
+      const good = s.rtt != null && s.rtt < 250 && (s.loss == null || s.loss < 2) && (s.outFps == null || s.outFps >= curFps * 0.75);
+      if (bad) { badN++; goodN = 0; } else if (good) { goodN++; badN = 0; } else { badN = 0; goodN = 0; }
+      let next = Math.min(level, cap);
+      if (badN >= 2) { next = Math.max(0, next - 1); badN = 0; }
+      else if (goodN >= 5) { next = Math.min(cap, next + 1); goodN = 0; }
+      if (next !== level) {
+        level = next;
+        setEncoding(QUALITY[LEVELS[level]]);
+        sendCtrl({ t: 'qlevel', level: LEVELS[level] });
+      }
+    }
+    onStats = adaptQuality;
+
+    async function setEncoding(q) {
       if (!call || !call.peerConnection) return;
       try {
         const sender = call.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'video');
@@ -1381,6 +1472,14 @@
         try { p.degradationPreference = 'balanced'; } catch (e) { /* только чтение */ }
         await sender.setParameters(p);
       } catch (e) { /* старый Safari: адаптацию делает браузер */ }
+    }
+
+    async function applyQuality(name) {
+      quality = QUALITY[name] ? name : 'auto';
+      // «Авто» стартует с «Экономии» и поднимается, если канал позволяет: так первые секунды без лагов.
+      if (quality === 'auto') { level = 1; badN = 0; goodN = 0; await setEncoding(QUALITY.eco); sendCtrl({ t: 'qlevel', level: 'eco' }); return; }
+      await setEncoding(QUALITY[quality]);
+      sendCtrl({ t: 'qlevel', level: quality });
     }
 
     async function flipCamera() {
@@ -1499,6 +1598,7 @@
           failCount = 0;
           setStatus('На связи со специалистом', 'ok');
           applyQuality(quality);
+          prioritizeAudio(pc);
           startStats(pc);
         }, (why) => {
           if (call !== c) return;
@@ -1555,7 +1655,10 @@
         ['Отправка', s ? (s.outRes || '··') + (s.outFps != null ? ' · ' + s.outFps + ' к/с' : '') : '··'],
         ['Ограничение', s && s.limit ? (s.limit === 'bandwidth' ? 'канал связи' : s.limit === 'cpu' ? 'процессор' : s.limit) : 'нет'],
         ['Камера', (info.label || '··') + (info.zoom ? ' · zoom ' + info.zoom : '')],
-        ['Режим', relayOnly ? 'только TURN' : 'авто']
+        ['Режим', relayOnly ? 'только TURN' : 'авто'],
+        ['Качество', QUALITY[quality].label + (quality === 'auto' ? ' → ' + QUALITY[LEVELS[level]].label : '') + (s && s.outKbps != null ? ' · ' + s.outKbps + ' кбит/с' : '')],
+        ['Звук от специалиста', s ? (s.audioIn ? 'приходит' : 'НЕ приходит') : '··'],
+        ['Мой микрофон', s && s.micLevel != null ? Math.round(s.micLevel * 100) + '%' : '··']
       ]);
       openSheet('netWrap');
     };
@@ -2021,7 +2124,7 @@
 
   const Analyzer = {
     pose: null, ready: false, running: false, busy: false, loading: null,
-    complexity: 1, lastSend: 0, interval: 1000 / 20, avgMs: 0, samples: 0,
+    complexity: IS_MOBILE ? 0 : 1, lastSend: 0, interval: 1000 / 15, avgMs: 0, samples: 0,
     frames: 0, fpsT0: 0, errors: 0, base: '', loopId: 0, lastTick: 0, watchdog: 0,
 
     init() {
@@ -2111,7 +2214,8 @@
     adapt(ms) {
       this.avgMs = this.samples ? this.avgMs * 0.85 + ms * 0.15 : ms;
       this.samples++;
-      this.interval = Math.min(1000 / 8, Math.max(1000 / 24, this.avgMs * 1.3));
+      // На телефоне потолок 12 к/с: процессор нужен ещё и декодеру видео, иначе картинка начинает лагать.
+      this.interval = Math.min(1000 / 6, Math.max(1000 / (IS_MOBILE ? 12 : 24), this.avgMs * 1.5));
       this.frames++;
       const t = performance.now();
       if (t - this.fpsT0 >= 1000) {
@@ -2370,6 +2474,8 @@
     let idRetries = 0;
     let destroyed = false;
     let clientCam = null;
+    let clientLevel = '';
+    let clientDiag = null;
     let quality = 'auto';
 
     Session.init();
@@ -2397,7 +2503,8 @@
         try {
           micStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
           setMicButton(true);
-          toast(currentCall ? 'Микрофон заработает после переподключения клиента' : 'Микрофон включён');
+          if (currentCall) attachMic(currentCall, micStream);
+          toast('Микрофон включён');
         } catch (e) { toast('Нет доступа к микрофону'); }
         return;
       }
@@ -2627,6 +2734,8 @@
 
     function onClientMessage(m) {
       if (m.t === 'cam') { clientCam = m; if (isOpen('netWrap')) renderNet(); }
+      else if (m.t === 'qlevel') { clientLevel = m.level; if (isOpen('netWrap')) renderNet(); }
+      else if (m.t === 'diag') { clientDiag = m; }
       else if (m.t === 'ack') {
         const label = pending[m.id];
         if (label) { delete pending[m.id]; toast('✓ Клиент видит: ' + label); }
@@ -2652,7 +2761,10 @@
         ['Потери', s && s.loss != null ? s.loss + '%' : '··'],
         ['Видео', s ? (s.inRes || '··') + (s.inFps != null ? ' · ' + s.inFps + ' к/с' : '') : '··'],
         ['Анализ', prefs.skel === 'off' ? 'выключен' : (analysisFps ? analysisFps + ' к/с' : '··')],
-        ['Камера клиента', clientCam ? (clientCam.label || (clientCam.facing === 'user' ? 'фронтальная' : 'основная')) + (clientCam.zoom ? ' · zoom ' + clientCam.zoom : '') : '··']
+        ['Камера клиента', clientCam ? (clientCam.label || (clientCam.facing === 'user' ? 'фронтальная' : 'основная')) + (clientCam.zoom ? ' · zoom ' + clientCam.zoom : '') : '··'],
+        ['Качество', QUALITY[quality].label + (quality === 'auto' && clientLevel ? ' → ' + QUALITY[clientLevel].label : '') + (s && s.inKbps != null ? ' · ' + s.inKbps + ' кбит/с' : '')],
+        ['Звук от клиента', s ? (s.audioIn ? 'приходит' : 'НЕ приходит') + (s.audioInLevel != null ? ' · ' + Math.round(s.audioInLevel * 100) + '%' : '') : '··'],
+        ['Мой микрофон', micStream ? (s && s.micLevel != null ? Math.round(s.micLevel * 100) + '%' : 'включён') : 'НЕТ доступа']
       ]);
       $('qualitySeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-q') === quality));
     }
@@ -2680,13 +2792,28 @@
       setStatus('Ожидание клиента', 'warn', reason || '');
     }
 
+    async function attachMic(call, stream) {
+      const pc = call && call.peerConnection;
+      const tr = stream && stream.getAudioTracks()[0];
+      if (!pc || !tr) return;
+      const sender = pc.getSenders().find((x) => x.track && x.track.kind === 'audio');
+      if (sender && sender.track !== tr) { try { await sender.replaceTrack(tr); } catch (e) { /* нет */ } }
+    }
+
     async function onIncomingCall(call) {
       if (currentCall) endCall('Новый вход клиента');
       currentCall = call;
       setStatus('Входящий звонок…', 'warn');
-      const mic = await Promise.race([micPromise, new Promise((r) => setTimeout(() => r(null), 6000))]);
+      const mic = await Promise.race([micPromise, new Promise((r) => setTimeout(() => r(null), 3000))]);
       if (currentCall !== call) return;
-      call.answer(mic || undefined);
+      // Без микрофона ответ шёл без аудиоканала, и клиент не слышал специалиста весь звонок.
+      let answerStream = mic;
+      if (!answerStream || !answerStream.getAudioTracks().length) {
+        const t = silentAudioTrack();
+        answerStream = t ? new MediaStream([t]) : undefined;
+        micPromise.then((s) => { if (s && currentCall === call) attachMic(call, s); });
+      }
+      call.answer(answerStream);
 
       call.on('stream', async (stream) => {
         if (currentCall !== call) return;
@@ -2706,6 +2833,8 @@
       watchPeerConnection(pc, () => {
         if (currentCall !== call) return;
         setStatus('Клиент на связи', 'ok');
+        prioritizeAudio(pc);
+        if (micStream) attachMic(call, micStream);
         startStats(pc);
       }, (why) => { if (currentCall === call) endCall(why); });
     }
