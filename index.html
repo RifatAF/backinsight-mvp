@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="referrer" content="no-referrer">
+<title>BackInsight Live</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: rgba(12, 17, 24, 0.72);
+    --panel-solid: #141b24;
+    --line: rgba(255, 255, 255, 0.12);
+    --text: #eef2f6;
+    --muted: #93a1b2;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --err: #ef4444;
+    --accent: #3b82f6;
+    --fit: cover;
+    --safe-t: env(safe-area-inset-top, 0px);
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-l: env(safe-area-inset-left, 0px);
+    --safe-r: env(safe-area-inset-right, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden; overscroll-behavior: none; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none;
+  }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* Сцена: video и canvas занимают один и тот же бокс и используют один и тот же object-fit,
+     а canvas имеет внутренний размер = videoWidth x videoHeight, поэтому браузер масштабирует
+     и обрезает их идентично: совпадение пиксель в пиксель при любом соотношении сторон экрана. */
+  #stage { position: fixed; inset: 0; background: #000; overflow: hidden; }
+  #video, #overlay {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: var(--fit); object-position: 50% 50%;
+  }
+  #overlay { pointer-events: none; }
+  body.client #video.mirror { transform: scaleX(-1); }
+
+  #placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: var(--muted); text-align: center; padding: 24px;
+  }
+  .spinner {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.15); border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Верхний инфо-блок */
+  #hud {
+    position: fixed; left: 0; right: 0; top: 0; z-index: 10;
+    padding: calc(var(--safe-t) + 8px) calc(var(--safe-r) + 10px) 8px calc(var(--safe-l) + 10px);
+    background: linear-gradient(to bottom, rgba(0,0,0,.65), rgba(0,0,0,0));
+    pointer-events: none;
+  }
+  #hud > * { pointer-events: auto; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .status {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 12px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+  .status-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .status-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 50%; flex: none;
+    background: var(--panel); border: 1px solid var(--line); font-size: 17px;
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  .icon-btn.off { background: rgba(239,68,68,.55); }
+  .icon-btn.attn { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+
+  #angles {
+    margin-top: 8px; display: grid; grid-template-columns: auto 1fr 1fr; gap: 2px 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 8px 12px; width: max-content; max-width: 100%;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    font-variant-numeric: tabular-nums;
+  }
+  #angles .h { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  #angles .n { color: var(--muted); font-size: 13px; }
+  #angles .v { font-size: 17px; font-weight: 600; min-width: 52px; text-align: right; }
+  #angles .v.stale { opacity: .45; }
+  #modelState { margin-top: 6px; font-size: 11px; color: var(--muted); }
+
+  /* Нижняя сенсорная панель */
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    padding: 10px calc(var(--safe-r) + 10px) calc(var(--safe-b) + 10px) calc(var(--safe-l) + 10px);
+    background: linear-gradient(to top, rgba(0,0,0,.7), rgba(0,0,0,0));
+    display: grid; gap: 8px;
+  }
+  #bottombar { grid-template-columns: repeat(4, 1fr); }
+  #clientbar { grid-template-columns: repeat(3, 1fr); }
+  .bbtn {
+    position: relative; min-height: 58px; border-radius: 16px; padding: 6px 4px;
+    background: var(--panel); border: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    font-size: 13px; font-weight: 600; line-height: 1.1; text-align: center;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: transform .08s ease, background .15s ease;
+  }
+  .bbtn .ic { font-size: 20px; }
+  .bbtn:active { transform: scale(.95); background: rgba(59,130,246,.45); }
+  .bbtn.snap { background: rgba(59,130,246,.55); }
+  .bbtn.off { background: rgba(239,68,68,.55); }
+  .badge {
+    position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; border-radius: 10px;
+    background: var(--err); color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center;
+    padding: 0 5px;
+  }
+  .badge:empty { display: none; }
+
+  /* Листы (кабинет, снимок) */
+  .sheet-wrap {
+    position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55);
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  .sheet {
+    width: 100%; max-width: 560px; max-height: 92dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    background: var(--panel-solid); border-top-left-radius: 22px; border-top-right-radius: 22px;
+    border: 1px solid var(--line); border-bottom: 0;
+    padding: 18px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 18px) calc(var(--safe-l) + 16px);
+    -webkit-user-select: text; user-select: text;
+  }
+  .sheet h2 { margin: 0 0 4px; font-size: 19px; }
+  .sheet h3 { margin: 18px 0 8px; font-size: 15px; color: var(--muted); font-weight: 600; }
+  .sheet p { margin: 6px 0; color: var(--muted); font-size: 13px; }
+  .field {
+    width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--line);
+    background: #0c1218; color: var(--text); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all; margin: 8px 0;
+  }
+  .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .btn {
+    min-height: 46px; border-radius: 12px; background: #1f2a37; border: 1px solid var(--line);
+    font-weight: 600; padding: 0 12px;
+  }
+  .btn.primary { background: var(--accent); border-color: transparent; }
+  .btn.danger { background: rgba(239,68,68,.25); }
+  .btn.full { width: 100%; margin-top: 12px; }
+  #logList { list-style: none; margin: 0; padding: 0; font-size: 13px; max-height: 32dvh; overflow-y: auto; }
+  #logList li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  #logList .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  #logList .a { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #snapImg { width: 100%; border-radius: 12px; display: block; background: #000; -webkit-touch-callout: default; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: calc(var(--safe-b) + 96px); transform: translateX(-50%);
+    z-index: 40; background: rgba(20,27,36,.95); border: 1px solid var(--line); border-radius: 999px;
+    padding: 10px 16px; font-size: 14px; opacity: 0; transition: opacity .2s ease; pointer-events: none;
+    max-width: calc(100% - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #toast.show { opacity: 1; }
+
+  #fatal {
+    position: fixed; inset: 0; z-index: 50; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; gap: 12px;
+  }
+  #fatal h2 { margin: 0; }
+  #fatal p { color: var(--muted); margin: 0; max-width: 420px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline webkit-playsinline autoplay></video>
+  <canvas id="overlay"></canvas>
+  <div id="placeholder"><div class="spinner"></div><div id="placeholderText">Загрузка…</div></div>
+</div>
+
+<header id="hud">
+  <div class="row">
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <div style="min-width:0">
+        <div class="status-text" id="statusText">Инициализация…</div>
+        <div class="status-sub" id="statusSub"></div>
+      </div>
+    </div>
+    <button class="icon-btn hidden" id="btnUnmute" title="Включить звук">🔊</button>
+    <button class="icon-btn" id="btnMic" title="Микрофон">🎙️</button>
+    <button class="icon-btn spec-only" id="btnFit" title="Заполнить / вписать">⤢</button>
+    <button class="icon-btn spec-only" id="btnCabinet" title="Кабинет">☰</button>
+  </div>
+  <div id="angles" class="spec-only">
+    <span class="h"></span><span class="h" style="text-align:right">Лев</span><span class="h" style="text-align:right">Прав</span>
+    <span class="n">Колено</span><span class="v" id="a_knee_L">··</span><span class="v" id="a_knee_R">··</span>
+    <span class="n">Таз</span><span class="v" id="a_hip_L">··</span><span class="v" id="a_hip_R">··</span>
+    <span class="n">Локоть</span><span class="v" id="a_elbow_L">··</span><span class="v" id="a_elbow_R">··</span>
+  </div>
+  <div id="modelState" class="spec-only">Модель позы: ожидание</div>
+</header>
+
+<nav id="bottombar" class="bar spec-only">
+  <button class="bbtn" data-complaint="Шея"><span class="ic">🦒</span>Шея<span class="badge" data-badge="Шея"></span></button>
+  <button class="bbtn" data-complaint="Поясница"><span class="ic">🔻</span>Поясница<span class="badge" data-badge="Поясница"></span></button>
+  <button class="bbtn" data-complaint="Колено/Таз"><span class="ic">🦵</span>Колено/Таз<span class="badge" data-badge="Колено/Таз"></span></button>
+  <button class="bbtn snap" id="btnSnap"><span class="ic">📸</span>Снимок</button>
+</nav>
+
+<nav id="clientbar" class="bar client-only">
+  <button class="bbtn" id="btnFlip"><span class="ic">🔄</span>Камера</button>
+  <button class="bbtn" id="btnClientMic"><span class="ic">🎙️</span>Микрофон</button>
+  <button class="bbtn" id="btnReconnect"><span class="ic">↻</span>Переподключить</button>
+</nav>
+
+<div class="sheet-wrap hidden" id="cabinetWrap">
+  <section class="sheet">
+    <h2>Кабинет специалиста</h2>
+    <p>Отправьте ссылку клиенту. Клиент открывает её в Safari или Chrome на телефоне, держит телефон вертикально и разрешает доступ к камере и микрофону.</p>
+    <div class="field" id="linkField">Ожидание ID сессии…</div>
+    <div class="btn-row">
+      <button class="btn primary" id="btnCopy">Скопировать</button>
+      <button class="btn" id="btnShare">Отправить</button>
+    </div>
+    <p id="peerIdLine"></p>
+    <h3>Журнал жалоб и снимков</h3>
+    <ul id="logList"></ul>
+    <div class="btn-row">
+      <button class="btn" id="btnExport">Экспорт CSV</button>
+      <button class="btn danger" id="btnClearLog">Очистить</button>
+    </div>
+    <button class="btn full" id="btnCloseCabinet">Закрыть</button>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="snapWrap">
+  <section class="sheet">
+    <h2>Снимок</h2>
+    <p>На iOS можно также удержать палец на изображении и выбрать «Сохранить в Фото».</p>
+    <img id="snapImg" alt="Снимок с углами">
+    <div class="btn-row">
+      <button class="btn primary" id="btnSnapSave">Сохранить</button>
+      <button class="btn" id="btnSnapShare">Поделиться</button>
+    </div>
+    <button class="btn full" id="btnSnapClose">Закрыть</button>
+  </section>
+</div>
+
+<div id="toast"></div>
+<audio id="remoteAudio" playsinline autoplay></audio>
+
+<div id="fatal" class="hidden">
+  <h2 id="fatalTitle">Ошибка</h2>
+  <p id="fatalText"></p>
+  <button class="btn primary" onclick="location.reload()">Перезагрузить</button>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ===================== Конфигурация ===================== */
+
+  const LIBS = {
+    peerjs: [
+      'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js',
+      'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js'
+    ],
+    // Базовые пути пакетов MediaPipe; файлы модели/wasm грузятся с той же базы через locateFile.
+    pose: [
+      'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404',
+      'https://unpkg.com/@mediapipe/pose@0.5.1675469404'
+    ],
+    drawing: [
+      'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js',
+      'https://unpkg.com/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js'
+    ]
+  };
+
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
+    { urls: 'turn:global.relay.metered.ca:443', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' }
+  ];
+
+  const params = new URLSearchParams(location.search);
+  const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
+  const TARGET_PEER = (params.get('peer') || '').trim();
+  // ?relay=1 принудительно пускает весь трафик только через TURN (полезно при агрессивном DPI).
+  const FORCE_RELAY = params.get('relay') === '1';
+
+  // ?ps=https://host[:port]/path : собственный PeerServer вместо публичного 0.peerjs.com.
+  const PEER_SERVER = (() => {
+    const raw = params.get('ps');
+    if (!raw) return {};
+    try {
+      const u = new URL(raw);
+      const secure = u.protocol === 'https:';
+      return { host: u.hostname, port: Number(u.port) || (secure ? 443 : 80), path: u.pathname || '/', secure: secure };
+    } catch (e) { return {}; }
+  })();
+
+  const PEER_OPTIONS = Object.assign({}, PEER_SERVER, {
+    debug: 1,
+    config: {
+      iceServers: ICE_SERVERS,
+      iceTransportPolicy: FORCE_RELAY ? 'relay' : 'all',
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    }
+  });
+
+  const CLIENT_CONSTRAINTS = {
+    video: {
+      width: { ideal: 720 },
+      height: { ideal: 1280 },
+      aspectRatio: { ideal: 9 / 16 },
+      frameRate: { ideal: 30 }
+    },
+    audio: true
+  };
+
+  const VIDEO_MAX_BITRATE = 1800000;
+  const VIS_MIN = 0.5;          // минимальная видимость точки для расчёта угла
+  const FRAME_MARGIN = 0.02;    // допуск выхода точки за край кадра (доля кадра)
+  const HOLD_MS = 450;          // сколько держать последнее валидное значение при перекрытии
+  const ANGLE_EMA = 0.45;       // сглаживание отображаемого угла
+  const STORAGE_ID = 'bi_peer_id';
+  const STORAGE_LOG = 'bi_log_v1';
+
+  /* ===================== DOM ===================== */
+
+  const $ = (id) => document.getElementById(id);
+  const video = $('video');
+  const overlay = $('overlay');
+  const octx = overlay.getContext('2d');
+  const remoteAudio = $('remoteAudio');
+
+  document.body.classList.add(ROLE);
+  document.querySelectorAll(ROLE === 'client' ? '.spec-only' : '.client-only')
+    .forEach((el) => el.classList.add('hidden'));
+
+  /* ===================== Утилиты UI ===================== */
+
+  function setStatus(text, level, sub) {
+    $('statusText').textContent = text;
+    $('statusDot').className = 'dot' + (level ? ' ' + level : '');
+    if (sub !== undefined) $('statusSub').textContent = sub;
+  }
+  function setSub(text) { $('statusSub').textContent = text; }
+
+  function setPlaceholder(text, spinner) {
+    const ph = $('placeholder');
+    if (text == null) { ph.classList.add('hidden'); return; }
+    ph.classList.remove('hidden');
+    ph.querySelector('.spinner').classList.toggle('hidden', !spinner);
+    $('placeholderText').textContent = text;
+  }
+
+  let toastTimer = 0;
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  function fatal(title, text) {
+    $('fatalTitle').textContent = title;
+    $('fatalText').textContent = text;
+    $('fatal').classList.remove('hidden');
+  }
+
+  function vibrate(ms) { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* нет поддержки */ } }
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function fmtTime(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+  function fmtDate(d) { return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear(); }
+  function fileStamp(d) {
+    return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.crossOrigin = 'anonymous';
+      s.onload = () => resolve(src);
+      s.onerror = () => { s.remove(); reject(new Error('Не удалось загрузить ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+  async function loadFirst(urls) {
+    let lastErr;
+    for (const u of urls) {
+      try { return await loadScript(u); } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
+  }
+
+  function randomId() {
+    const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
+    const bytes = new Uint8Array(10);
+    crypto.getRandomValues(bytes);
+    let s = '';
+    for (const b of bytes) s += alphabet[b % alphabet.length];
+    return 'bi-' + s;
+  }
+
+  /* ===================== Wake Lock ===================== */
+
+  const Wake = {
+    wanted: false,
+    sentinel: null,
+    async enable() {
+      this.wanted = true;
+      if (!('wakeLock' in navigator) || this.sentinel) return;
+      try {
+        this.sentinel = await navigator.wakeLock.request('screen');
+        this.sentinel.addEventListener('release', () => { this.sentinel = null; });
+      } catch (e) {
+        // Отказ (энергосбережение, неактивная вкладка): повторим при возврате на вкладку.
+      }
+    }
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Wake.wanted && !Wake.sentinel) Wake.enable();
+  });
+
+  /* ===================== Воспроизведение с учётом autoplay-политик ===================== */
+
+  async function playWithSound(el) {
+    el.muted = false;
+    try {
+      await el.play();
+      return true;
+    } catch (e) {
+      el.muted = true;
+      try { await el.play(); } catch (e2) { /* дождёмся жеста пользователя */ }
+      return false;
+    }
+  }
+
+  function showUnmute(el) {
+    const b = $('btnUnmute');
+    b.classList.remove('hidden');
+    b.classList.add('attn');
+    b.onclick = async () => {
+      el.muted = false;
+      try { await el.play(); b.classList.add('hidden'); b.classList.remove('attn'); }
+      catch (e) { toast('Не удалось включить звук'); }
+    };
+  }
+
+  /* ===================== Диагностика соединения ===================== */
+
+  function describeRoute(pc) {
+    return pc.getStats().then((stats) => {
+      const byId = new Map();
+      stats.forEach((r) => byId.set(r.id, r));
+      let pair = null;
+      stats.forEach((r) => {
+        if (r.type === 'transport' && r.selectedCandidatePairId) pair = byId.get(r.selectedCandidatePairId) || pair;
+      });
+      if (!pair) {
+        stats.forEach((r) => {
+          if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected) && !pair) pair = r;
+        });
+      }
+      const out = { route: '', rtt: null, inFps: null, inRes: '', outFps: null, outRes: '' };
+      if (pair) {
+        const lc = byId.get(pair.localCandidateId);
+        const rc = byId.get(pair.remoteCandidateId);
+        if (lc && lc.candidateType === 'relay') {
+          out.route = 'TURN ' + String(lc.relayProtocol || lc.protocol || '').toUpperCase();
+        } else if (rc && rc.candidateType === 'relay') {
+          out.route = 'TURN (удал.)';
+        } else if (lc) {
+          out.route = 'P2P ' + String(lc.protocol || '').toUpperCase();
+        }
+        if (typeof pair.currentRoundTripTime === 'number') out.rtt = Math.round(pair.currentRoundTripTime * 1000);
+      }
+      stats.forEach((r) => {
+        if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+          if (r.framesPerSecond != null) out.inFps = Math.round(r.framesPerSecond);
+          if (r.frameWidth) out.inRes = r.frameWidth + '×' + r.frameHeight;
+        }
+        if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+          if (r.framesPerSecond != null) out.outFps = Math.round(r.framesPerSecond);
+          if (r.frameWidth) out.outRes = r.frameWidth + '×' + r.frameHeight;
+        }
+      });
+      return out;
+    }).catch(() => null);
+  }
+
+  let statsTimer = 0;
+  let analysisFps = 0;
+  function startStats(pc) {
+    clearInterval(statsTimer);
+    statsTimer = setInterval(async () => {
+      if (!pc || pc.connectionState === 'closed') return;
+      const s = await describeRoute(pc);
+      if (!s) return;
+      const parts = [];
+      if (s.route) parts.push(s.route);
+      if (s.rtt != null) parts.push(s.rtt + ' мс');
+      if (ROLE === 'specialist') {
+        if (s.inRes) parts.push(s.inRes);
+        if (s.inFps != null) parts.push(s.inFps + ' к/с');
+        if (analysisFps) parts.push('анализ ' + analysisFps + ' к/с');
+      } else {
+        if (s.outRes) parts.push(s.outRes);
+        if (s.outFps != null) parts.push(s.outFps + ' к/с');
+      }
+      setSub(parts.join(' · '));
+    }, 2000);
+  }
+  function stopStats() { clearInterval(statsTimer); }
+
+  // Отслеживание ICE: callback onFail вызывается при необратимом разрыве.
+  function watchPeerConnection(pc, onUp, onFail) {
+    let downTimer = 0;
+    const handler = () => {
+      const st = pc.iceConnectionState;
+      if (st === 'connected' || st === 'completed') {
+        clearTimeout(downTimer);
+        onUp();
+      } else if (st === 'disconnected') {
+        setStatus('Связь прерывается…', 'warn');
+        clearTimeout(downTimer);
+        downTimer = setTimeout(() => {
+          if (pc.iceConnectionState === 'disconnected') onFail('ICE disconnected');
+        }, 8000);
+      } else if (st === 'failed') {
+        clearTimeout(downTimer);
+        onFail('ICE failed');
+      } else if (st === 'checking') {
+        setStatus('Установка канала (TURN 443)…', 'warn');
+      }
+    };
+    pc.addEventListener('iceconnectionstatechange', handler);
+    handler();
+  }
+
+  async function tuneVideoSender(pc) {
+    try {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      const p = sender.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
+      p.encodings[0].maxFramerate = 30;
+      try { p.degradationPreference = 'balanced'; } catch (e) { /* только чтение */ }
+      await sender.setParameters(p);
+    } catch (e) {
+      // Safari старых версий может не поддерживать setParameters: оставляем дефолт браузера.
+    }
+  }
+
+  // PeerJS создаёт RTCPeerConnection синхронно, но страхуемся ожиданием.
+  function whenPc(call) {
+    return new Promise((resolve) => {
+      const t0 = Date.now();
+      (function check() {
+        if (call.peerConnection) return resolve(call.peerConnection);
+        if (Date.now() - t0 > 5000) return resolve(null);
+        setTimeout(check, 50);
+      })();
+    });
+  }
+
+  /* ===================== Микрофон (общий) ===================== */
+
+  let micStream = null;
+  function setMicButton(enabled) {
+    $('btnMic').classList.toggle('off', !enabled);
+    $('btnClientMic').classList.toggle('off', !enabled);
+  }
+  function toggleMic(stream) {
+    if (!stream) { toast('Микрофон недоступен'); return; }
+    const tracks = stream.getAudioTracks();
+    if (!tracks.length) { toast('Микрофон недоступен'); return; }
+    const enabled = !tracks[0].enabled;
+    tracks.forEach((t) => { t.enabled = enabled; });
+    setMicButton(enabled);
+    toast(enabled ? 'Микрофон включён' : 'Микрофон выключен');
+  }
+
+  /* =========================================================
+     РЕЖИМ КЛИЕНТА
+     ========================================================= */
+
+  async function startClient() {
+    $('btnFit').classList.add('hidden');
+    if (!TARGET_PEER) {
+      fatal('Неверная ссылка', 'В ссылке нет идентификатора специалиста. Попросите специалиста прислать ссылку заново.');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      fatal('Браузер не поддерживается', 'Откройте ссылку в Safari (iOS) или Chrome (Android) по HTTPS.');
+      return;
+    }
+
+    let facing = 'user';
+    let localStream = null;
+    let peer = null;
+    let call = null;
+    let retryTimer = 0;
+    let retryDelay = 2000;
+    let destroyed = false;
+
+    setStatus('Запрос камеры…', 'warn', '');
+    setPlaceholder('Разрешите доступ к камере и микрофону', true);
+
+    async function getCamera(facingMode) {
+      const c = JSON.parse(JSON.stringify(CLIENT_CONSTRAINTS));
+      c.video.facingMode = { ideal: facingMode };
+      try {
+        return await navigator.mediaDevices.getUserMedia(c);
+      } catch (e) {
+        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) throw e;
+        // Камера не поддерживает запрошенные ideal-параметры: упрощаем запрос.
+        return await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: true });
+      }
+    }
+
+    try {
+      localStream = await getCamera(facing);
+    } catch (e) {
+      setPlaceholder(null);
+      fatal('Нет доступа к камере', 'Разрешите доступ к камере и микрофону в настройках браузера и перезагрузите страницу. (' + (e && e.name ? e.name : e) + ')');
+      return;
+    }
+    micStream = localStream;
+    setMicButton(true);
+
+    localStream.getVideoTracks().forEach((t) => { try { t.contentHint = 'motion'; } catch (e) { /* нет поддержки */ } });
+    video.muted = true;
+    video.srcObject = localStream;
+    video.classList.toggle('mirror', facing === 'user');
+    try { await video.play(); } catch (e) { /* muted autoplay разрешён везде */ }
+    setPlaceholder(null);
+    Wake.enable();
+
+    try {
+      await loadFirst(LIBS.peerjs);
+    } catch (e) {
+      fatal('Сеть', 'Не удалось загрузить модуль связи. Проверьте интернет и перезагрузите страницу.');
+      return;
+    }
+
+    function scheduleRetry(reason) {
+      if (destroyed) return;
+      clearTimeout(retryTimer);
+      setStatus('Повторное подключение…', 'warn', reason || '');
+      retryTimer = setTimeout(() => {
+        retryDelay = Math.min(retryDelay * 1.6, 15000);
+        if (peer && !peer.destroyed && !peer.disconnected) placeCall();
+        else if (peer && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch (e) { createPeer(); } }
+        else createPeer();
+      }, retryDelay);
+    }
+
+    function closeCall() {
+      if (call) {
+        const c = call;
+        call = null;
+        try { c.close(); } catch (e) { /* уже закрыт */ }
+      }
+      stopStats();
+    }
+
+    function placeCall() {
+      closeCall();
+      setStatus('Звоним специалисту…', 'warn');
+      const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client', ts: Date.now() } });
+      if (!c) { scheduleRetry('Не удалось создать вызов'); return; }
+      call = c;
+
+      c.on('stream', async (remote) => {
+        if (call !== c) return;
+        remoteAudio.srcObject = remote;
+        const ok = await playWithSound(remoteAudio);
+        if (!ok && remote.getAudioTracks().length) showUnmute(remoteAudio);
+      });
+      c.on('close', () => { if (call === c) { call = null; scheduleRetry('Звонок завершён'); } });
+      c.on('error', (err) => { if (call === c) { closeCall(); scheduleRetry(String(err && err.type || err)); } });
+
+      whenPc(c).then((pc) => {
+        if (!pc || call !== c) return;
+        watchPeerConnection(pc, () => {
+          if (call !== c) return;
+          retryDelay = 2000;
+          setStatus('На связи со специалистом', 'ok');
+          tuneVideoSender(pc);
+          startStats(pc);
+        }, (why) => {
+          if (call !== c) return;
+          closeCall();
+          scheduleRetry(why);
+        });
+      });
+    }
+
+    function createPeer() {
+      if (peer) { try { peer.destroy(); } catch (e) { /* нет */ } }
+      setStatus('Подключение к серверу…', 'warn');
+      // Свой ID без HTTP-запроса /peerjs/id: на один запрос к сигнальному серверу меньше.
+      peer = new window.Peer(randomId(), PEER_OPTIONS);
+      peer.on('open', () => placeCall());
+      peer.on('disconnected', () => {
+        if (destroyed || peer.destroyed) return;
+        setTimeout(() => { if (peer && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch (e) { createPeer(); } } }, 1500);
+      });
+      peer.on('error', (err) => {
+        const type = err && err.type;
+        if (type === 'peer-unavailable') {
+          closeCall();
+          setPlaceholder(null);
+          scheduleRetry('Специалист ещё не в сети');
+        } else if (type === 'browser-incompatible') {
+          fatal('Браузер не поддерживается', 'Обновите Safari или Chrome до последней версии.');
+        } else {
+          scheduleRetry('Ошибка сети: ' + (type || 'unknown'));
+        }
+      });
+    }
+
+    $('btnFlip').onclick = async () => {
+      const next = facing === 'user' ? 'environment' : 'user';
+      try {
+        const c = JSON.parse(JSON.stringify(CLIENT_CONSTRAINTS));
+        c.video.facingMode = { exact: next };
+        delete c.audio;
+        let s;
+        try { s = await navigator.mediaDevices.getUserMedia({ video: c.video }); }
+        catch (e) { c.video.facingMode = { ideal: next }; s = await navigator.mediaDevices.getUserMedia({ video: c.video }); }
+        const newTrack = s.getVideoTracks()[0];
+        try { newTrack.contentHint = 'motion'; } catch (e) { /* нет */ }
+        const oldTrack = localStream.getVideoTracks()[0];
+        if (call && call.peerConnection) {
+          const sender = call.peerConnection.getSenders().find((x) => x.track && x.track.kind === 'video');
+          if (sender) await sender.replaceTrack(newTrack);
+        }
+        if (oldTrack) { localStream.removeTrack(oldTrack); oldTrack.stop(); }
+        localStream.addTrack(newTrack);
+        facing = next;
+        video.srcObject = localStream;
+        video.classList.toggle('mirror', facing === 'user');
+        video.play().catch(() => {});
+        toast(facing === 'user' ? 'Фронтальная камера' : 'Основная камера');
+      } catch (e) {
+        toast('Не удалось переключить камеру');
+      }
+    };
+    $('btnClientMic').onclick = () => toggleMic(localStream);
+    $('btnMic').onclick = () => toggleMic(localStream);
+    $('btnReconnect').onclick = () => { retryDelay = 2000; closeCall(); createPeer(); };
+
+    window.addEventListener('pagehide', () => { destroyed = true; closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } });
+
+    createPeer();
+  }
+
+  /* =========================================================
+     РЕЖИМ СПЕЦИАЛИСТА
+     ========================================================= */
+
+  // Индексы BlazePose (left/right = левая/правая сторона тела клиента).
+  const JOINTS = [
+    { key: 'knee_L',  a: 23, b: 25, c: 27 },
+    { key: 'knee_R',  a: 24, b: 26, c: 28 },
+    { key: 'hip_L',   a: 11, b: 23, c: 25 },
+    { key: 'hip_R',   a: 12, b: 24, c: 26 },
+    { key: 'elbow_L', a: 11, b: 13, c: 15 },
+    { key: 'elbow_R', a: 12, b: 14, c: 16 }
+  ];
+  const JOINT_NAMES = { knee: 'Колено', hip: 'Таз', elbow: 'Локоть' };
+  const angleState = {};
+  JOINTS.forEach((j) => { angleState[j.key] = { value: null, t: 0, stale: true }; });
+
+  // Угол в вершине b между векторами b→a и b→c, градусы [0..180].
+  // atan2(|u×v|, u·v) не имеет проблем acos с выходом за [-1, 1] из-за погрешности и точен около 0° и 180°.
+  function angle3D(a, b, c, eps) {
+    const ux = a.x - b.x, uy = a.y - b.y, uz = a.z - b.z;
+    const vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
+    const nu = Math.hypot(ux, uy, uz);
+    const nv = Math.hypot(vx, vy, vz);
+    if (!(nu > eps) || !(nv > eps)) return null;
+    const dot = ux * vx + uy * vy + uz * vz;
+    const cx = uy * vz - uz * vy;
+    const cy = uz * vx - ux * vz;
+    const cz = ux * vy - uy * vx;
+    const deg = Math.atan2(Math.hypot(cx, cy, cz), dot) * 180 / Math.PI;
+    return Number.isFinite(deg) ? deg : null;
+  }
+
+  // Точка пригодна, если модель уверена в её видимости и она внутри кадра.
+  function usable(lm) {
+    if (!lm) return false;
+    if (!Number.isFinite(lm.x) || !Number.isFinite(lm.y) || !Number.isFinite(lm.z)) return false;
+    if (lm.visibility !== undefined && !(lm.visibility >= VIS_MIN)) return false;
+    return lm.x >= -FRAME_MARGIN && lm.x <= 1 + FRAME_MARGIN && lm.y >= -FRAME_MARGIN && lm.y <= 1 + FRAME_MARGIN;
+  }
+
+  function computeAngles(lm, world, W, H, now) {
+    const useWorld = Array.isArray(world) && world.length === 33;
+    // poseWorldLandmarks: метрические 3D-координаты (м) с центром в тазу, без перспективных искажений.
+    // Фолбэк: нормализованные координаты переводим в пиксели (x*W, y*H, z*W), иначе в кадре 9:16
+    // ось Y сжата относительно X в 1.78 раза и углы искажаются.
+    const P = (i) => useWorld
+      ? world[i]
+      : { x: lm[i].x * W, y: lm[i].y * H, z: lm[i].z * W };
+    const eps = useWorld ? 0.01 : 2;
+
+    for (const j of JOINTS) {
+      const st = angleState[j.key];
+      let raw = null;
+      if (lm && usable(lm[j.a]) && usable(lm[j.b]) && usable(lm[j.c])) {
+        raw = angle3D(P(j.a), P(j.b), P(j.c), eps);
+      }
+      if (raw != null) {
+        st.value = st.value == null || st.stale && now - st.t > HOLD_MS ? raw : st.value + ANGLE_EMA * (raw - st.value);
+        st.t = now;
+        st.stale = false;
+      } else {
+        st.stale = true;
+        if (now - st.t > HOLD_MS) st.value = null;
+      }
+    }
+  }
+
+  function anglesSnapshot() {
+    const o = {};
+    JOINTS.forEach((j) => { const v = angleState[j.key].value; o[j.key] = v == null ? null : Math.round(v); });
+    return o;
+  }
+
+  let hudLast = 0;
+  function updateHud(now, force) {
+    if (!force && now - hudLast < 120) return;
+    hudLast = now;
+    JOINTS.forEach((j) => {
+      const el = $('a_' + j.key);
+      const st = angleState[j.key];
+      el.textContent = st.value == null ? '··' : Math.round(st.value) + '°';
+      el.classList.toggle('stale', st.value != null && st.stale);
+    });
+  }
+
+  function drawAngleLabels(ctx, lm, W, H) {
+    const fs = Math.max(14, Math.round(Math.min(W, H) * 0.035));
+    ctx.font = '600 ' + fs + 'px -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (const j of JOINTS) {
+      const st = angleState[j.key];
+      if (st.value == null || !usable(lm[j.b])) continue;
+      const x = lm[j.b].x * W;
+      const y = lm[j.b].y * H;
+      const text = Math.round(st.value) + '°';
+      const tw = ctx.measureText(text).width;
+      const isLeft = j.key.endsWith('_L');
+      // Левая сторона тела клиента на кадре справа (камера смотрит на клиента): подпись наружу.
+      const dx = isLeft ? fs * 0.8 : -fs * 0.8 - tw - fs * 0.6;
+      const bx = x + dx, by = y - fs * 0.75;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, tw + fs * 0.6, fs * 1.5, fs * 0.35);
+      else ctx.rect(bx, by, tw + fs * 0.6, fs * 1.5);
+      ctx.fill();
+      ctx.fillStyle = st.stale ? 'rgba(255,255,255,0.55)' : '#ffffff';
+      ctx.fillText(text, bx + fs * 0.3, y);
+    }
+  }
+
+  /* -------- Журнал -------- */
+
+  let log = [];
+  try { log = JSON.parse(localStorage.getItem(STORAGE_LOG) || '[]') || []; } catch (e) { log = []; }
+  function saveLog() { try { localStorage.setItem(STORAGE_LOG, JSON.stringify(log)); } catch (e) { /* приватный режим */ } }
+  function anglesLine(a) {
+    const f = (v) => v == null ? '··' : v + '°';
+    return 'Колено ' + f(a.knee_L) + '/' + f(a.knee_R) +
+      ', Таз ' + f(a.hip_L) + '/' + f(a.hip_R) +
+      ', Локоть ' + f(a.elbow_L) + '/' + f(a.elbow_R);
+  }
+  function renderLog() {
+    const counts = {};
+    log.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
+    document.querySelectorAll('[data-badge]').forEach((b) => {
+      const n = counts[b.getAttribute('data-badge')] || 0;
+      b.textContent = n ? String(n) : '';
+    });
+    const ul = $('logList');
+    ul.innerHTML = '';
+    if (!log.length) {
+      const li = document.createElement('li');
+      li.textContent = 'Записей пока нет';
+      li.style.color = 'var(--muted)';
+      ul.appendChild(li);
+      return;
+    }
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      const li = document.createElement('li');
+      const t = document.createElement('span'); t.className = 't'; t.textContent = fmtTime(new Date(e.ts));
+      const n = document.createElement('strong'); n.textContent = e.type;
+      const a = document.createElement('span'); a.className = 'a'; a.textContent = anglesLine(e.angles);
+      li.append(t, n, a);
+      ul.appendChild(li);
+    }
+  }
+  function addLog(type) {
+    log.push({ ts: Date.now(), type: type, angles: anglesSnapshot() });
+    saveLog();
+    renderLog();
+  }
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+  function exportCsv() {
+    if (!log.length) { toast('Журнал пуст'); return; }
+    const head = ['Дата', 'Время', 'Событие', 'Колено Л', 'Колено П', 'Таз Л', 'Таз П', 'Локоть Л', 'Локоть П'];
+    const rows = log.map((e) => {
+      const d = new Date(e.ts);
+      const a = e.angles;
+      const v = (x) => x == null ? '' : String(x);
+      return [fmtDate(d), fmtTime(d), e.type, v(a.knee_L), v(a.knee_R), v(a.hip_L), v(a.hip_R), v(a.elbow_L), v(a.elbow_R)];
+    });
+    const csv = '﻿' + [head].concat(rows).map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(';')).join('\r\n');
+    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'backinsight_log_' + fileStamp(new Date()) + '.csv');
+  }
+
+  /* -------- Снимок -------- */
+
+  let snapRequest = null;
+  let snapFile = null;
+  let snapDataUrl = '';
+
+  function dataUrlToFile(dataUrl, name) {
+    const comma = dataUrl.indexOf(',');
+    const mime = (dataUrl.slice(0, comma).match(/:(.*?);/) || [])[1] || 'image/jpeg';
+    const bin = atob(dataUrl.slice(comma + 1));
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new File([arr], name, { type: mime });
+  }
+
+  function composeSnapshot(source) {
+    const W = overlay.width, H = overlay.height;
+    if (!W || !H) { toast('Нет видео'); return; }
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    try { x.drawImage(source, 0, 0, W, H); } catch (e) { x.drawImage(video, 0, 0, W, H); }
+    x.drawImage(overlay, 0, 0, W, H);
+
+    const now = new Date();
+    const a = anglesSnapshot();
+    const f = (v) => v == null ? '··' : v + '°';
+    const lines = [
+      'BackInsight · ' + fmtDate(now) + ' ' + fmtTime(now),
+      'Колено   Л ' + f(a.knee_L) + '   П ' + f(a.knee_R),
+      'Таз      Л ' + f(a.hip_L) + '   П ' + f(a.hip_R),
+      'Локоть   Л ' + f(a.elbow_L) + '   П ' + f(a.elbow_R)
+    ];
+    const counts = {};
+    log.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
+    const complaints = ['Шея', 'Поясница', 'Колено/Таз'].map((k) => k + ': ' + (counts[k] || 0)).join('  ');
+    lines.push('Жалобы  ' + complaints);
+
+    const fs = Math.max(14, Math.round(W * 0.032));
+    x.font = '600 ' + fs + 'px ui-monospace, Menlo, Consolas, monospace';
+    x.textBaseline = 'top';
+    const lh = Math.round(fs * 1.35);
+    const pad = Math.round(fs * 0.7);
+    const boxW = Math.min(W - pad * 2, Math.max.apply(null, lines.map((l) => x.measureText(l).width)) + pad * 2);
+    const boxH = lines.length * lh + pad * 2 - (lh - fs);
+    x.fillStyle = 'rgba(0,0,0,0.62)';
+    x.fillRect(pad, pad, boxW, boxH);
+    x.fillStyle = '#ffffff';
+    lines.forEach((l, i) => x.fillText(l, pad * 2, pad * 2 + i * lh - Math.round((lh - fs) / 2), boxW - pad * 2));
+
+    snapDataUrl = c.toDataURL('image/jpeg', 0.92);
+    const name = 'backinsight_' + fileStamp(now) + '.jpg';
+    try { snapFile = dataUrlToFile(snapDataUrl, name); } catch (e) { snapFile = null; }
+    $('snapImg').src = snapDataUrl;
+    $('btnSnapShare').classList.toggle('hidden', !(snapFile && navigator.canShare && navigator.canShare({ files: [snapFile] })));
+    $('snapWrap').classList.remove('hidden');
+    addLog('Снимок');
+  }
+
+  function requestSnapshot() {
+    if (!video.videoWidth) { toast('Видео ещё не получено'); return; }
+    vibrate(20);
+    if (Analyzer.ready && Analyzer.running) {
+      // Берём кадр, на котором реально считалась поза (results.image): скелет совпадает с изображением точно.
+      const req = { t: performance.now() };
+      snapRequest = req;
+      setTimeout(() => {
+        if (snapRequest === req) { snapRequest = null; composeSnapshot(video); }
+      }, 900);
+    } else {
+      composeSnapshot(video);
+    }
+  }
+
+  /* -------- MediaPipe Pose -------- */
+
+  const Analyzer = {
+    pose: null,
+    ready: false,
+    running: false,
+    busy: false,
+    complexity: 1,
+    lastSend: 0,
+    interval: 1000 / 20,
+    avgMs: 0,
+    samples: 0,
+    frames: 0,
+    fpsT0: 0,
+    errors: 0,
+    base: '',
+
+    async init() {
+      $('modelState').textContent = 'Модель позы: загрузка…';
+      let poseSrc = null;
+      for (const base of LIBS.pose) {
+        try { await loadScript(base + '/pose.js'); poseSrc = base; break; } catch (e) { /* следующий CDN */ }
+      }
+      if (!poseSrc) throw new Error('pose.js недоступен');
+      this.base = poseSrc;
+      await loadFirst(LIBS.drawing);
+      if (typeof window.Pose !== 'function' || typeof window.drawConnectors !== 'function') {
+        throw new Error('MediaPipe не инициализирован');
+      }
+      this.pose = new window.Pose({ locateFile: (file) => this.base + '/' + file });
+      this.pose.setOptions({
+        modelComplexity: this.complexity,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        smoothSegmentation: false,
+        selfieMode: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      this.pose.onResults((r) => onPoseResults(r));
+      await this.pose.initialize();
+      this.ready = true;
+      $('modelState').textContent = 'Модель позы: готова (full)';
+      this.start();
+    },
+
+    start() {
+      if (this.running || !this.ready) return;
+      this.running = true;
+      this.fpsT0 = performance.now();
+      this.schedule();
+      // Сторож: requestVideoFrameCallback может «зависнуть» при смене/потере srcObject.
+      setInterval(() => {
+        if (this.running && performance.now() - this.lastTick > 1500) { this.loopId++; this.schedule(); }
+      }, 1000);
+    },
+
+    loopId: 0,
+    lastTick: 0,
+
+    schedule() {
+      if (!this.running) return;
+      const id = this.loopId;
+      const cb = (now) => { if (id === this.loopId) this.tick(now); };
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && video.srcObject && !video.paused && video.readyState >= 2) {
+        // Срабатывает только на новый декодированный кадр: без повторной обработки одного кадра.
+        video.requestVideoFrameCallback(cb);
+      } else if (video.srcObject) {
+        requestAnimationFrame(cb);
+      } else {
+        setTimeout(() => cb(performance.now()), 250);
+      }
+    },
+
+    async tick(now) {
+      this.lastTick = performance.now();
+      this.schedule();
+      if (this.busy || document.hidden) return;
+      if (video.readyState < 2 || !video.videoWidth || video.paused) return;
+      if (now - this.lastSend < this.interval) return;
+      this.lastSend = now;
+      this.busy = true;
+      const t0 = performance.now();
+      try {
+        await this.pose.send({ image: video });
+        this.errors = 0;
+      } catch (e) {
+        this.errors++;
+        if (this.errors > 30) {
+          this.running = false;
+          $('modelState').textContent = 'Модель позы: остановлена из-за ошибок';
+        }
+      } finally {
+        this.busy = false;
+        this.adapt(performance.now() - t0);
+      }
+    },
+
+    // Адаптивная частота: интервал = 1.3 × среднее время инференса, в пределах 8..24 к/с.
+    // Так основной поток не забивается очередью, и UI с видео остаются плавными.
+    adapt(ms) {
+      this.avgMs = this.samples ? this.avgMs * 0.85 + ms * 0.15 : ms;
+      this.samples++;
+      this.interval = Math.min(1000 / 8, Math.max(1000 / 24, this.avgMs * 1.3));
+      this.frames++;
+      const t = performance.now();
+      if (t - this.fpsT0 >= 1000) {
+        analysisFps = Math.round(this.frames * 1000 / (t - this.fpsT0));
+        this.frames = 0;
+        this.fpsT0 = t;
+      }
+      // Слабый процессор: переключаемся на облегчённую модель один раз.
+      if (this.complexity === 1 && this.samples > 40 && this.avgMs > 85) {
+        this.complexity = 0;
+        this.samples = 0;
+        try { this.pose.setOptions({ modelComplexity: 0 }); } catch (e) { /* нет */ }
+        $('modelState').textContent = 'Модель позы: lite (слабый процессор)';
+      }
+    }
+  };
+
+  function syncCanvasSize() {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return;
+    if (overlay.width !== w || overlay.height !== h) {
+      overlay.width = w;
+      overlay.height = h;
+    }
+  }
+
+  function onPoseResults(res) {
+    const now = performance.now();
+    syncCanvasSize();
+    const W = overlay.width, H = overlay.height;
+    octx.clearRect(0, 0, W, H);
+    const lm = res.poseLandmarks;
+    computeAngles(lm || null, res.poseWorldLandmarks, W, H, now);
+    if (lm && lm.length === 33) {
+      const lw = Math.max(2, Math.round(W / 180));
+      const r = Math.max(2, Math.round(W / 170));
+      window.drawConnectors(octx, lm, window.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: lw, visibilityMin: VIS_MIN });
+      window.drawLandmarks(octx, lm, { color: '#FF0000', fillColor: '#FF0000', lineWidth: 1, radius: r, visibilityMin: VIS_MIN });
+      drawAngleLabels(octx, lm, W, H);
+    }
+    updateHud(now, false);
+    if (snapRequest) {
+      snapRequest = null;
+      composeSnapshot(res.image || video);
+    }
+  }
+
+  /* -------- Сигналинг и звонок специалиста -------- */
+
+  async function startSpecialist() {
+    let peer = null;
+    let currentCall = null;
+    let peerId = '';
+    let idRetries = 0;
+    let destroyed = false;
+
+    renderLog();
+    setPlaceholder('Ожидание клиента. Нажмите ☰, чтобы получить ссылку.', true);
+    setStatus('Подключение к серверу…', 'warn', '');
+    Wake.enable();
+
+    // Звук и микрофон специалиста: запрашиваем заранее, чтобы ответ на звонок не ждал разрешения.
+    const micPromise = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+      ? navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })
+      : Promise.reject(new Error('no media')))
+      .then((s) => { micStream = s; setMicButton(true); return s; })
+      .catch(() => { setMicButton(false); return null; });
+
+    $('btnMic').onclick = async () => {
+      if (!micStream) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          setMicButton(true);
+          // Аудио-трансивер уже согласован как recvonly: голос пойдёт со следующего входа клиента.
+          toast(currentCall ? 'Микрофон заработает после переподключения клиента' : 'Микрофон включён');
+        } catch (e) { toast('Нет доступа к микрофону'); }
+        return;
+      }
+      toggleMic(micStream);
+    };
+
+    $('btnFit').onclick = () => {
+      const root = document.documentElement;
+      const cur = getComputedStyle(root).getPropertyValue('--fit').trim();
+      const next = cur === 'contain' ? 'cover' : 'contain';
+      root.style.setProperty('--fit', next);
+      toast(next === 'cover' ? 'Заполнение экрана' : 'Кадр целиком');
+    };
+
+    const openCabinet = () => $('cabinetWrap').classList.remove('hidden');
+    const closeCabinet = () => $('cabinetWrap').classList.add('hidden');
+    $('btnCabinet').onclick = openCabinet;
+    $('btnCloseCabinet').onclick = closeCabinet;
+    $('cabinetWrap').addEventListener('click', (e) => { if (e.target === $('cabinetWrap')) closeCabinet(); });
+
+    document.querySelectorAll('[data-complaint]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const type = btn.getAttribute('data-complaint');
+        addLog(type);
+        vibrate(30);
+        toast(type + ' · ' + fmtTime(new Date()) + ' записано');
+      });
+    });
+    $('btnSnap').onclick = requestSnapshot;
+    $('btnExport').onclick = exportCsv;
+    $('btnClearLog').onclick = () => {
+      if (!log.length) return;
+      if (confirm('Удалить все записи журнала?')) { log = []; saveLog(); renderLog(); }
+    };
+
+    $('btnSnapClose').onclick = () => $('snapWrap').classList.add('hidden');
+    $('btnSnapSave').onclick = () => {
+      if (!snapDataUrl) return;
+      if (snapFile) downloadBlob(snapFile, snapFile.name);
+      else {
+        const a = document.createElement('a');
+        a.href = snapDataUrl; a.download = 'backinsight_' + fileStamp(new Date()) + '.jpg';
+        document.body.appendChild(a); a.click(); a.remove();
+      }
+    };
+    $('btnSnapShare').onclick = () => {
+      if (!snapFile || !navigator.share) return;
+      // share вызывается синхронно в обработчике клика: iOS требует живой пользовательский жест.
+      navigator.share({ files: [snapFile], title: 'BackInsight снимок' }).catch(() => {});
+    };
+
+    function clientLink() {
+      const u = new URL(location.href);
+      u.search = '';
+      u.hash = '';
+      u.searchParams.set('role', 'client');
+      u.searchParams.set('peer', peerId);
+      if (FORCE_RELAY) u.searchParams.set('relay', '1');
+      if (params.get('ps')) u.searchParams.set('ps', params.get('ps'));
+      return u.toString();
+    }
+
+    $('btnCopy').onclick = async () => {
+      if (!peerId) return;
+      const link = clientLink();
+      try { await navigator.clipboard.writeText(link); toast('Ссылка скопирована'); }
+      catch (e) {
+        const r = document.createRange();
+        r.selectNodeContents($('linkField'));
+        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        try { document.execCommand('copy'); toast('Ссылка скопирована'); } catch (e2) { toast('Скопируйте ссылку вручную'); }
+      }
+    };
+    $('btnShare').onclick = () => {
+      if (!peerId) return;
+      const link = clientLink();
+      if (navigator.share) navigator.share({ title: 'Сеанс BackInsight', text: 'Откройте ссылку на телефоне и разрешите камеру:', url: link }).catch(() => {});
+      else $('btnCopy').click();
+    };
+
+    // Видео клиента
+    video.addEventListener('loadedmetadata', syncCanvasSize);
+    video.addEventListener('resize', syncCanvasSize);
+
+    function endCall(reason) {
+      if (currentCall) {
+        const c = currentCall;
+        currentCall = null;
+        try { c.close(); } catch (e) { /* закрыт */ }
+      }
+      stopStats();
+      video.srcObject = null;
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      JOINTS.forEach((j) => { angleState[j.key].value = null; angleState[j.key].stale = true; });
+      updateHud(performance.now(), true);
+      setPlaceholder('Клиент отключился. Ожидание повторного подключения…', true);
+      setStatus('Ожидание клиента', 'warn', reason || '');
+    }
+
+    async function onIncomingCall(call) {
+      if (currentCall) endCall('Новый вход клиента');
+      currentCall = call;
+      setStatus('Входящий звонок…', 'warn');
+      const mic = await Promise.race([micPromise, new Promise((r) => setTimeout(() => r(null), 6000))]);
+      if (currentCall !== call) return;
+      call.answer(mic || undefined);
+
+      call.on('stream', async (stream) => {
+        if (currentCall !== call) return;
+        video.srcObject = stream;
+        setPlaceholder(null);
+        closeCabinet();
+        const ok = await playWithSound(video);
+        if (!ok && stream.getAudioTracks().length) showUnmute(video);
+        syncCanvasSize();
+      });
+      call.on('close', () => { if (currentCall === call) endCall('Звонок завершён'); });
+      call.on('error', () => { if (currentCall === call) endCall('Ошибка звонка'); });
+
+      const pc = await whenPc(call);
+      if (!pc || currentCall !== call) return;
+      watchPeerConnection(pc, () => {
+        if (currentCall !== call) return;
+        setStatus('Клиент на связи', 'ok');
+        startStats(pc);
+      }, (why) => {
+        if (currentCall === call) endCall(why);
+      });
+    }
+
+    function createPeer(id) {
+      if (peer) { try { peer.destroy(); } catch (e) { /* нет */ } }
+      peer = new window.Peer(id, PEER_OPTIONS);
+      peer.on('open', (openId) => {
+        peerId = openId;
+        idRetries = 0;
+        try { localStorage.setItem(STORAGE_ID, openId); } catch (e) { /* приватный режим */ }
+        $('linkField').textContent = clientLink();
+        $('peerIdLine').textContent = 'ID сессии: ' + openId + (FORCE_RELAY ? ' · только TURN' : '');
+        if (!currentCall) {
+          setStatus('Ожидание клиента', 'warn', 'Сервер связи подключён');
+          let shown = false;
+          try { shown = !!sessionStorage.getItem('bi_cab_shown'); sessionStorage.setItem('bi_cab_shown', '1'); } catch (e) { /* нет */ }
+          if (!shown) openCabinet();
+        }
+      });
+      peer.on('call', onIncomingCall);
+      peer.on('disconnected', () => {
+        if (destroyed || peer.destroyed) return;
+        if (!currentCall) setStatus('Переподключение к серверу…', 'warn');
+        setTimeout(() => { if (peer && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch (e) { createPeer(peerId || id); } } }, 1500);
+      });
+      peer.on('error', (err) => {
+        const type = err && err.type;
+        if (type === 'unavailable-id') {
+          // После перезагрузки сервер ещё держит старый ID несколько секунд: пробуем тот же ID, чтобы ссылка клиента осталась рабочей.
+          idRetries++;
+          if (idRetries <= 6) {
+            setStatus('ID занят, повтор ' + idRetries + '/6…', 'warn');
+            setTimeout(() => createPeer(id), 3000);
+          } else {
+            idRetries = 0;
+            const nid = randomId();
+            toast('Создан новый ID, отправьте клиенту новую ссылку');
+            createPeer(nid);
+          }
+        } else if (type === 'invalid-id') {
+          createPeer(randomId());
+        } else if (type === 'browser-incompatible') {
+          fatal('Браузер не поддерживается', 'Обновите Safari или Chrome до последней версии.');
+        } else if (type === 'peer-unavailable') {
+          // Не относится к специалисту.
+        } else {
+          setStatus('Ошибка сети: ' + (type || 'unknown'), 'err');
+          setTimeout(() => { if (!peer || peer.destroyed || peer.disconnected) createPeer(peerId || id); }, 4000);
+        }
+      });
+    }
+
+    window.addEventListener('pagehide', () => {
+      destroyed = true;
+      try { currentCall && currentCall.close(); } catch (e) { /* нет */ }
+      try { peer && peer.destroy(); } catch (e) { /* нет */ }
+    });
+
+    // Модель грузим параллельно с ожиданием клиента.
+    Analyzer.init().catch((e) => {
+      $('modelState').textContent = 'Модель позы недоступна: ' + (e && e.message ? e.message : e);
+    });
+
+    try {
+      await loadFirst(LIBS.peerjs);
+    } catch (e) {
+      fatal('Сеть', 'Не удалось загрузить модуль связи PeerJS. Проверьте интернет и перезагрузите страницу.');
+      return;
+    }
+    let savedId = '';
+    try { savedId = localStorage.getItem(STORAGE_ID) || ''; } catch (e) { savedId = ''; }
+    createPeer(/^bi-[a-z0-9]{6,}$/.test(savedId) ? savedId : randomId());
+  }
+
+  /* ===================== Запуск ===================== */
+
+  if (!window.isSecureContext) {
+    fatal('Нужен HTTPS', 'Камера и WebRTC работают только по HTTPS. Откройте страницу через https://');
+    return;
+  }
+  if (typeof RTCPeerConnection === 'undefined') {
+    fatal('Браузер не поддерживается', 'Нужен браузер с поддержкой WebRTC: Safari 15+ или Chrome.');
+    return;
+  }
+
+  if (ROLE === 'client') startClient();
+  else startSpecialist();
+})();
+</script>
+</body>
+</html>
