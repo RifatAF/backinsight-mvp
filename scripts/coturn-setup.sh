@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Установка собственного TURN-сервера (coturn) для BackInsight Live на чистый Ubuntu 22.04/24.04 VPS.
 # Нужен домен (A-запись на IP сервера), открытые порты 80/tcp, 443/tcp+udp, 3478/tcp+udp, 49152-65535/udp.
-# Запуск: sudo bash coturn-setup.sh turn.example.ru you@example.ru
+# Запуск: sudo bash coturn-setup.sh turn.example.ru you@example.ru [пароль]
+# Если сертификат не выдался (например, лимит Let's Encrypt), сервер всё равно запустится на 3478 UDP/TCP без TLS.
 set -euo pipefail
 
 DOMAIN="${1:?Укажите домен, например turn.example.ru}"
 EMAIL="${2:?Укажите email для сертификата Let's Encrypt}"
 TURN_USER="bi"
-TURN_PASS="$(openssl rand -hex 16)"
+TURN_PASS="${3:-$(openssl rand -hex 16)}"
 
 apt-get update
 apt-get install -y coturn certbot
@@ -16,32 +17,32 @@ apt-get install -y coturn certbot
 EXT_IP="$(curl -4 -fsS https://ifconfig.me || hostname -I | awk '{print $1}')"
 
 # Сертификат для TURNS на 443 (трафик неотличим от HTTPS).
-certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos -n
-
-# coturn работает от пользователя turnserver: копируем сертификаты в его каталог и обновляем при продлении.
-install -d -o turnserver -g turnserver -m 750 /etc/coturn/certs
-cat > /etc/letsencrypt/renewal-hooks/deploy/coturn.sh <<HOOK
+TLS=0
+if certbot certonly --standalone -d "$DOMAIN" -m "$EMAIL" --agree-tos -n; then
+  TLS=1
+  # coturn работает от пользователя turnserver: копируем сертификаты в его каталог и обновляем при продлении.
+  install -d -o turnserver -g turnserver -m 750 /etc/coturn/certs
+  cat > /etc/letsencrypt/renewal-hooks/deploy/coturn.sh <<HOOK
 #!/bin/sh
 install -o turnserver -g turnserver -m 640 /etc/letsencrypt/live/$DOMAIN/fullchain.pem /etc/coturn/certs/fullchain.pem
 install -o turnserver -g turnserver -m 640 /etc/letsencrypt/live/$DOMAIN/privkey.pem /etc/coturn/certs/privkey.pem
 systemctl restart coturn
 HOOK
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
-install -o turnserver -g turnserver -m 640 "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" /etc/coturn/certs/fullchain.pem
-install -o turnserver -g turnserver -m 640 "/etc/letsencrypt/live/$DOMAIN/privkey.pem" /etc/coturn/certs/privkey.pem
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
+  install -o turnserver -g turnserver -m 640 "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" /etc/coturn/certs/fullchain.pem
+  install -o turnserver -g turnserver -m 640 "/etc/letsencrypt/live/$DOMAIN/privkey.pem" /etc/coturn/certs/privkey.pem
+else
+  echo "ВНИМАНИЕ: сертификат не получен, TURNS на 443 будет выключен, работает TURN на 3478 UDP/TCP."
+fi
 
 cat > /etc/turnserver.conf <<CONF
 listening-port=3478
-tls-listening-port=443
-alt-tls-listening-port=5349
 external-ip=$EXT_IP
 realm=$DOMAIN
 server-name=$DOMAIN
 fingerprint
 lt-cred-mech
 user=$TURN_USER:$TURN_PASS
-cert=/etc/coturn/certs/fullchain.pem
-pkey=/etc/coturn/certs/privkey.pem
 min-port=49152
 max-port=65535
 no-cli
@@ -56,6 +57,15 @@ stale-nonce=600
 log-file=syslog
 CONF
 
+if [ "$TLS" = 1 ]; then
+  cat >> /etc/turnserver.conf <<CONF
+tls-listening-port=443
+alt-tls-listening-port=5349
+cert=/etc/coturn/certs/fullchain.pem
+pkey=/etc/coturn/certs/privkey.pem
+CONF
+fi
+
 # Порт 443 ниже 1024: разрешаем coturn слушать его без root.
 setcap cap_net_bind_service=+ep "$(command -v turnserver)"
 sed -i 's/^#\?TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
@@ -69,5 +79,7 @@ systemctl enable coturn
 systemctl restart coturn
 
 echo
-echo "Готово. Вставьте в index.html вместо 'const OWN_TURN = null;':"
+systemctl --no-pager --lines=0 status coturn | head -3 || true
+echo "TLS: $([ "$TLS" = 1 ] && echo включён || echo выключен)"
+echo "Готово. Строка для index.html (если ещё не вставлена):"
 echo "  const OWN_TURN = { host: '$DOMAIN', username: '$TURN_USER', credential: '$TURN_PASS' };"

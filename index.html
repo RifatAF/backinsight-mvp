@@ -596,7 +596,7 @@
   // Собственный TURN-сервер в России (VPS с coturn, см. scripts/coturn-setup.sh). Клиент из РФ ходит к нему
   // по внутреннему маршруту, без иностранного трафика с мобильного, а дальше до Аргентины идёт канал дата-центра.
   // Заполните после установки сервера, например: { host: 'turn.example.ru', username: 'bi', credential: '...' }
-  const OWN_TURN = null;
+  const OWN_TURN = { ip: '195.19.219.253', host: '195-19-219-253.sslip.io', username: 'bi', credential: 'b61b5d20c1218f654cf6e5909d465fe4' };
 
   // Регион определяется автоматически по часовому поясу телефона, без запросов к внешним сервисам.
   // libwebrtc даёт ретрансляторам из начала списка больший приоритет, поэтому порядок решает, через какой
@@ -605,8 +605,9 @@
   const IN_RUSSIA = /^(Europe\/(Moscow|Kaliningrad|Samara|Volgograd|Saratov|Ulyanovsk|Astrakhan|Kirov|Simferopol)|Asia\/(Yekaterinburg|Omsk|Novosibirsk|Barnaul|Tomsk|Novokuznetsk|Krasnoyarsk|Irkutsk|Chita|Yakutsk|Khandyga|Vladivostok|Ust-Nera|Magadan|Sakhalin|Srednekolymsk|Kamchatka|Anadyr))$/.test(TZ);
 
   const OWN_TURN_SERVERS = OWN_TURN ? [
-    { urls: 'turn:' + OWN_TURN.host + ':3478?transport=udp', username: OWN_TURN.username, credential: OWN_TURN.credential },
-    { urls: 'turn:' + OWN_TURN.host + ':3478?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential },
+    // UDP/TCP по IP: не зависит от DNS. TLS по имени: сертификат выдан на домен.
+    { urls: 'turn:' + (OWN_TURN.ip || OWN_TURN.host) + ':3478?transport=udp', username: OWN_TURN.username, credential: OWN_TURN.credential },
+    { urls: 'turn:' + (OWN_TURN.ip || OWN_TURN.host) + ':3478?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential },
     { urls: 'turns:' + OWN_TURN.host + ':443?transport=tcp', username: OWN_TURN.username, credential: OWN_TURN.credential }
   ] : [];
   const METERED_SERVERS = [
