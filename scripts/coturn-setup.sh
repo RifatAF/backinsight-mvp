@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DOMAIN="${1:?Укажите домен, например turn.example.ru}"
-EMAIL="${2:?Укажите email для сертификата Let's Encrypt}"
+EMAIL="${2:?Укажите email для сертификата}"
 TURN_USER="bi"
 TURN_PASS="${3:-$(openssl rand -hex 16)}"
 
