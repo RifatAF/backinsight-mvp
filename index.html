@@ -148,7 +148,7 @@
   .tabrow { display: flex; gap: 6px; align-items: stretch; }
   .tabrow .seg button { min-width: 30px; }
   .tabs { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
-  .tab { min-height: 36px; border-radius: 10px; font-size: 12px; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; color: var(--muted); border: 1px solid transparent; }
+  .tab { min-height: 36px; border-radius: 10px; font-size: 12px; padding: 0 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; color: var(--muted); border: 1px solid transparent; }
   .tab.on { color: #fff; background: var(--card-2); border-color: var(--line); box-shadow: inset 0 -2px 0 var(--c); }
 
   .chips {
@@ -172,7 +172,9 @@
   .scale-row button { height: 44px; border-radius: 10px; font-weight: 700; font-size: 14px; color: #0b0f14; }
   .scale-skip { height: 36px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 
-  .actions { display: grid; grid-template-columns: 1fr 1fr 48px; gap: 6px; }
+  .actions { display: grid; grid-template-columns: 1.15fr 1fr 1fr 48px; gap: 6px; }
+  .actions .act { font-size: 13px; }
+  #btnMode.on { background: #0e7490; border-color: transparent; }
   .act {
     min-height: 50px; border-radius: 14px; background: var(--card-2); border: 1px solid var(--line);
     font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -225,6 +227,80 @@
   #logList .a { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
   #logList .del { color: var(--muted); font-size: 18px; padding: 0 6px; }
   #snapImg { width: 100%; border-radius: 12px; display: block; background: #000; -webkit-touch-callout: default; }
+
+  /* Подсказки клиенту: читаются с 2–3 м */
+  #cueCard {
+    position: absolute; left: 12px; right: 12px; top: 50%; transform: translateY(-50%); z-index: 7;
+    border-radius: 26px; padding: 22px 16px 18px; text-align: center;
+    background: rgba(11,15,20,.9); border: 3px solid var(--cc, #3b82f6);
+    box-shadow: 0 12px 40px rgba(0,0,0,.55); animation: pop .22s ease-out; pointer-events: auto;
+  }
+  #cueCard .ico { font-size: clamp(44px, 15vw, 96px); line-height: 1; }
+  #cueCard .txt { font-size: clamp(30px, 10.5vw, 70px); font-weight: 800; line-height: 1.07; margin-top: 10px; letter-spacing: -.01em; }
+  #cueCard .sub { font-size: clamp(16px, 5vw, 26px); color: var(--muted); margin-top: 10px; }
+  #cueCard.digits .txt { font-size: clamp(90px, 42vw, 220px); margin-top: 0; }
+  body.specialist #cueCard { top: auto; bottom: 12px; transform: none; padding: 10px 12px; border-width: 2px; animation: none; }
+  body.specialist #cueCard .ico { font-size: 28px; display: inline; }
+  body.specialist #cueCard .txt { font-size: 20px; display: inline; margin: 0 0 0 8px; }
+  body.specialist #cueCard .sub { font-size: 12px; margin-top: 4px; }
+  @keyframes pop { from { transform: translateY(-50%) scale(.85); opacity: 0; } }
+
+  #timerBox {
+    position: absolute; z-index: 6; text-align: center; min-width: 150px;
+    background: rgba(11,15,20,.88); border: 2px solid var(--tc, #a78bfa); border-radius: 22px; padding: 8px 18px 10px;
+  }
+  body.client #timerBox { left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 64px); }
+  body.specialist #timerBox { right: 10px; top: calc(var(--safe-t) + 58px); min-width: 0; padding: 4px 12px 6px; border-radius: 14px; }
+  #timerBox .lbl { font-size: clamp(14px, 4.5vw, 22px); font-weight: 700; color: var(--tc); text-transform: uppercase; letter-spacing: .06em; }
+  #timerBox .num { font-size: clamp(56px, 22vw, 120px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  body.specialist #timerBox .num { font-size: 28px; }
+  body.specialist #timerBox .lbl { font-size: 10px; }
+  #timerBox .bar, #cueCard .bar { height: 6px; background: rgba(255,255,255,.12); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  #timerBox .bar i { display: block; height: 100%; width: 100%; background: var(--tc); transition: width .25s linear; }
+
+  #clientCounter {
+    position: absolute; right: 10px; top: calc(var(--safe-t) + 60px); z-index: 5; text-align: right;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 18px; padding: 8px 14px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); max-width: 60%;
+  }
+  #clientCounter .ex { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #clientCounter .big { font-size: clamp(40px, 14vw, 72px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #clientCounter .lbl { font-size: 13px; color: var(--muted); }
+  #clientCounter.bump .big { animation: bump .3s ease; }
+  @keyframes bump { 40% { transform: scale(1.25); color: #4ade80; } }
+  body.client.has-timer #clientCounter { top: auto; bottom: 12px; }
+  body.client.has-timer #lastCue { display: none; }
+
+  #lastCue {
+    position: absolute; left: 10px; top: calc(var(--safe-t) + 60px); z-index: 5; max-width: 55%;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px;
+    font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+
+  #pointMarker {
+    position: absolute; z-index: 6; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%;
+    border: 5px solid #facc15; box-shadow: 0 0 0 3px rgba(0,0,0,.45), inset 0 0 0 3px rgba(0,0,0,.35);
+    pointer-events: none; animation: ping 1s ease-out infinite;
+  }
+  @keyframes ping { 0% { transform: scale(.55); opacity: 1; } 100% { transform: scale(1.35); opacity: .35; } }
+  #pointHint {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 6;
+    background: #facc15; color: #111; font-weight: 700; font-size: 13px; border-radius: 999px; padding: 8px 14px; white-space: nowrap;
+  }
+  #stage.pointing { cursor: crosshair; }
+
+  .answers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .answers button {
+    min-height: 64px; border-radius: 16px; background: var(--card-2); border: 1px solid var(--line);
+    font-size: 19px; font-weight: 700; padding: 0 10px;
+  }
+  .answers.scale11 { grid-template-columns: repeat(4, 1fr); }
+  .answers.scale11 button { color: #0b0f14; font-size: 24px; }
+  .answers .wide { grid-column: 1 / -1; }
+  #askTitle { font-size: clamp(24px, 7.5vw, 36px); line-height: 1.15; }
+  #sumText { white-space: pre-wrap; font: 15px/1.45 -apple-system, BlinkMacSystemFont, Roboto, sans-serif; background: #0a0f15; border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 10px 0; }
+  .seg.tools button { font-size: 15px; min-width: 34px; padding: 0 4px; }
 
   #toast {
     position: fixed; left: 50%; top: calc(var(--safe-t) + 60px); transform: translateX(-50%);
@@ -279,9 +355,16 @@
       </button>
     </div>
 
+    <div id="cueCard" class="hidden"><div class="ico" id="cueIco"></div><div class="txt" id="cueTxt"></div><div class="sub" id="cueSub"></div></div>
+    <div id="timerBox" class="hidden"><div class="lbl" id="timerLbl"></div><div class="num" id="timerNum"></div><div class="bar"><i id="timerBar"></i></div></div>
+    <div id="clientCounter" class="client-only hidden"><div class="ex" id="ccEx"></div><div class="big" id="ccReps">0</div><div class="lbl" id="ccSet"></div></div>
+    <button id="lastCue" class="client-only hidden" title="Показать ещё раз"></button>
+    <div id="pointMarker" class="hidden"></div>
+    <div id="pointHint" class="spec-only hidden">👆 Нажмите на видео, чтобы показать клиенту место</div>
+
     <div id="clientHint" class="client-only">
-      Поставьте телефон <b>вертикально в 2–3 м</b>, чтобы в кадре было видно <b>от головы до стоп</b>. Камера работает в режиме ×1.
-      <button class="btn full" id="btnHintOk" style="min-height:38px;margin-top:8px">Понятно</button>
+      Поставьте телефон <b>вертикально в 2–3 м</b>, чтобы в кадре было видно <b>от головы до стоп</b>. Подсказки специалиста появятся крупно на экране и прозвучат голосом.
+      <button class="btn full primary" id="btnHintOk" style="min-height:44px;margin-top:8px">Начать (включить звук подсказок)</button>
     </div>
   </main>
 
@@ -295,6 +378,9 @@
       <div class="seg" id="sideSeg" title="Сторона для отметок">
         <button data-side="L">Л</button><button data-side="B" class="on">Обе</button><button data-side="R">П</button>
       </div>
+      <div class="seg tools hidden" id="cueTools">
+        <button id="btnTts" title="Озвучивать подсказки у клиента">🔈</button><button id="btnPoint" title="Указать место на видео">👆</button>
+      </div>
       <div class="tabs" id="tabs"></div>
     </div>
     <div class="collapsible">
@@ -306,6 +392,7 @@
       </div>
     </div>
     <div class="actions">
+      <button class="act" id="btnMode">📣 Клиенту</button>
       <button class="act" id="btnNote">✎ Заметка</button>
       <button class="act primary" id="btnSnap">📸 Снимок</button>
       <button class="act" id="btnDock" title="Свернуть панель">⌄</button>
@@ -335,6 +422,7 @@
       <button class="btn primary" id="btnReport">Скопировать отчёт</button>
       <button class="btn" id="btnExport">Скачать CSV</button>
     </div>
+    <button class="btn full" id="btnSendSummary">📤 Отправить итоги клиенту</button>
     <h3>Журнал</h3>
     <ul id="logList"></ul>
     <h3>Вид</h3>
@@ -389,6 +477,41 @@
       <button class="btn" data-close>Отмена</button>
       <button class="btn primary" id="noteSave">Сохранить</button>
     </div>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="sayWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2>Сообщение клиенту</h2>
+    <p>Появится крупно на экране клиента и прозвучит голосом (если включена озвучка 🔈).</p>
+    <textarea class="field" id="sayText" placeholder="Коротко: 3–6 слов. Можно диктовкой 🎤" enterkeyhint="send"></textarea>
+    <div class="templates" id="sayTemplates"></div>
+    <div class="btn-row">
+      <button class="btn" data-close>Отмена</button>
+      <button class="btn primary" id="saySend">Отправить</button>
+    </div>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="askWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2 id="askTitle"></h2>
+    <div class="answers" id="askBtns"></div>
+  </section>
+</div>
+
+<div class="sheet-wrap hidden" id="sumWrap">
+  <section class="sheet">
+    <div class="grab"></div>
+    <h2>Итоги занятия</h2>
+    <div id="sumText"></div>
+    <div class="btn-row">
+      <button class="btn primary" id="sumCopy">Скопировать</button>
+      <button class="btn" id="sumSave">Сохранить файл</button>
+    </div>
+    <button class="btn full" data-close>Закрыть</button>
   </section>
 </div>
 
@@ -569,6 +692,203 @@
       const b = document.createElement('span'); b.textContent = v;
       el.append(a, b);
     });
+  }
+
+  /* ===================== Звук, озвучка, подсказки, таймер, указка ===================== */
+
+  const Sound = {
+    ctx: null,
+    voice: null,
+    unlocked: false,
+    unlock() {
+      try {
+        const C = window.AudioContext || window.webkitAudioContext;
+        if (C) { if (!this.ctx) this.ctx = new C(); this.ctx.resume(); }
+      } catch (e) { /* без звука */ }
+      try {
+        // iOS разрешает речь только после жеста: «прогреваем» синтезатор пустой фразой.
+        if (!this.unlocked && 'speechSynthesis' in window) {
+          const u = new SpeechSynthesisUtterance(' ');
+          u.volume = 0;
+          speechSynthesis.speak(u);
+        }
+      } catch (e) { /* без речи */ }
+      this.unlocked = true;
+      this.pickVoice();
+    },
+    beep(freq, ms, vol) {
+      const c = this.ctx;
+      if (!c) return;
+      try {
+        const o = c.createOscillator(), g = c.createGain();
+        const t = c.currentTime;
+        o.type = 'sine';
+        o.frequency.value = freq || 880;
+        g.gain.setValueAtTime(vol || 0.3, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + (ms || 150) / 1000);
+        o.connect(g); g.connect(c.destination);
+        o.start(t); o.stop(t + (ms || 150) / 1000 + 0.02);
+      } catch (e) { /* нет звука */ }
+    },
+    tone(kind) {
+      if (kind === 'go') { this.beep(660, 120); setTimeout(() => this.beep(990, 180), 140); }
+      else if (kind === 'stop') { this.beep(330, 350, 0.35); }
+      else if (kind === 'ask') { this.beep(880, 110); setTimeout(() => this.beep(880, 110), 170); }
+      else if (kind === 'tick') { this.beep(1200, 40, 0.12); }
+      else { this.beep(880, 150); }
+    },
+    pickVoice() {
+      if (!('speechSynthesis' in window)) return;
+      const vs = speechSynthesis.getVoices() || [];
+      // Только русский голос: подсказка чужим голосом с акцентом хуже, чем без озвучки.
+      this.voice = vs.find((v) => /^ru(-|_|$)/i.test(v.lang) && v.localService) || vs.find((v) => /^ru/i.test(v.lang)) || null;
+    },
+    say(text) {
+      if (!text || !('speechSynthesis' in window)) return;
+      if (!this.voice) this.pickVoice();
+      if (!this.voice) return;
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text.replace(/[^\p{L}\p{N}\s,.!?–-]/gu, ' '));
+        u.voice = this.voice; u.lang = this.voice.lang; u.rate = 1; u.pitch = 1; u.volume = 1;
+        speechSynthesis.speak(u);
+      } catch (e) { /* без речи */ }
+    }
+  };
+  if ('speechSynthesis' in window) {
+    try { speechSynthesis.onvoiceschanged = () => Sound.pickVoice(); } catch (e) { /* нет */ }
+  }
+
+  const CUE_COLORS = { go: '#22c55e', stop: '#ef4444', tech: '#fbbf24', pos: '#38bdf8', ask: '#f472b6', info: '#3b82f6', timer: '#a78bfa' };
+
+  let cueHideTimer = 0;
+  let lastCueMsg = null;
+  // m: { icon, text, sub, kind, dur, tts }; quiet: не звучать (повторный показ или сторона специалиста).
+  function showCue(m, quiet) {
+    const card = $('cueCard');
+    card.style.setProperty('--cc', CUE_COLORS[m.kind] || CUE_COLORS.info);
+    card.classList.toggle('digits', !!m.digits);
+    $('cueIco').textContent = m.icon || '';
+    $('cueIco').classList.toggle('hidden', !m.icon);
+    $('cueTxt').textContent = m.text || '';
+    $('cueSub').textContent = m.sub || '';
+    $('cueSub').classList.toggle('hidden', !m.sub);
+    card.classList.remove('hidden');
+    card.style.animation = 'none'; void card.offsetWidth; card.style.animation = '';
+    clearTimeout(cueHideTimer);
+    const dur = m.dur || (m.kind === 'tech' || m.kind === 'pos' ? 6000 : (m.text || '').length > 24 ? 8000 : 4000);
+    cueHideTimer = setTimeout(hideCue, dur);
+    if (!quiet && ROLE === 'client') {
+      Sound.tone(m.kind === 'go' || m.kind === 'stop' ? m.kind : 'info');
+      vibrate(m.kind === 'stop' ? [200, 80, 200] : 60);
+      if (m.tts) setTimeout(() => Sound.say(m.say || m.text), 250);
+      if (!m.digits) {
+        lastCueMsg = m;
+        const lc = $('lastCue');
+        lc.textContent = (m.icon ? m.icon + ' ' : '💬 ') + m.text;
+        lc.classList.remove('hidden');
+      }
+    }
+  }
+  function hideCue() { clearTimeout(cueHideTimer); $('cueCard').classList.add('hidden'); }
+  $('cueCard').addEventListener('click', hideCue);
+  $('lastCue').addEventListener('click', () => { if (lastCueMsg) showCue(Object.assign({}, lastCueMsg, { dur: 6000 }), true); });
+
+  // Таймер работы/отдыха и обратный отсчёт. Идёт локально на обеих сторонах, звук только у клиента.
+  const Timer = {
+    t: 0, endAt: 0, total: 0, kind: '', onEnd: null, countT: [],
+    start(m, onEnd) {
+      this.stop(true);
+      const loud = ROLE === 'client';
+      if (m.kind === 'stop') {
+        if (loud) showCue({ icon: '⏹', text: 'Стоп', kind: 'stop', tts: m.tts, dur: 2500 });
+        return;
+      }
+      if (m.kind === 'count') {
+        const n = m.sec || 3;
+        for (let i = 0; i <= n; i++) {
+          this.countT.push(setTimeout(() => {
+            if (i < n) {
+              showCue({ text: String(n - i), kind: 'timer', digits: true, dur: 1100 }, true);
+              if (loud) { Sound.beep(i === n - 1 ? 880 : 660, 120); if (m.tts) Sound.say(String(n - i)); }
+            } else {
+              showCue({ icon: '▶️', text: 'Старт!', kind: 'go', dur: 1800 }, true);
+              if (loud) { Sound.tone('go'); vibrate(120); if (m.tts) Sound.say('Старт'); }
+            }
+          }, i * 1000));
+        }
+        return;
+      }
+      this.kind = m.kind;
+      this.total = (m.sec || 30) * 1000;
+      this.endAt = Date.now() + this.total;
+      this.onEnd = onEnd || null;
+      const box = $('timerBox');
+      box.style.setProperty('--tc', m.kind === 'rest' ? '#38bdf8' : '#a78bfa');
+      $('timerLbl').textContent = m.kind === 'rest' ? 'Отдых' : (m.label || 'Работа');
+      box.classList.remove('hidden');
+      document.body.classList.add('has-timer');
+      if (loud) {
+        Sound.tone(m.kind === 'rest' ? 'info' : 'go');
+        if (m.tts) Sound.say(m.kind === 'rest' ? 'Отдых ' + (m.sec || 30) + ' секунд' : 'Работаем ' + (m.sec || 30) + ' секунд');
+      }
+      let lastSec = -1;
+      const tick = () => {
+        const left = Math.max(0, this.endAt - Date.now());
+        const sec = Math.ceil(left / 1000);
+        $('timerNum').textContent = Math.floor(sec / 60) + ':' + pad(sec % 60);
+        $('timerBar').style.width = (left / this.total * 100).toFixed(1) + '%';
+        if (loud && sec !== lastSec && sec <= 3 && sec > 0) Sound.beep(880, 90, 0.25);
+        lastSec = sec;
+        if (left <= 0) {
+          const kind = this.kind, cb = this.onEnd;
+          this.stop(true);
+          if (loud) {
+            Sound.beep(kind === 'rest' ? 990 : 440, 500, 0.35);
+            vibrate([150, 60, 150]);
+            showCue(kind === 'rest'
+              ? { icon: '▶️', text: 'Отдых окончен', sub: 'Готовимся к следующему подходу', kind: 'go', tts: m.tts, dur: 3500 }
+              : { icon: '⏹', text: 'Стоп! Отдыхаем', kind: 'stop', tts: m.tts, dur: 3500 });
+          }
+          if (cb) cb(kind);
+        }
+      };
+      tick();
+      this.t = setInterval(tick, 250);
+    },
+    stop(silent) {
+      clearInterval(this.t);
+      this.countT.forEach(clearTimeout);
+      this.countT = [];
+      this.t = 0;
+      $('timerBox').classList.add('hidden');
+      document.body.classList.remove('has-timer');
+    }
+  };
+
+  // Прямоугольник, в котором реально отображается кадр (учёт object-fit contain/cover).
+  function videoBox() {
+    const st = $('stage').getBoundingClientRect();
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    const fit = getComputedStyle(video).objectFit;
+    const k = fit === 'cover' ? Math.max(st.width / vw, st.height / vh) : Math.min(st.width / vw, st.height / vh);
+    const w = vw * k, h = vh * k;
+    return { st: st, x: (st.width - w) / 2, y: (st.height - h) / 2, w: w, h: h };
+  }
+  let markerTimer = 0;
+  function placeMarker(nx, ny) {
+    const b = videoBox();
+    if (!b) return;
+    const mirrored = video.classList.contains('mirror');
+    const x = b.x + (mirrored ? 1 - nx : nx) * b.w;
+    const y = b.y + ny * b.h;
+    const mk = $('pointMarker');
+    mk.style.left = x + 'px';
+    mk.style.top = y + 'px';
+    mk.classList.remove('hidden');
+    clearTimeout(markerTimer);
+    markerTimer = setTimeout(() => mk.classList.add('hidden'), 4000);
   }
 
   function loadScript(src) {
@@ -846,7 +1166,93 @@
     let destroyed = false;
     let quality = 'auto';
 
-    $('btnHintOk').onclick = () => $('clientHint').classList.add('hidden');
+    $('btnHintOk').onclick = () => {
+      Sound.unlock();
+      Sound.tone('go');
+      $('clientHint').classList.add('hidden');
+    };
+    // Любое первое касание тоже разблокирует звук (iOS требует жест пользователя).
+    document.addEventListener('pointerdown', function unlockOnce() {
+      Sound.unlock();
+      document.removeEventListener('pointerdown', unlockOnce);
+    });
+
+    const ASK = {
+      pain: { title: 'Есть боль? Оцените от 0 до 10', scale: true },
+      where: { title: 'Где ощущаете?', opts: ['Шея', 'Плечо', 'Спина', 'Поясница', 'Таз / бедро', 'Колено', 'Стопа', 'Нигде не болит'] },
+      rpe: { title: 'Как нагрузка?', opts: ['😌 Легко', '🙂 Нормально', '😣 Тяжело', '🥵 Очень тяжело'] },
+      yesno: { title: 'Понятно?', opts: ['👍 Да, понятно', '🔁 Повторите'] },
+      ready: { title: 'Готовы?', opts: ['✅ Готов(а)', '✋ Подождите'] }
+    };
+    function showAsk(m) {
+      const def = ASK[m.q] || { title: m.text, opts: ['Да', 'Нет'] };
+      $('askTitle').textContent = m.text || def.title;
+      const box = $('askBtns');
+      box.innerHTML = '';
+      box.className = 'answers' + (def.scale ? ' scale11' : '');
+      const answer = (value, label) => {
+        sendCtrl({ t: 'answer', id: m.id, q: m.q, value: value, label: label });
+        closeSheet('askWrap');
+        Sound.beep(990, 80);
+        toast('Ответ отправлен: ' + label);
+      };
+      if (def.scale) {
+        for (let i = 0; i <= 10; i++) {
+          const b = document.createElement('button');
+          b.textContent = String(i);
+          b.style.background = 'hsl(' + (130 - i * 13) + ', 70%, 58%)';
+          b.addEventListener('click', () => answer(i, i + '/10'));
+          box.appendChild(b);
+        }
+        const none = document.createElement('button');
+        none.textContent = 'Нет боли'; none.style.background = 'hsl(130, 70%, 58%)';
+        none.addEventListener('click', () => answer(0, '0/10'));
+        box.appendChild(none);
+      } else {
+        def.opts.forEach((o, i) => {
+          const b = document.createElement('button');
+          b.textContent = o;
+          if (def.opts.length % 2 && i === def.opts.length - 1) b.className = 'wide';
+          b.addEventListener('click', () => answer(o.replace(/^[^\p{L}]+/u, ''), o.replace(/^[^\p{L}]+/u, '')));
+          box.appendChild(b);
+        });
+      }
+      openSheet('askWrap');
+      Sound.tone('ask');
+      vibrate([80, 60, 80]);
+      if (m.tts) setTimeout(() => Sound.say(m.text || def.title), 250);
+    }
+
+    function showCounter(m) {
+      const cc = $('clientCounter');
+      const visible = !!(m.ex || m.reps);
+      cc.classList.toggle('hidden', !visible);
+      if (!visible) return;
+      const prev = Number($('ccReps').textContent) || 0;
+      $('ccEx').textContent = m.ex || 'Упражнение';
+      $('ccReps').textContent = String(m.reps || 0);
+      $('ccSet').textContent = 'Подход ' + (m.set || 1) + ' · повторы';
+      if ((m.reps || 0) > prev) { cc.classList.remove('bump'); void cc.offsetWidth; cc.classList.add('bump'); Sound.tone('tick'); }
+    }
+
+    function showSummary(text) {
+      $('sumText').textContent = text;
+      store('bi_client_summary', { ts: Date.now(), text: text });
+      openSheet('sumWrap');
+      Sound.tone('info');
+    }
+    $('sumCopy').onclick = async () => { toast(await copyText($('sumText').textContent) ? 'Скопировано' : 'Не удалось скопировать'); };
+    $('sumSave').onclick = () => downloadBlob(new Blob([$('sumText').textContent], { type: 'text/plain;charset=utf-8' }), 'itogi_zanyatiya_' + fileStamp(new Date()) + '.txt');
+
+    function handleCoach(m) {
+      if (m.id && (m.t === 'cue' || m.t === 'ask' || m.t === 'timer')) sendCtrl({ t: 'ack', id: m.id });
+      if (m.t === 'cue') showCue(m);
+      else if (m.t === 'ask') showAsk(m);
+      else if (m.t === 'timer') Timer.start(m);
+      else if (m.t === 'ctx') showCounter(m);
+      else if (m.t === 'point') { placeMarker(m.x, m.y); Sound.beep(1200, 60, 0.15); }
+      else if (m.t === 'summary') showSummary(m.text);
+    }
 
     async function openCamera(facingMode) {
       const base = Object.assign({}, VIDEO_CONSTRAINTS, { facingMode: { ideal: facingMode } });
@@ -991,6 +1397,7 @@
             toast(z ? 'Зум ×1' : 'Зум на этом телефоне не регулируется');
             sendCtrl(cameraInfo());
           } else if (m.t === 'reconnect') { retryDelay = 1000; closeCall(); scheduleRetry('По запросу специалиста'); }
+          else handleCoach(m);
         });
         d.on('error', () => { /* канал управления необязателен */ });
       } catch (e) { /* без канала управления */ }
@@ -1149,7 +1556,46 @@
     ex:   { label: 'Упражнение', hex: '#3b82f6' },
     snap: { label: 'Снимок', hex: '#e5e7eb' }
   };
+  CATS.cue = { label: 'Подсказка', hex: '#38bdf8' };
   const TAB_ORDER = ['pain', 'tech', 'load', 'prog'];
+
+  // Подсказки клиенту: коротко (3–6 слов), с внешним фокусом внимания (на результат движения, а не на мышцы):
+  // такие инструкции по данным исследований моторного обучения дают лучшее выполнение и запоминание.
+  const CUES = {
+    cmd: { label: 'Команды', hex: '#22c55e', items: [
+      { i: '▶️', t: 'Начинаем', k: 'go' }, { i: '⏸', t: 'Пауза', k: 'stop' }, { i: '⏹', t: 'Стоп', k: 'stop' },
+      { i: '🔁', t: 'Ещё раз' }, { i: '🐢', t: 'Медленнее' }, { i: '⚡', t: 'Чуть быстрее' }, { i: '✋', t: 'Задержитесь' },
+      { i: '🌬', t: 'Дышите спокойно' }, { i: '👍', t: 'Отлично!', k: 'go' }, { i: '💪', t: 'Ещё чуть-чуть!', k: 'go' },
+      { i: '🔄', t: 'Другая сторона' }, { i: '🛑', t: 'Больно? Остановитесь', k: 'stop' }, { i: '💧', t: 'Отдохните, попейте воды' }
+    ] },
+    pos: { label: 'Поза', hex: '#38bdf8', items: [
+      { i: '↔️', t: 'Повернитесь боком' }, { i: '🧍', t: 'Встаньте лицом ко мне' }, { i: '🔙', t: 'Повернитесь спиной' },
+      { i: '👣', t: 'Отойдите подальше' }, { i: '🔍', t: 'Подойдите ближе' }, { i: '📏', t: 'Нужен весь рост в кадре' },
+      { i: '🎯', t: 'Встаньте по центру' }, { i: '⬇️', t: 'Камеру чуть ниже' }, { i: '⬆️', t: 'Камеру чуть выше' },
+      { i: '💡', t: 'Нужно больше света' }, { i: '🧘', t: 'Лягте на коврик' }
+    ] },
+    tech: { label: 'Техника', hex: '#fbbf24', items: [
+      { i: '🦶', t: 'Толкайте пол стопами' }, { i: '🎯', t: 'Колени смотрят на носки' }, { i: '🪑', t: 'Садитесь назад, как на стул' },
+      { i: '⬆️', t: 'Тянитесь макушкой вверх' }, { i: '🧱', t: 'Спина ровная, как у стены' }, { i: '🙆', t: 'Плечи вниз, от ушей' },
+      { i: '🌬', t: 'Выдох на усилии' }, { i: '⚖️', t: 'Вес на всю стопу' }, { i: '🥛', t: 'Таз ровно, не расплескайте' },
+      { i: '👀', t: 'Взгляд на точку впереди' }, { i: '🐌', t: 'Вниз на счёт 3' }, { i: '↕️', t: 'Чуть глубже, если без боли' },
+      { i: '↩️', t: 'Не так глубоко' }
+    ] },
+    ask: { label: 'Вопрос', hex: '#f472b6', items: [
+      { i: '🩹', t: 'Есть боль? Оцените 0–10', q: 'pain' }, { i: '📍', t: 'Где ощущаете?', q: 'where' },
+      { i: '💭', t: 'Как нагрузка?', q: 'rpe' }, { i: '❓', t: 'Понятно?', q: 'yesno' }, { i: '🙋', t: 'Готовы?', q: 'ready' }
+    ] },
+    timer: { label: 'Таймер', hex: '#a78bfa', items: [
+      { i: '3️⃣', t: '3-2-1 Старт', tm: { kind: 'count', sec: 3 } },
+      { i: '⏱', t: 'Работа 20 с', tm: { kind: 'work', sec: 20 } }, { i: '⏱', t: 'Работа 30 с', tm: { kind: 'work', sec: 30 } },
+      { i: '⏱', t: 'Работа 45 с', tm: { kind: 'work', sec: 45 } }, { i: '⏱', t: 'Работа 60 с', tm: { kind: 'work', sec: 60 } },
+      { i: '☕', t: 'Отдых 30 с', tm: { kind: 'rest', sec: 30 } }, { i: '☕', t: 'Отдых 60 с', tm: { kind: 'rest', sec: 60 } },
+      { i: '☕', t: 'Отдых 90 с', tm: { kind: 'rest', sec: 90 } }, { i: '⏹', t: 'Стоп таймер', tm: { kind: 'stop' } }
+    ] }
+  };
+  const CUE_ORDER = ['cmd', 'pos', 'tech', 'ask', 'timer'];
+  const SAY_TEMPLATES = ['Смотрите, как я покажу', 'Сделайте 10 повторов', 'Следующее упражнение: ', 'То же на другую сторону', 'Отлично получается!', 'Включите звук погромче'];
+  let coachSend = null; // устанавливается в startSpecialist
 
   const EXERCISES = [
     'Присед', 'Выпад', 'Ягодичный мост', 'Наклон / хип-хинж', 'Планка', 'Боковая планка', 'Кошка-корова',
@@ -1298,6 +1744,38 @@
     section('note', 'ЗАМЕТКИ');
     const snaps = d.log.filter((e) => e.cat === 'snap').length;
     if (snaps) lines.push('', 'Снимков: ' + snaps);
+    return lines.join('\n');
+  }
+
+  function buildClientSummary() {
+    const d = Session.data;
+    const start = new Date(d.startedAt);
+    const lines = ['Итоги занятия · ' + fmtDate(start)];
+    const exOrder = [];
+    d.log.forEach((e) => { if (e.exercise && exOrder.indexOf(e.exercise) === -1) exOrder.push(e.exercise); });
+    if (exOrder.length) {
+      lines.push('', 'Вы выполнили:');
+      exOrder.forEach((ex) => {
+        const sets = d.log.filter((e) => e.cat === 'set' && e.exercise === ex);
+        lines.push('• ' + ex + (sets.length ? ': ' + sets.length + ' подх. (' + sets.map((x) => x.reps || 0).join(', ') + ' повт.)' : ''));
+      });
+    }
+    const home = d.log.filter((e) => e.cat === 'prog' && e.label === 'Дать на дом' && e.exercise).map((e) => e.exercise)
+      .filter((x, i, a) => a.indexOf(x) === i);
+    const notes = d.log.filter((e) => e.cat === 'note' && e.text);
+    const homeNotes = notes.filter((e) => /^(На дом|В следующий раз|Ограничить)/i.test(e.text));
+    if (home.length || homeNotes.length) {
+      lines.push('', 'Домашнее задание и рекомендации:');
+      home.forEach((x) => lines.push('• Делать дома: ' + x));
+      homeNotes.forEach((e) => lines.push('• ' + e.text));
+    }
+    const good = d.log.filter((e) => (e.cat === 'tech' && e.label === 'Техника ✓') || (e.cat === 'prog' && /↑|↓|лучше|освоено/.test(e.label)) ||
+      (e.cat === 'note' && /^Хорошо получается/i.test(e.text || '')));
+    if (good.length) {
+      lines.push('', 'Что получается хорошо:');
+      good.forEach((e) => lines.push('• ' + (e.text || (e.label === 'Техника ✓' ? 'Техника' + (e.exercise ? ' (' + e.exercise + ')' : '') : e.label))));
+    }
+    lines.push('', 'Если появится острая боль, онемение или головокружение, прекратите упражнение и напишите специалисту.');
     return lines.join('\n');
   }
 
@@ -1595,27 +2073,37 @@
   /* -------- Панель специалиста -------- */
 
   let activeCat = 'pain';
+  let activeCue = 'cmd';
+  let dockMode = 'mark';
   let scaleFor = null;
   let scaleTimer = 0;
 
   function buildTabs() {
     const box = $('tabs');
-    TAB_ORDER.forEach((cat) => {
+    box.innerHTML = '';
+    const cue = dockMode === 'cue';
+    const order = cue ? CUE_ORDER : TAB_ORDER;
+    box.style.gridTemplateColumns = 'repeat(' + order.length + ', 1fr)';
+    order.forEach((cat) => {
+      const def = cue ? CUES[cat] : CATS[cat];
       const b = document.createElement('button');
-      b.className = 'tab' + (cat === activeCat ? ' on' : '');
-      b.textContent = CATS[cat].label;
-      b.style.setProperty('--c', CATS[cat].hex);
+      b.className = 'tab' + (cat === (cue ? activeCue : activeCat) ? ' on' : '');
+      b.textContent = def.label;
+      b.style.setProperty('--c', def.hex);
       b.addEventListener('click', () => {
-        activeCat = cat;
+        if (cue) activeCue = cat; else activeCat = cat;
         box.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
         hideScale();
         $('chips').scrollLeft = 0;
       });
       box.appendChild(b);
     });
+    $('sideSeg').classList.toggle('hidden', cue);
+    $('cueTools').classList.toggle('hidden', !cue);
   }
 
   function renderChips() {
+    if (dockMode === 'cue') { renderCueChips(); return; }
     const cat = CATS[activeCat];
     const counts = Session.counts();
     const box = $('chips');
@@ -1629,6 +2117,30 @@
       const n = counts[activeCat + '|' + label];
       if (n) { const c = document.createElement('span'); c.className = 'cnt'; c.textContent = '×' + n; b.appendChild(c); }
       b.addEventListener('click', () => onChip(activeCat, label, b));
+      box.appendChild(b);
+    });
+  }
+
+  function renderCueChips() {
+    const cat = CUES[activeCue];
+    const counts = Session.counts();
+    const box = $('chips');
+    box.innerHTML = '';
+    cat.items.forEach((item) => {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.style.setProperty('--c', cat.hex);
+      const t = document.createElement('span'); t.textContent = item.i + ' ' + item.t;
+      b.appendChild(t);
+      const n = counts['cue|' + item.t];
+      if (n) { const c = document.createElement('span'); c.className = 'cnt'; c.textContent = '×' + n; b.appendChild(c); }
+      b.addEventListener('click', () => {
+        if (!coachSend) return;
+        if (coachSend.item(item, activeCue)) {
+          b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
+          setTimeout(renderChips, 450);
+        }
+      });
       box.appendChild(b);
     });
   }
@@ -1699,7 +2211,7 @@
       const t = document.createElement('span'); t.className = 't'; t.textContent = fmtHM(new Date(e.ts));
       const tag = document.createElement('span'); tag.className = 'tag'; tag.style.background = (CATS[e.cat] || {}).hex || '#999';
       const b = document.createElement('span'); b.className = 'b';
-      let main = e.cat === 'set' ? e.label + ' · ' + (e.reps || 0) + ' повт.' : e.cat === 'ex' ? '▶ ' + e.label : (e.text || e.label);
+      let main = e.cat === 'set' ? e.label + ' · ' + (e.reps || 0) + ' повт.' : e.cat === 'ex' ? '▶ ' + e.label : e.cat === 'cue' ? '📣 ' + e.label : (e.text || e.label);
       if (e.side) main += ' (' + sideText(e.side) + ')';
       if (e.score != null) main += ' · ' + e.score + '/10';
       b.textContent = main;
@@ -1762,8 +2274,10 @@
       grid.appendChild(b);
     });
   }
+  let onExerciseChange = null;
   function pickExercise(name) {
     Session.setExercise(name);
+    if (onExerciseChange) onExerciseChange();
     closeSheet('exWrap');
     renderContext();
     renderLog();
@@ -1838,18 +2352,18 @@
     $('exCustom').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('exCustomOk').click(); });
 
     bindPress($('repBtn'), () => {
-      Session.data.reps++; Session.save(); renderContext(); vibrate(10);
+      Session.data.reps++; Session.save(); renderContext(); vibrate(10); pushCtx();
     }, () => {
-      Session.data.reps = Math.max(0, Session.data.reps - 1); Session.save(); renderContext();
+      Session.data.reps = Math.max(0, Session.data.reps - 1); Session.save(); renderContext(); pushCtx();
     });
     $('setBtn').onclick = () => {
       const d = Session.data;
       const prev = { set: d.set, reps: d.reps };
       const e = Session.add('set', 'Подход ' + d.set, { reps: d.reps });
       d.set++; d.reps = 0; Session.save();
-      renderContext(); renderLog(); vibrate(25);
+      renderContext(); renderLog(); vibrate(25); pushCtx();
       toast('Подход ' + prev.set + ' · ' + prev.reps + ' повт.', () => {
-        Session.remove(e.id); Session.data.set = prev.set; Session.data.reps = prev.reps; Session.save(); renderContext(); renderLog();
+        Session.remove(e.id); Session.data.set = prev.set; Session.data.reps = prev.reps; Session.save(); renderContext(); renderLog(); pushCtx();
       });
     };
 
@@ -1864,6 +2378,7 @@
       $('noteTemplates').appendChild(b);
     });
     $('btnNote').onclick = () => {
+      if (dockMode === 'cue') { $('sayText').value = ''; openSheet('sayWrap'); setTimeout(() => $('sayText').focus(), 60); return; }
       const d = Session.data;
       $('noteCtx').textContent = d.exercise ? d.exercise + ' · подход ' + d.set : 'Общая заметка по сессии';
       $('noteText').value = '';
@@ -1913,9 +2428,121 @@
     };
 
     /* Связь и управление камерой клиента */
-    function sendCtrl(msg) {
-      if (!ctrl || !ctrl.open) { toast('Клиент не подключён'); return false; }
+    function sendCtrl(msg, silent) {
+      if (!ctrl || !ctrl.open) { if (!silent) toast('Клиент не подключён'); return false; }
       try { ctrl.send(msg); return true; } catch (e) { return false; }
+    }
+
+    /* Подсказки клиенту */
+    if (prefs.tts === undefined) prefs.tts = true;
+    const pending = {};
+    function msgId() { return Math.random().toString(36).slice(2, 9); }
+    function pushCtx() {
+      const d = Session.data;
+      sendCtrl({ t: 'ctx', ex: d.exercise, set: d.set, reps: d.reps }, true);
+    }
+    function sendCoach(msg, label) {
+      msg.id = msgId();
+      msg.tts = !!prefs.tts;
+      if (!sendCtrl(msg)) return false;
+      pending[msg.id] = label;
+      Session.add('cue', label);
+      renderLog();
+      vibrate(15);
+      toast('📣 ' + label + ' · отправлено');
+      return true;
+    }
+    coachSend = {
+      item(item, cat) {
+        if (item.q) return sendCoach({ t: 'ask', q: item.q, text: item.t }, item.t);
+        if (item.tm) {
+          const ok = sendCoach(Object.assign({ t: 'timer' }, item.tm), item.t);
+          if (ok) Timer.start(item.tm, (kind) => toast(kind === 'rest' ? '⏱ Отдых окончен' : '⏱ Время вышло'));
+          return ok;
+        }
+        const kind = item.k || (cat === 'tech' ? 'tech' : cat === 'pos' ? 'pos' : 'info');
+        const ok = sendCoach({ t: 'cue', icon: item.i, text: item.t, kind: kind }, item.t);
+        if (ok) showCue({ icon: item.i, text: item.t, sub: 'показано клиенту', kind: kind, dur: 2500 }, true);
+        return ok;
+      }
+    };
+    function setTts(on) {
+      prefs.tts = on; savePrefs();
+      $('btnTts').classList.toggle('on', on);
+      $('btnTts').textContent = on ? '🔈' : '🔇';
+    }
+    setTts(prefs.tts !== false);
+    $('btnTts').onclick = () => { setTts(!prefs.tts); toast(prefs.tts ? 'Озвучка у клиента включена' : 'Озвучка у клиента выключена'); };
+
+    let pointing = false;
+    function setPointing(on) {
+      pointing = on;
+      $('btnPoint').classList.toggle('on', on);
+      $('stage').classList.toggle('pointing', on);
+      $('pointHint').classList.toggle('hidden', !on);
+    }
+    $('btnPoint').onclick = () => setPointing(!pointing);
+    $('stage').addEventListener('click', (e) => {
+      if (!pointing || e.target.closest('#hud')) return;
+      const b = videoBox();
+      if (!b) { toast('Нет видео'); return; }
+      const nx = (e.clientX - b.st.left - b.x) / b.w;
+      const ny = (e.clientY - b.st.top - b.y) / b.h;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+      if (sendCtrl({ t: 'point', x: nx, y: ny })) { placeMarker(nx, ny); vibrate(15); }
+    });
+
+    function setDockMode(mode) {
+      dockMode = mode;
+      $('btnMode').classList.toggle('on', mode === 'cue');
+      $('btnMode').textContent = mode === 'cue' ? '📝 Отметки' : '📣 Клиенту';
+      $('btnNote').textContent = mode === 'cue' ? '✎ Текст' : '✎ Заметка';
+      if (mode !== 'cue') setPointing(false);
+      if (prefs.dockCollapsed) setDockCollapsed(false);
+      hideScale();
+      buildTabs();
+      renderChips();
+    }
+    $('btnMode').onclick = () => setDockMode(dockMode === 'cue' ? 'mark' : 'cue');
+
+    SAY_TEMPLATES.forEach((tpl) => {
+      const b = document.createElement('button');
+      b.textContent = tpl.trim();
+      b.addEventListener('click', () => { const ta = $('sayText'); ta.value = tpl; ta.focus(); });
+      $('sayTemplates').appendChild(b);
+    });
+    const sendSay = () => {
+      const text = $('sayText').value.trim();
+      if (!text) return;
+      if (sendCoach({ t: 'cue', icon: '💬', text: text, kind: 'info' }, text)) closeSheet('sayWrap');
+    };
+    $('saySend').onclick = sendSay;
+    $('sayText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendSay(); } });
+
+    onExerciseChange = pushCtx;
+    $('btnSendSummary').onclick = () => {
+      const text = buildClientSummary();
+      if (sendCtrl({ t: 'summary', text: text })) { Session.add('cue', 'Итоги отправлены'); renderLog(); toast('📤 Итоги отправлены клиенту'); }
+    };
+
+    function onClientMessage(m) {
+      if (m.t === 'cam') { clientCam = m; if (isOpen('netWrap')) renderNet(); }
+      else if (m.t === 'ack') {
+        const label = pending[m.id];
+        if (label) { delete pending[m.id]; toast('✓ Клиент видит: ' + label); }
+      } else if (m.t === 'answer') {
+        let e;
+        const src = { src: 'client', side: '' };
+        if (m.q === 'pain') e = Session.add('pain', 'Клиент: боль', Object.assign({ score: Number(m.value) || 0 }, src));
+        else if (m.q === 'where') e = Session.add('pain', 'Клиент: ' + m.label, src);
+        else if (m.q === 'rpe') e = Session.add('load', 'Клиент: ' + m.label, src);
+        else e = Session.add('cue', 'Ответ: ' + m.label, src);
+        renderLog();
+        renderChips();
+        vibrate([60, 40, 60]);
+        toast('🙋 Клиент: ' + (m.q === 'pain' ? 'боль ' + m.label : m.label));
+        showCue({ icon: '🙋', text: m.q === 'pain' ? 'Боль ' + m.label : m.label, sub: 'ответ клиента', kind: 'ask', dur: 4000 }, true);
+      }
     }
     function renderNet() {
       const s = lastStats;
@@ -1986,8 +2613,11 @@
     function onControl(conn) {
       if (ctrl && ctrl !== conn) { try { ctrl.close(); } catch (e) { /* закрыт */ } }
       ctrl = conn;
-      conn.on('open', () => { if (quality !== 'auto') { try { conn.send({ t: 'quality', q: quality }); } catch (e) { /* нет */ } } });
-      conn.on('data', (m) => { if (m && m.t === 'cam') { clientCam = m; if (isOpen('netWrap')) renderNet(); } });
+      conn.on('open', () => {
+        if (quality !== 'auto') { try { conn.send({ t: 'quality', q: quality }); } catch (e) { /* нет */ } }
+        pushCtx();
+      });
+      conn.on('data', (m) => { if (m && typeof m === 'object') onClientMessage(m); });
       conn.on('close', () => { if (ctrl === conn) ctrl = null; });
     }
 
