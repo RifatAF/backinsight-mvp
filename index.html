@@ -1503,6 +1503,34 @@
     $('btnMic').classList.toggle('off', !enabled);
     $('btnClientMic').classList.toggle('off', !enabled);
   }
+  // Chrome на Android: повторный getUserMedia (камера отдельно, смена камеры) перенастраивает аудиосистему,
+  // и уже открытый микрофон может замолчать, оставаясь «включённым». Кратковременное выкл/вкл дорожки
+  // перезапускает захват звука: то же, что ручное нажатие на кнопку микрофона.
+  function kickMic(stream, delay) {
+    setTimeout(() => {
+      (stream ? stream.getAudioTracks() : []).forEach((t) => {
+        if (!t.enabled || t.readyState !== 'live') return; // выключенный пользователем микрофон не трогаем
+        t.enabled = false;
+        setTimeout(() => { t.enabled = true; }, 250);
+      });
+    }, delay || 0);
+  }
+  // Сторож: если дорожка «включена», но источник не отдаёт звук (muted) или закрыта, сначала перезапуск, потом новый микрофон.
+  function micWatchdog(getStream, reacquire) {
+    let stuck = 0;
+    setInterval(async () => {
+      const st = getStream();
+      const t = st && st.getAudioTracks()[0];
+      if (!t) return;
+      if (t.readyState === 'ended') { stuck = 0; await reacquire(); return; }
+      if (t.enabled && t.muted) {
+        stuck++;
+        if (stuck === 1) kickMic(st);
+        else if (stuck >= 3) { stuck = 0; await reacquire(); }
+      } else stuck = 0;
+    }, 2500);
+  }
+
   function toggleMic(stream) {
     const tracks = stream ? stream.getAudioTracks() : [];
     if (!tracks.length) { toast('Микрофон недоступен'); return; }
@@ -1733,6 +1761,7 @@
       const vt = stream.getVideoTracks()[0];
       try { vt.contentHint = 'motion'; } catch (e) { /* нет */ }
       await resetZoom(vt);
+      kickMic(stream, 300); // после переоткрытия камеры
       return stream;
     }
 
@@ -1817,6 +1846,7 @@
       localStream.addTrack(newTrack);
       facing = realFacing === 'user' ? 'user' : 'environment';
       renderViews(true);
+      kickMic(localStream, 300);
       toast(facing === 'user' ? 'Фронтальная камера ×1' : 'Основная камера ×1');
       sendCtrl(cameraInfo());
     }
@@ -1908,6 +1938,7 @@
           failCount = 0;
           setStatus('На связи со специалистом', 'ok');
           tlMark('ice');
+          kickMic(localStream, 400);
           watchFirstAudio(pc);
           applyQuality(quality);
           prioritizeAudio(pc);
@@ -2017,18 +2048,23 @@
         } catch (e) { toast('Камера не включилась, нажмите «Связь»'); }
       }
       const at = localStream.getAudioTracks()[0];
-      if (!at || at.readyState === 'ended') {
-        try {
-          const na = (await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS })).getAudioTracks()[0];
-          const sender = pc && pc.getSenders().find((x) => x.track === at || (x.track && x.track.kind === 'audio'));
-          if (sender) await sender.replaceTrack(na);
-          if (at) localStream.removeTrack(at);
-          localStream.addTrack(na);
-          setMicButton(true);
-        } catch (e) { /* микрофон недоступен */ }
-      }
+      if (!at || at.readyState === 'ended') await reacquireClientMic();
+      else kickMic(localStream, 200);
       if (remoteAudio.srcObject && remoteAudio.paused) remoteAudio.play().catch(() => {});
     }
+    async function reacquireClientMic() {
+      try {
+        const at = localStream.getAudioTracks()[0];
+        const na = (await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS })).getAudioTracks()[0];
+        const pc = call && call.peerConnection;
+        const sender = pc && pc.getSenders().find((x) => x.track === at || (x.track && x.track.kind === 'audio'));
+        if (sender) await sender.replaceTrack(na);
+        if (at) { localStream.removeTrack(at); try { at.stop(); } catch (e) { /* нет */ } }
+        localStream.addTrack(na);
+        setMicButton(true);
+      } catch (e) { /* микрофон недоступен */ }
+    }
+    micWatchdog(() => localStream, reacquireClientMic);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(restoreMedia, 300); });
 
     window.addEventListener('pagehide', () => { destroyed = true; closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } });
@@ -2862,11 +2898,21 @@
     setStatus('Подключение к серверу…', 'warn', '');
     Wake.enable();
 
-    const micPromise = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia
-      ? navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false })
-      : Promise.reject(new Error('no media')))
-      .then((s) => { micStream = s; setMicButton(true); return s; })
-      .catch(() => { setMicButton(false); return null; });
+    // Микрофон и камера одним запросом: на Android отдельный запрос камеры глушит уже открытый микрофон.
+    const SPEC_VIDEO = { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 20 } };
+    const specMedia = (async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
+      if (prefs.specCam !== false) {
+        try { return await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: SPEC_VIDEO }); } catch (e) { /* без камеры */ }
+      }
+      try { return await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false }); } catch (e) { return null; }
+    })();
+    const micPromise = specMedia.then((s) => {
+      const a = s && s.getAudioTracks()[0];
+      if (a) { micStream = new MediaStream([a]); setMicButton(true); return micStream; }
+      setMicButton(false);
+      return null;
+    });
 
     $('btnMic').onclick = async () => {
       if (!micStream) {
@@ -2874,6 +2920,7 @@
           micStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
           setMicButton(true);
           if (currentCall) attachMic(currentCall, micStream);
+          kickMic(micStream, 300);
           toast('Микрофон включён');
         } catch (e) { toast('Нет доступа к микрофону'); }
         return;
@@ -3182,9 +3229,10 @@
     async function openSpecCam() {
       if (camTrack && camTrack.readyState === 'live') return camTrack;
       try {
-        const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 20 } } });
+        const st = await navigator.mediaDevices.getUserMedia({ video: SPEC_VIDEO });
         camTrack = st.getVideoTracks()[0];
         try { camTrack.contentHint = 'motion'; } catch (e) { /* нет */ }
+        kickMic(micStream, 300); // отдельный запрос камеры мог заглушить микрофон
         return camTrack;
       } catch (e) { camTrack = null; return null; }
     }
@@ -3213,7 +3261,24 @@
       }
       sendCtrl({ t: 'camstate', on: !!(prefs.specCam && camTrack && camTrack.readyState === 'live') }, true);
     }
-    const camPromise = prefs.specCam ? openSpecCam().then((t) => { renderSelf(); return t; }) : Promise.resolve(null);
+    const camPromise = specMedia.then((st) => {
+      const v = st && st.getVideoTracks()[0];
+      if (v && prefs.specCam) { camTrack = v; try { v.contentHint = 'motion'; } catch (e) { /* нет */ } }
+      else if (v) v.stop();
+      renderSelf();
+      return camTrack;
+    });
+    async function reacquireSpecMic() {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
+        const old = micStream;
+        micStream = s;
+        if (currentCall) await attachMic(currentCall, micStream);
+        if (old) old.getAudioTracks().forEach((t) => { try { t.stop(); } catch (e) { /* нет */ } });
+        setMicButton(true);
+      } catch (e) { /* микрофон недоступен */ }
+    }
+    micWatchdog(() => micStream, reacquireSpecMic);
     // Окошко: нажатие меняет местами, камера включается кнопкой 📷 вверху.
     makePip($('selfTile'), 'pip_spec', () => {
       if (pointing) setPointing(false);
@@ -3301,6 +3366,7 @@
         watchFirstAudio(pc);
         prioritizeAudio(pc).then(() => attachCam(call));
         if (micStream) attachMic(call, micStream);
+        kickMic(micStream, 400); // автоматически то, что раньше приходилось делать кнопкой
         startStats(pc);
       }, (why) => { if (currentCall === call) endCall(why); });
     }
