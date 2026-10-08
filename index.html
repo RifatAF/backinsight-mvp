@@ -715,7 +715,7 @@
       };
       try { pc.createDataChannel('probe'); } catch (e) { /* нет */ }
       pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => finish(Infinity));
-      setTimeout(() => finish(Infinity), timeoutMs || 2500);
+      setTimeout(() => finish(Infinity), timeoutMs || 1500);
     });
   }
   const relayReady = (async () => {
@@ -735,7 +735,7 @@
         ' · ' + (ownFirst ? 'свой TURN' : 'Metered') + ' (свой ' + f(own) + ', Metered ' + f(metered) + ')';
     } catch (e) { /* остаётся порядок по часовому поясу */ }
   })();
-  function waitRelays() { return Promise.race([relayReady, new Promise((r) => setTimeout(r, 3000))]); }
+  function waitRelays() { return Promise.race([relayReady, new Promise((r) => setTimeout(r, 1500))]); }
 
   const params = new URLSearchParams(location.search);
   const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
@@ -899,7 +899,7 @@
       relayOwnMs: RELAY.own, relayMeteredMs: RELAY.metered, vpnSuspect: RELAY.vpn,
       route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
       inKbps: s.inKbps, outKbps: s.outKbps, codec: s.codec, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
-      analysisFps: analysisFps
+      analysisFps: analysisFps, timeline: TL.marks
     }, extra || {}));
   }
   $('btnDiag').addEventListener('click', async () => {
@@ -1249,6 +1249,29 @@
   });
 
   /* ===================== Звук ===================== */
+
+  // Хронометраж звонка (мс от начала): где именно теряется время до появления звука.
+  const TL = { t0: 0, marks: {} };
+  function tlStart() { TL.t0 = performance.now(); TL.marks = {}; }
+  function tlMark(k) { if (TL.t0 && TL.marks[k] == null) TL.marks[k] = Math.round(performance.now() - TL.t0); }
+  // Первый звуковой пакет ловим частым опросом, а не раз в 2 с общей статистики.
+  function watchFirstAudio(pc) {
+    const t = setInterval(async () => {
+      if (!pc || pc.connectionState === 'closed' || (TL.marks.audioIn != null && TL.marks.audioOut != null) || performance.now() - TL.t0 > 30000) { clearInterval(t); return; }
+      try {
+        const st = await pc.getStats();
+        st.forEach((r) => {
+          const a = r.kind === 'audio' || r.mediaType === 'audio';
+          if (r.type === 'inbound-rtp' && a && r.bytesReceived > 0) tlMark('audioIn');
+          if (r.type === 'outbound-rtp' && a && r.packetsSent > 0) tlMark('audioOut');
+          if (r.type === 'outbound-rtp' && !a && r.packetsSent > 0) tlMark('videoOut');
+          if (r.type === 'inbound-rtp' && !a && r.framesDecoded > 0) tlMark('videoIn');
+        });
+      } catch (e) { clearInterval(t); }
+    }, 200);
+  }
+  remoteAudio.addEventListener('playing', () => { if (!remoteAudio.muted) tlMark('audioPlay'); });
+  remoteAudio.addEventListener('volumechange', () => { if (!remoteAudio.muted && !remoteAudio.paused) tlMark('audioPlay'); });
 
   async function playWithSound(el) {
     el.muted = false;
@@ -1857,6 +1880,7 @@
     function placeCall() {
       closeCall();
       setStatus(relayOnly ? 'Звоним через защищённый ретранслятор…' : 'Звоним специалисту…', 'warn');
+      tlStart();
       const c = peer.call(TARGET_PEER, localStream, { metadata: { role: 'client' }, sdpTransform: preferH264 });
       if (!c) { scheduleRetry('Не удалось создать вызов'); return; }
       call = c;
@@ -1864,10 +1888,12 @@
 
       c.on('stream', async (remote) => {
         if (call !== c) return;
+        tlMark('stream');
+        const fresh = remoteStream !== remote;
         remoteStream = remote;
-        renderViews(true);
+        renderViews(fresh); // PeerJS шлёт stream на каждую дорожку: не перезапускаем воспроизведение без нужды
         if (remoteAudio.srcObject === remote && !remoteAudio.paused) return;
-        remoteAudio.srcObject = remote;
+        if (remoteAudio.srcObject !== remote) remoteAudio.srcObject = remote;
         const ok = await playWithSound(remoteAudio);
         if (!ok && remote.getAudioTracks().length) showUnmute(remoteAudio);
       });
@@ -1881,6 +1907,8 @@
           retryDelay = 2000;
           failCount = 0;
           setStatus('На связи со специалистом', 'ok');
+          tlMark('ice');
+          watchFirstAudio(pc);
           applyQuality(quality);
           prioritizeAudio(pc);
           startStats(pc);
@@ -3139,6 +3167,7 @@
       if (currentCall) { const c = currentCall; currentCall = null; try { c.close(); } catch (e) { /* закрыт */ } }
       stopStats();
       video.srcObject = null;
+      remoteAudio.srcObject = null;
       octx.clearRect(0, 0, overlay.width, overlay.height);
       clearAngles();
       updateHud(performance.now(), true);
@@ -3224,11 +3253,11 @@
       if (currentCall) endCall('Новый вход клиента');
       currentCall = call;
       setStatus('Входящий звонок…', 'warn');
-      const mic = await Promise.race([micPromise, new Promise((r) => setTimeout(() => r(null), 3000))]);
-      if (currentCall !== call) return;
-      // Без микрофона ответ шёл без аудиоканала, и клиент не слышал специалиста весь звонок.
-      const cam = prefs.specCam ? await Promise.race([camPromise, new Promise((r) => setTimeout(() => r(null), 2000))]) : null;
-      if (currentCall !== call) return;
+      tlStart();
+      // Отвечаем сразу, без ожидания микрофона и камеры: если они ещё не готовы, идут заглушки,
+      // а настоящие дорожки подставляются через replaceTrack без переподключения.
+      const mic = micStream;
+      const cam = prefs.specCam && camTrack && camTrack.readyState === 'live' ? camTrack : null;
       // Ответ всегда с аудио- и видеоканалом: без них клиент не услышит и не увидит специалиста до перезвона.
       const tracks = [];
       const at = mic && mic.getAudioTracks()[0];
@@ -3242,14 +3271,21 @@
       if (vt) tracks.push(vt);
       if (!cam && prefs.specCam) camPromise.then((t) => { if (t && currentCall === call) { renderSelf(); attachCam(call); } });
       call.answer(tracks.length ? new MediaStream(tracks) : undefined, { sdpTransform: preferH264 });
+      tlMark('answer');
 
       call.on('stream', async (stream) => {
         if (currentCall !== call) return;
-        video.srcObject = stream;
+        tlMark('stream');
+        // Видео всегда без звука (его не блокирует автозапуск), звук клиента идёт отдельным элементом.
+        video.muted = true;
+        if (video.srcObject !== stream) { video.srcObject = stream; video.play().catch(() => {}); }
         setPlaceholder(null);
         closeSheet('menuWrap');
-        const ok = await playWithSound(video);
-        if (!ok && stream.getAudioTracks().length) showUnmute(video);
+        if (remoteAudio.srcObject !== stream) remoteAudio.srcObject = stream;
+        if (remoteAudio.paused || remoteAudio.muted) {
+          const ok = await playWithSound(remoteAudio);
+          if (!ok && stream.getAudioTracks().length) showUnmute(remoteAudio);
+        }
         syncCanvasSize();
         if (prefs.skel !== 'off' && Analyzer.ready) Analyzer.start();
       });
@@ -3261,6 +3297,8 @@
       watchPeerConnection(pc, () => {
         if (currentCall !== call) return;
         setStatus('Клиент на связи', 'ok');
+        tlMark('ice');
+        watchFirstAudio(pc);
         prioritizeAudio(pc).then(() => attachCam(call));
         if (micStream) attachMic(call, micStream);
         startStats(pc);
