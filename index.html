@@ -240,14 +240,21 @@
   #cueCard .sub { font-size: clamp(16px, 5vw, 26px); color: var(--muted); margin-top: 10px; }
   #cueCard.digits .txt { font-size: clamp(90px, 42vw, 220px); margin-top: 0; }
   /* Видео собеседника: у клиента окошко (тап меняет местами), у специалиста своё превью (тап вкл/выкл камеру) */
+  /* Окошко «картинка в картинке»: перетаскивается в любой угол, нажатие меняет картинки местами */
+  .pip { touch-action: none; transition: left .18s ease, right .18s ease, top .18s ease, bottom .18s ease; }
+  .pip.dragging { transition: none; }
+  .pip[data-corner="tl"] { left: 10px; top: calc(var(--safe-t) + 60px); right: auto; bottom: auto; }
+  .pip[data-corner="tr"] { right: 10px; top: calc(var(--safe-t) + 60px); left: auto; bottom: auto; }
+  .pip[data-corner="bl"] { left: 10px; bottom: 10px; right: auto; top: auto; }
+  .pip[data-corner="br"] { right: 10px; bottom: 10px; left: auto; top: auto; }
   #pipVideo {
-    position: absolute; z-index: 3; left: 10px; bottom: 10px; width: 30%; max-width: 170px; aspect-ratio: 3 / 4;
+    position: absolute; z-index: 3; width: 30%; max-width: 170px; aspect-ratio: 3 / 4;
     object-fit: cover; border-radius: 14px; border: 2px solid rgba(255,255,255,.75); background: #111;
     box-shadow: 0 6px 20px rgba(0,0,0,.5);
   }
   #pipVideo.mirror, #selfView { transform: scaleX(-1); }
   #selfTile {
-    position: absolute; z-index: 6; right: 10px; bottom: 10px; width: 82px; aspect-ratio: 3 / 4; padding: 0;
+    position: absolute; z-index: 6; width: 96px; aspect-ratio: 3 / 4; padding: 0;
     border-radius: 12px; overflow: hidden; border: 2px solid rgba(255,255,255,.7); background: #111;
     box-shadow: 0 6px 20px rgba(0,0,0,.5);
   }
@@ -258,7 +265,41 @@
   }
   #selfTile.off #selfView { visibility: hidden; }
   #selfTile.off { border-color: var(--err); }
-  body.specialist #cueCard { right: 104px; }
+  /* Специалист поменял картинки местами: своя камера на весь экран, видео клиента с разметкой в окошке.
+     video и canvas получают одинаковую геометрию, поэтому разметка остаётся точно на теле. */
+  body.specialist.swapped #selfTile {
+    left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important; width: 100%; height: 100%;
+    aspect-ratio: auto; border: 0; border-radius: 0; z-index: 0; box-shadow: none;
+  }
+  body.specialist.swapped #selfView { object-fit: contain; }
+  body.specialist.swapped #selfLbl { display: none; }
+  body.specialist.swapped #video, body.specialist.swapped #overlay {
+    inset: auto; width: 112px; height: 150px; z-index: 6; object-fit: cover; border-radius: 12px;
+  }
+  body.specialist.swapped #video { outline: 2px solid rgba(255,255,255,.75); background: #111; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+  body.specialist.swapped[data-pip="tl"] #video, body.specialist.swapped[data-pip="tl"] #overlay { left: 10px; top: calc(var(--safe-t) + 60px); }
+  body.specialist.swapped[data-pip="tr"] #video, body.specialist.swapped[data-pip="tr"] #overlay { right: 10px; top: calc(var(--safe-t) + 60px); }
+  body.specialist.swapped[data-pip="bl"] #video, body.specialist.swapped[data-pip="bl"] #overlay { left: 10px; bottom: 10px; }
+  body.specialist.swapped[data-pip="br"] #video, body.specialist.swapped[data-pip="br"] #overlay { right: 10px; bottom: 10px; }
+  body.specialist.swapped #anglesCard, body.specialist.swapped #swBox { opacity: .9; }
+
+  /* Плашка слабой связи */
+  #weakBar {
+    position: absolute; left: 10px; right: 10px; bottom: 12px; z-index: 8;
+    background: rgba(245,158,11,.95); color: #111; border-radius: 14px; padding: 10px 40px 10px 12px;
+    font-size: 13px; font-weight: 600; line-height: 1.3;
+  }
+  body.specialist #weakBar { right: 116px; }
+  #weakBar button { position: absolute; right: 6px; top: 6px; width: 30px; height: 30px; font-size: 16px; color: #111; }
+  .act.end { background: #dc2626; border-color: transparent; }
+  #endScreen {
+    position: fixed; inset: 0; z-index: 45; background: var(--bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center;
+  }
+  #endScreen h2 { margin: 0; font-size: 24px; }
+  #endScreen p { margin: 0; color: var(--muted); max-width: 380px; }
+  #endScreen .btn { min-width: 240px; }
+  body.specialist #cueCard { right: 116px; }
   body.specialist #cueCard { top: auto; bottom: 12px; transform: none; padding: 10px 12px; border-width: 2px; animation: none; }
   body.specialist #cueCard .ico { font-size: 28px; display: inline; }
   body.specialist #cueCard .txt { font-size: 20px; display: inline; margin: 0 0 0 8px; }
@@ -315,6 +356,7 @@
   @keyframes bump { 40% { transform: scale(1.25); color: #4ade80; } }
   body.client.has-timer #clientCounter { top: auto; bottom: 12px; }
   body.client.has-timer #lastCue { display: none; }
+  body.client.has-timer #clientCounter { right: auto; left: 10px; }
 
   #lastCue {
     position: absolute; left: 10px; top: calc(var(--safe-t) + 60px); z-index: 5; max-width: 55%;
@@ -353,7 +395,8 @@
     padding: 4px 4px 4px 16px; font-size: 14px; opacity: 0; transition: opacity .18s ease;
     pointer-events: none; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
   }
-  #toast.show { opacity: 1; pointer-events: auto; }
+  #toast.show { opacity: 1; pointer-events: none; } /* касания проходят к кнопкам под уведомлением */
+  #toast.show button { pointer-events: auto; }
   #toast .msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 8px 12px 8px 0; }
   #toast button { background: var(--card-2); border-radius: 999px; padding: 8px 14px; font-weight: 700; font-size: 13px; flex: none; }
 
@@ -387,6 +430,7 @@
         <button class="icon-btn hidden" id="btnUnmute" title="Включить звук">🔊</button>
         <button class="icon-btn spec-only" id="btnSkel" title="Скелет">🦴</button>
         <button class="icon-btn" id="btnMic" title="Микрофон">🎙️</button>
+        <button class="icon-btn spec-only" id="btnCam" title="Моя камера">📷</button>
         <button class="icon-btn spec-only" id="btnMenu" title="Сессия">☰</button>
       </div>
       <div class="row2 spec-only">
@@ -413,8 +457,9 @@
     <div id="clientCounter" class="client-only hidden"><div class="ex" id="ccEx"></div><div class="big" id="ccReps">0</div><div class="lbl" id="ccSet"></div></div>
     <button id="lastCue" class="client-only hidden" title="Показать ещё раз"></button>
     <div id="pointMarker" class="hidden"></div>
-    <video id="pipVideo" class="client-only hidden" playsinline webkit-playsinline autoplay muted title="Поменять местами"></video>
-    <button id="selfTile" class="spec-only off" title="Моя камера: нажмите, чтобы включить или выключить">
+    <div id="weakBar" class="hidden"><span id="weakText"></span><button id="weakClose" title="Скрыть">✕</button></div>
+    <video id="pipVideo" class="client-only hidden pip" data-corner="br" playsinline webkit-playsinline autoplay muted title="Поменять местами"></video>
+    <button id="selfTile" class="spec-only off pip" data-corner="br" title="Моя камера: нажмите, чтобы поменять местами, перетащите в угол">
       <video id="selfView" playsinline webkit-playsinline autoplay muted></video>
       <span id="selfLbl">📷 выкл</span>
     </button>
@@ -460,7 +505,7 @@
   <section id="clientDock" class="client-only">
     <button class="act" id="btnFlip">🔄 Камера</button>
     <button class="act" id="btnClientMic">🎙️ Микр.</button>
-    <button class="act" id="btnReconnect">↻ Связь</button>
+    <button class="act end" id="btnHangup">📞 Завершить</button>
   </section>
 </div>
 
@@ -481,6 +526,7 @@
       <button class="btn" id="btnExport">Скачать CSV</button>
     </div>
     <button class="btn full" id="btnSendSummary">📤 Отправить итоги клиенту</button>
+    <button class="btn full danger" id="btnEndCall">📞 Завершить звонок с клиентом</button>
     <h3>Журнал</h3>
     <ul id="logList"></ul>
     <h3>Вид</h3>
@@ -509,6 +555,7 @@
       <button class="btn" id="btnRemoteZoom">Зум ×1</button>
     </div>
     <button class="btn full spec-only" id="btnRemoteReconnect">Переподключить клиента</button>
+    <button class="btn full client-only" id="btnReconnect">↻ Переподключить</button>
     <button class="btn full" data-close>Закрыть</button>
   </section>
 </div>
@@ -591,6 +638,13 @@
 <div id="toast"><span class="msg" id="toastMsg"></span><button id="toastUndo" class="hidden">Отменить</button></div>
 <audio id="remoteAudio" playsinline autoplay></audio>
 
+<div id="endScreen" class="hidden">
+  <h2>Занятие завершено</h2>
+  <p id="endText">Спасибо! Итоги занятия сохранены на этом телефоне.</p>
+  <button class="btn" id="endSummary">Открыть итоги</button>
+  <button class="btn primary" id="endRejoin">Вернуться в занятие</button>
+</div>
+
 <div id="fatal" class="hidden">
   <h2 id="fatalTitle">Ошибка</h2>
   <p id="fatalText"></p>
@@ -641,10 +695,47 @@
     { urls: 'turn:global.relay.metered.ca:443', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' },
     { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '6564b0567f6f21dc6e12ad13', credential: 'en9G5Kjbg4F1QKFz' }
   ];
-  const ICE_SERVERS = [{ urls: 'stun:stun.relay.metered.ca:80' }].concat(
+  let ICE_SERVERS = [{ urls: 'stun:stun.relay.metered.ca:80' }].concat(
     IN_RUSSIA ? OWN_TURN_SERVERS.concat(METERED_SERVERS) : METERED_SERVERS.concat(OWN_TURN_SERVERS)
   );
-  const REGION_LABEL = (IN_RUSSIA ? 'Россия' : 'вне России') + (OWN_TURN ? (IN_RUSSIA ? ' · свой TURN первым' : ' · Metered первым') : ' · Metered');
+  let REGION_LABEL = (IN_RUSSIA ? 'Россия' : 'вне России') + (OWN_TURN ? (IN_RUSSIA ? ' · свой TURN первым' : ' · Metered первым') : ' · Metered');
+
+  // Замер вместо угадывания: время получения relay-кандидата у каждого ретранслятора (≈ 2 RTT до него).
+  // С VPN трафик выходит, например, в Европе, и быстрее окажется Metered; без VPN в России быстрее свой сервер.
+  const RELAY = { own: null, metered: null, first: '', vpn: false };
+  function probeRelay(servers, timeoutMs) {
+    return new Promise((resolve) => {
+      let pc, done = false;
+      const t0 = performance.now();
+      const finish = (ms) => { if (done) return; done = true; try { pc && pc.close(); } catch (e) { /* нет */ } resolve(ms); };
+      try { pc = new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: 'relay' }); } catch (e) { finish(Infinity); return; }
+      pc.onicecandidate = (e) => {
+        if (e.candidate && / typ relay /.test(e.candidate.candidate)) finish(Math.round(performance.now() - t0));
+        else if (!e.candidate) finish(Infinity);
+      };
+      try { pc.createDataChannel('probe'); } catch (e) { /* нет */ }
+      pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => finish(Infinity));
+      setTimeout(() => finish(Infinity), timeoutMs || 2500);
+    });
+  }
+  const relayReady = (async () => {
+    if (!OWN_TURN || typeof RTCPeerConnection === 'undefined') return;
+    try {
+      const [own, metered] = await Promise.all([probeRelay(OWN_TURN_SERVERS), probeRelay(METERED_SERVERS)]);
+      RELAY.own = own; RELAY.metered = metered;
+      if (own === Infinity && metered === Infinity) return; // замер не удался: остаётся порядок по часовому поясу
+      const ownFirst = own !== Infinity && (metered === Infinity || own <= metered);
+      RELAY.first = ownFirst ? 'own' : 'metered';
+      // Телефон в часовом поясе России, а зарубежный ретранслятор ближе: почти наверняка включён VPN.
+      RELAY.vpn = IN_RUSSIA && metered !== Infinity && (own === Infinity || metered * 1.5 < own);
+      ICE_SERVERS = [{ urls: 'stun:stun.relay.metered.ca:80' }].concat(
+        ownFirst ? OWN_TURN_SERVERS.concat(METERED_SERVERS) : METERED_SERVERS.concat(OWN_TURN_SERVERS));
+      const f = (ms) => ms === Infinity ? 'нет' : ms + ' мс';
+      REGION_LABEL = (IN_RUSSIA ? 'Россия' : 'вне России') + (RELAY.vpn ? ' · VPN?' : '') +
+        ' · ' + (ownFirst ? 'свой TURN' : 'Metered') + ' (свой ' + f(own) + ', Metered ' + f(metered) + ')';
+    } catch (e) { /* остаётся порядок по часовому поясу */ }
+  })();
+  function waitRelays() { return Promise.race([relayReady, new Promise((r) => setTimeout(r, 3000))]); }
 
   const params = new URLSearchParams(location.search);
   const ROLE = params.get('role') === 'client' ? 'client' : 'specialist';
@@ -805,6 +896,7 @@
     if (!extra && diagExtra) extra = diagExtra();
     return JSON.stringify(Object.assign({
       role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent, tz: TZ, region: REGION_LABEL,
+      relayOwnMs: RELAY.own, relayMeteredMs: RELAY.metered, vpnSuspect: RELAY.vpn,
       route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
       inKbps: s.inKbps, outKbps: s.outKbps, codec: s.codec, limit: s.limit, audioIn: s.audioIn, audioInLevel: s.audioInLevel, micLevel: s.micLevel,
       analysisFps: analysisFps
@@ -1021,14 +1113,69 @@
 
   // Прямоугольник, в котором реально отображается кадр (учёт object-fit contain/cover).
   function videoBox() {
-    const st = $('stage').getBoundingClientRect();
+    const stage = $('stage').getBoundingClientRect();
+    const el = video.getBoundingClientRect();
     const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) return null;
+    if (!vw || !vh || !el.width) return null;
     const fit = getComputedStyle(video).objectFit;
-    const k = fit === 'cover' ? Math.max(st.width / vw, st.height / vh) : Math.min(st.width / vw, st.height / vh);
+    const k = fit === 'cover' ? Math.max(el.width / vw, el.height / vh) : Math.min(el.width / vw, el.height / vh);
     const w = vw * k, h = vh * k;
-    return { st: st, x: (st.width - w) / 2, y: (st.height - h) / 2, w: w, h: h };
+    // Координаты относительно сцены (#stage), где позиционируется маркер.
+    return { st: stage, x: el.left - stage.left + (el.width - w) / 2, y: el.top - stage.top + (el.height - h) / 2, w: w, h: h };
   }
+
+  // Перетаскивание окошка в ближайший угол; короткое нажатие вызывает onTap.
+  function makePip(el, prefKey, onTap) {
+    const saved = prefsGet(prefKey);
+    if (saved) el.setAttribute('data-corner', saved);
+    let sx = 0, sy = 0, moved = false, ox = 0, oy = 0, active = false;
+    el.addEventListener('pointerdown', (e) => {
+      active = true; moved = false; sx = e.clientX; sy = e.clientY;
+      const r = el.getBoundingClientRect(), st = $('stage').getBoundingClientRect();
+      ox = r.left - st.left; oy = r.top - st.top;
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* нет */ }
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!active) return;
+      if (el.id === 'selfTile' && document.body.classList.contains('swapped')) return; // на весь экран не тащим
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) < 8) return;
+      moved = true;
+      el.classList.add('dragging');
+      el.style.left = (ox + dx) + 'px'; el.style.top = (oy + dy) + 'px';
+      el.style.right = 'auto'; el.style.bottom = 'auto';
+    });
+    const end = (e) => {
+      if (!active) return;
+      active = false;
+      el.classList.remove('dragging');
+      if (!moved) { onTap(); return; }
+      const st = $('stage').getBoundingClientRect(), r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2 - st.left, cy = r.top + r.height / 2 - st.top;
+      const corner = (cy < st.height / 2 ? 't' : 'b') + (cx < st.width / 2 ? 'l' : 'r');
+      el.style.left = el.style.top = el.style.right = el.style.bottom = '';
+      el.setAttribute('data-corner', corner);
+      document.body.setAttribute('data-pip', corner);
+      prefsSet(prefKey, corner);
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    el.addEventListener('click', (e) => e.preventDefault());
+    document.body.setAttribute('data-pip', el.getAttribute('data-corner'));
+  }
+  function prefsGet(k) { try { return localStorage.getItem('bi_' + k) || ''; } catch (e) { return ''; } }
+  function prefsSet(k, v) { try { localStorage.setItem('bi_' + k, v); } catch (e) { /* нет */ } }
+
+  // Плашка слабой связи: появляется после ~6 с плохого качества и сама исчезает, когда связь наладится.
+  let weakN = 0, weakDismissed = false;
+  function updateWeak(level, text) {
+    if (level === 1) weakN++; else weakN = 0;
+    if (level >= 3) weakDismissed = false;
+    const show = weakN >= 3 && !weakDismissed;
+    if (show) $('weakText').textContent = text;
+    $('weakBar').classList.toggle('hidden', !show);
+  }
+  $('weakClose').addEventListener('click', () => { weakDismissed = true; $('weakBar').classList.add('hidden'); });
   let markerTimer = 0;
   function placeMarker(nx, ny) {
     const b = videoBox();
@@ -1244,6 +1391,7 @@
     };
   }
 
+  let clientVpnHint = () => false;
   function qualityLevel(s) {
     if (!s) return 0;
     const fps = ROLE === 'specialist' ? s.inFps : s.outFps;
@@ -1265,6 +1413,10 @@
       if (!s) return;
       lastStats = s;
       setBars(qualityLevel(s));
+      updateWeak(qualityLevel(s), ROLE === 'client'
+        ? (RELAY.vpn ? '📶 Слабая связь. Похоже, включён VPN: выключите его на время занятия, видео станет быстрее и чётче.'
+                     : '📶 Слабая связь. Подойдите ближе к Wi-Fi или переключитесь на мобильный интернет. Качество снижено автоматически.')
+        : '📶 Слабая связь у клиента. Качество видео снижено автоматически' + (clientVpnHint() ? ', у клиента, вероятно, включён VPN.' : '.'));
       const parts = [];
       if (s.route) parts.push(s.route);
       if (s.rtt != null) parts.push(s.rtt + ' мс');
@@ -1416,7 +1568,7 @@
         pip.srcObject = null;
       }
     }
-    $('pipVideo').addEventListener('click', () => { remoteMain = !remoteMain; renderViews(); });
+    makePip($('pipVideo'), 'pip_client', () => { remoteMain = !remoteMain; renderViews(); });
 
     $('btnHintOk').onclick = () => {
       Sound.unlock();
@@ -1508,6 +1660,7 @@
         setTimeout(() => placeMarker(m.x, m.y), 60);
         Sound.beep(1200, 60, 0.15);
       }
+      else if (m.t === 'end') endSession('specialist');
       else if (m.t === 'camstate') { const was = specCamOn; specCamOn = !!m.on; if (specCamOn && !was) remoteMain = true; renderViews(); }
       else if (m.t === 'summary') showSummary(m.text);
       else if (m.t === 'sw') applyClientStopwatch(m);
@@ -1776,7 +1929,27 @@
     $('btnFlip').onclick = flipCamera;
     $('btnClientMic').onclick = () => toggleMic(localStream);
     $('btnMic').onclick = () => toggleMic(localStream);
-    $('btnReconnect').onclick = () => { retryDelay = 2000; failCount = 0; closeCall(); createPeer(); };
+    $('btnReconnect').onclick = () => { closeSheet('netWrap'); retryDelay = 2000; failCount = 0; closeCall(); createPeer(); };
+
+    function endSession(byWhom) {
+      destroyed = true;
+      clearTimeout(retryTimer);
+      Timer.stop(true);
+      Stopwatch.apply('reset', 0);
+      try { sendCtrl({ t: 'bye' }); } catch (e) { /* нет */ }
+      setTimeout(() => { closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } }, 300);
+      try { localStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* нет */ }
+      Wake.wanted = false;
+      try { Wake.sentinel && Wake.sentinel.release(); } catch (e) { /* нет */ }
+      const hasSum = !!load('bi_client_summary', null);
+      $('endText').textContent = (byWhom === 'specialist' ? 'Специалист завершил занятие. ' : '') +
+        (hasSum ? 'Итоги занятия сохранены на этом телефоне.' : 'Спасибо за занятие!');
+      $('endSummary').classList.toggle('hidden', !hasSum);
+      $('endScreen').classList.remove('hidden');
+    }
+    $('btnHangup').onclick = () => { if (confirm('Завершить занятие?')) endSession('client'); };
+    $('endRejoin').onclick = () => location.reload();
+    $('endSummary').onclick = () => { const v = load('bi_client_summary', null); if (v) { $('sumText').textContent = v.text; openSheet('sumWrap'); } };
     $('statusBtn').onclick = () => {
       const s = lastStats;
       const info = cameraInfo();
@@ -1831,6 +2004,8 @@
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(restoreMedia, 300); });
 
     window.addEventListener('pagehide', () => { destroyed = true; closeCall(); try { peer && peer.destroy(); } catch (e) { /* нет */ } });
+    setStatus('Проверка маршрута…', 'warn');
+    await waitRelays();
     createPeer();
   }
 
@@ -2857,7 +3032,8 @@
     }
     $('btnPoint').onclick = () => setPointing(!pointing);
     $('stage').addEventListener('click', (e) => {
-      if (!pointing || e.target.closest('#hud')) return;
+      if (!pointing || e.target.closest('#hud') || e.target.closest('#selfTile')) return;
+      if (document.body.classList.contains('swapped')) { document.body.classList.remove('swapped'); return; }
       const b = videoBox();
       if (!b) { toast('Нет видео'); return; }
       const nx = (e.clientX - b.st.left - b.x) / b.w;
@@ -2894,6 +3070,14 @@
     $('sayText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendSay(); } });
 
     onExerciseChange = pushCtx;
+    clientVpnHint = () => !!(clientCam && /VPN/.test(clientCam.region || ''));
+    $('btnEndCall').onclick = () => {
+      if (!currentCall) { toast('Нет активного звонка'); return; }
+      if (!confirm('Завершить звонок с клиентом?')) return;
+      sendCtrl({ t: 'end' }, true);
+      closeSheet('menuWrap');
+      setTimeout(() => endCall('Звонок завершён'), 400);
+    };
     $('btnSendSummary').onclick = () => {
       const text = buildClientSummary();
       if (sendCtrl({ t: 'summary', text: text })) { Session.add('cue', 'Итоги отправлены'); renderLog(); toast('📤 Итоги отправлены клиенту'); }
@@ -2901,6 +3085,7 @@
 
     function onClientMessage(m) {
       if (m.t === 'cam') { clientCam = m; if (isOpen('netWrap')) renderNet(); }
+      else if (m.t === 'bye') { toast('Клиент завершил занятие'); endCall('Клиент завершил занятие'); }
       else if (m.t === 'qlevel') { clientLevel = m.level; if (isOpen('netWrap')) renderNet(); }
       else if (m.t === 'diag') { clientDiag = m; }
       else if (m.t === 'ack') {
@@ -3000,7 +3185,15 @@
       sendCtrl({ t: 'camstate', on: !!(prefs.specCam && camTrack && camTrack.readyState === 'live') }, true);
     }
     const camPromise = prefs.specCam ? openSpecCam().then((t) => { renderSelf(); return t; }) : Promise.resolve(null);
-    $('selfTile').onclick = async () => {
+    // Окошко: нажатие меняет местами, камера включается кнопкой 📷 вверху.
+    makePip($('selfTile'), 'pip_spec', () => {
+      if (pointing) setPointing(false);
+      document.body.classList.toggle('swapped');
+      toast(document.body.classList.contains('swapped') ? 'Вы на большом экране' : 'Клиент на большом экране');
+    });
+    function renderCamBtn() { $('btnCam').classList.toggle('off', !prefs.specCam); }
+    renderCamBtn();
+    $('btnCam').onclick = async () => {
       prefs.specCam = !prefs.specCam;
       savePrefs();
       if (prefs.specCam) {
@@ -3009,6 +3202,7 @@
         camTrack.stop(); camTrack = null; // выключаем камеру совсем: экономия батареи и канала
       }
       renderSelf();
+      renderCamBtn();
       if (currentCall) attachCam(currentCall);
       toast(prefs.specCam ? 'Клиент видит вас' : 'Ваша камера выключена');
     };
@@ -3141,6 +3335,7 @@
     catch (e) { fatal('Сеть', 'Не удалось загрузить модуль связи PeerJS. Проверьте интернет и перезагрузите страницу.'); return; }
     let savedId = '';
     try { savedId = localStorage.getItem(STORAGE_ID) || ''; } catch (e) { savedId = ''; }
+    await waitRelays();
     createPeer(/^bi-[a-z0-9]{6,}$/.test(savedId) ? savedId : randomId());
   }
 
