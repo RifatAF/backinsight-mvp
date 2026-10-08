@@ -239,6 +239,26 @@
   #cueCard .txt { font-size: clamp(30px, 10.5vw, 70px); font-weight: 800; line-height: 1.07; margin-top: 10px; letter-spacing: -.01em; }
   #cueCard .sub { font-size: clamp(16px, 5vw, 26px); color: var(--muted); margin-top: 10px; }
   #cueCard.digits .txt { font-size: clamp(90px, 42vw, 220px); margin-top: 0; }
+  /* Видео собеседника: у клиента окошко (тап меняет местами), у специалиста своё превью (тап вкл/выкл камеру) */
+  #pipVideo {
+    position: absolute; z-index: 3; left: 10px; bottom: 10px; width: 30%; max-width: 170px; aspect-ratio: 3 / 4;
+    object-fit: cover; border-radius: 14px; border: 2px solid rgba(255,255,255,.75); background: #111;
+    box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  }
+  #pipVideo.mirror, #selfView { transform: scaleX(-1); }
+  #selfTile {
+    position: absolute; z-index: 6; right: 10px; bottom: 10px; width: 82px; aspect-ratio: 3 / 4; padding: 0;
+    border-radius: 12px; overflow: hidden; border: 2px solid rgba(255,255,255,.7); background: #111;
+    box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  }
+  #selfView { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #selfLbl {
+    position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; font-weight: 700; padding: 3px 0;
+    background: rgba(0,0,0,.55); text-align: center;
+  }
+  #selfTile.off #selfView { visibility: hidden; }
+  #selfTile.off { border-color: var(--err); }
+  body.specialist #cueCard { right: 104px; }
   body.specialist #cueCard { top: auto; bottom: 12px; transform: none; padding: 10px 12px; border-width: 2px; animation: none; }
   body.specialist #cueCard .ico { font-size: 28px; display: inline; }
   body.specialist #cueCard .txt { font-size: 20px; display: inline; margin: 0 0 0 8px; }
@@ -393,6 +413,11 @@
     <div id="clientCounter" class="client-only hidden"><div class="ex" id="ccEx"></div><div class="big" id="ccReps">0</div><div class="lbl" id="ccSet"></div></div>
     <button id="lastCue" class="client-only hidden" title="Показать ещё раз"></button>
     <div id="pointMarker" class="hidden"></div>
+    <video id="pipVideo" class="client-only hidden" playsinline webkit-playsinline autoplay muted title="Поменять местами"></video>
+    <button id="selfTile" class="spec-only off" title="Моя камера: нажмите, чтобы включить или выключить">
+      <video id="selfView" playsinline webkit-playsinline autoplay muted></video>
+      <span id="selfLbl">📷 выкл</span>
+    </button>
     <div id="pointHint" class="spec-only hidden">👆 Нажмите на видео, чтобы показать клиенту место</div>
 
     <div id="clientHint" class="client-only">
@@ -774,8 +799,10 @@
   function store(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* приватный режим */ } }
   function load(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? def : v; } catch (e) { return def; } }
 
+  let diagExtra = null;
   function diagText(extra) {
     const s = lastStats || {};
+    if (!extra && diagExtra) extra = diagExtra();
     return JSON.stringify(Object.assign({
       role: ROLE, time: new Date().toISOString(), ua: navigator.userAgent, tz: TZ, region: REGION_LABEL,
       route: s.route, rtt: s.rtt, loss: s.loss, inRes: s.inRes, inFps: s.inFps, outRes: s.outRes, outFps: s.outFps,
@@ -1115,6 +1142,26 @@
     }
   }
 
+  // Заставка вместо камеры: звонок всегда принимается с видеоканалом, камеру можно включить позже без переподключения.
+  function placeholderVideoTrack() {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 240; c.height = 320;
+      const x = c.getContext('2d');
+      let n = 0;
+      const draw = () => {
+        x.fillStyle = '#0f151d'; x.fillRect(0, 0, 240, 320);
+        x.fillStyle = '#3b82f6'; x.beginPath(); x.arc(120, 140, 42, 0, Math.PI * 2); x.fill();
+        x.fillStyle = '#eef2f6'; x.font = '600 18px sans-serif'; x.textAlign = 'center';
+        x.fillText('Камера выключена', 120, 220);
+        x.fillStyle = 'rgba(255,255,255,' + (0.02 + (n++ % 2) * 0.01) + ')'; x.fillRect(0, 0, 1, 1); // кадры должны меняться
+      };
+      draw();
+      setInterval(draw, 500);
+      return c.captureStream(2).getVideoTracks()[0] || null;
+    } catch (e) { return null; }
+  }
+
   // Беззвучная дорожка: звонок всегда принимается с аудиоканалом, микрофон подставляется в него позже.
   function silentAudioTrack() {
     try {
@@ -1344,6 +1391,32 @@
     let relayOnly = FORCE_RELAY;
     let destroyed = false;
     let quality = 'auto';
+    let remoteStream = null;
+    let specCamOn = false;
+    let remoteMain = true; // видео специалиста на большом экране, своё в окошке
+
+    function setSrc(el, stream, force) {
+      if (force || el.srcObject !== stream) { el.srcObject = null; el.srcObject = stream; }
+      if (stream) el.play().catch(() => {});
+    }
+    // Раскладка: большой экран и окошко. Своё изображение с фронтальной камеры зеркалим, чужое нет.
+    function renderViews(force) {
+      if (!localStream) return;
+      const showRemote = !!(remoteStream && remoteStream.getVideoTracks().length && specCamOn);
+      const bigRemote = showRemote && remoteMain;
+      video.muted = true;
+      setSrc(video, bigRemote ? remoteStream : localStream, force);
+      video.classList.toggle('mirror', !bigRemote && facing === 'user');
+      const pip = $('pipVideo');
+      pip.classList.toggle('hidden', !showRemote);
+      if (showRemote) {
+        setSrc(pip, bigRemote ? localStream : remoteStream, force);
+        pip.classList.toggle('mirror', bigRemote && facing === 'user');
+      } else if (pip.srcObject) {
+        pip.srcObject = null;
+      }
+    }
+    $('pipVideo').addEventListener('click', () => { remoteMain = !remoteMain; renderViews(); });
 
     $('btnHintOk').onclick = () => {
       Sound.unlock();
@@ -1429,7 +1502,13 @@
       else if (m.t === 'ask') showAsk(m);
       else if (m.t === 'timer') Timer.start(m);
       else if (m.t === 'ctx') showCounter(m);
-      else if (m.t === 'point') { placeMarker(m.x, m.y); Sound.beep(1200, 60, 0.15); }
+      else if (m.t === 'point') {
+        // Специалист показывает место на теле клиента: на большой экран выводим своё изображение.
+        if (remoteMain && specCamOn) { remoteMain = false; renderViews(); }
+        setTimeout(() => placeMarker(m.x, m.y), 60);
+        Sound.beep(1200, 60, 0.15);
+      }
+      else if (m.t === 'camstate') { const was = specCamOn; specCamOn = !!m.on; if (specCamOn && !was) remoteMain = true; renderViews(); }
       else if (m.t === 'summary') showSummary(m.text);
       else if (m.t === 'sw') applyClientStopwatch(m);
     }
@@ -1561,9 +1640,7 @@
       if (old) localStream.removeTrack(old);
       localStream.addTrack(newTrack);
       facing = realFacing === 'user' ? 'user' : 'environment';
-      video.srcObject = localStream;
-      video.classList.toggle('mirror', facing === 'user');
-      video.play().catch(() => {});
+      renderViews(true);
       toast(facing === 'user' ? 'Фронтальная камера ×1' : 'Основная камера ×1');
       sendCtrl(cameraInfo());
     }
@@ -1579,10 +1656,7 @@
     }
     micStream = localStream;
     setMicButton(true);
-    video.muted = true;
-    video.srcObject = localStream;
-    video.classList.toggle('mirror', facing === 'user');
-    try { await video.play(); } catch (e) { /* muted autoplay разрешён */ }
+    renderViews(true);
     setPlaceholder(null);
     Wake.enable();
 
@@ -1637,6 +1711,9 @@
 
       c.on('stream', async (remote) => {
         if (call !== c) return;
+        remoteStream = remote;
+        renderViews(true);
+        if (remoteAudio.srcObject === remote && !remoteAudio.paused) return;
         remoteAudio.srcObject = remote;
         const ok = await playWithSound(remoteAudio);
         if (!ok && remote.getAudioTracks().length) showUnmute(remoteAudio);
@@ -1734,8 +1811,7 @@
           if (sender) await sender.replaceTrack(nv);
           if (vt) localStream.removeTrack(vt);
           localStream.addTrack(nv);
-          video.srcObject = localStream;
-          video.play().catch(() => {});
+          renderViews(true);
           toast('Камера снова включена');
         } catch (e) { toast('Камера не включилась, нажмите «Связь»'); }
       }
@@ -2885,6 +2961,63 @@
       setStatus('Ожидание клиента', 'warn', reason || '');
     }
 
+    /* Своя камера специалиста: 480p, 15 к/с, до 350 кбит/с, чтобы не отнимать канал у видео клиента */
+    if (prefs.specCam === undefined) prefs.specCam = true;
+    let camTrack = null;
+    const placeholderTrack = placeholderVideoTrack();
+    async function openSpecCam() {
+      if (camTrack && camTrack.readyState === 'live') return camTrack;
+      try {
+        const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 20 } } });
+        camTrack = st.getVideoTracks()[0];
+        try { camTrack.contentHint = 'motion'; } catch (e) { /* нет */ }
+        return camTrack;
+      } catch (e) { camTrack = null; return null; }
+    }
+    function renderSelf() {
+      const on = !!(prefs.specCam && camTrack && camTrack.readyState === 'live');
+      $('selfTile').classList.toggle('off', !on);
+      $('selfLbl').textContent = on ? 'Я · вкл' : '📷 выкл';
+      const sv = $('selfView');
+      if (on) { if (!sv.srcObject || sv.srcObject.getVideoTracks()[0] !== camTrack) sv.srcObject = new MediaStream([camTrack]); sv.play().catch(() => {}); }
+      else sv.srcObject = null;
+    }
+    async function attachCam(call) {
+      const pc = call && call.peerConnection;
+      if (!pc) return;
+      const tr = prefs.specCam && camTrack && camTrack.readyState === 'live' ? camTrack : placeholderTrack;
+      const sender = pc.getSenders().find((x) => x.track && x.track.kind === 'video');
+      if (sender && tr && sender.track !== tr) { try { await sender.replaceTrack(tr); } catch (e) { /* нет */ } }
+      if (sender) {
+        try {
+          const p = sender.getParameters();
+          if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+          p.encodings[0].maxBitrate = 350000;
+          p.encodings[0].maxFramerate = 15;
+          await sender.setParameters(p);
+        } catch (e) { /* не поддерживается */ }
+      }
+      sendCtrl({ t: 'camstate', on: !!(prefs.specCam && camTrack && camTrack.readyState === 'live') }, true);
+    }
+    const camPromise = prefs.specCam ? openSpecCam().then((t) => { renderSelf(); return t; }) : Promise.resolve(null);
+    $('selfTile').onclick = async () => {
+      prefs.specCam = !prefs.specCam;
+      savePrefs();
+      if (prefs.specCam) {
+        if (!(await openSpecCam())) { prefs.specCam = false; savePrefs(); toast('Нет доступа к камере'); }
+      } else if (camTrack) {
+        camTrack.stop(); camTrack = null; // выключаем камеру совсем: экономия батареи и канала
+      }
+      renderSelf();
+      if (currentCall) attachCam(currentCall);
+      toast(prefs.specCam ? 'Клиент видит вас' : 'Ваша камера выключена');
+    };
+    renderSelf();
+    diagExtra = () => ({
+      clientRegion: clientCam && clientCam.region || '', clientCamera: clientCam && clientCam.label || '',
+      clientQuality: clientLevel, myCamera: !!(camTrack && prefs.specCam)
+    });
+
     async function attachMic(call, stream) {
       const pc = call && call.peerConnection;
       const tr = stream && stream.getAudioTracks()[0];
@@ -2900,13 +3033,21 @@
       const mic = await Promise.race([micPromise, new Promise((r) => setTimeout(() => r(null), 3000))]);
       if (currentCall !== call) return;
       // Без микрофона ответ шёл без аудиоканала, и клиент не слышал специалиста весь звонок.
-      let answerStream = mic;
-      if (!answerStream || !answerStream.getAudioTracks().length) {
+      const cam = prefs.specCam ? await Promise.race([camPromise, new Promise((r) => setTimeout(() => r(null), 2000))]) : null;
+      if (currentCall !== call) return;
+      // Ответ всегда с аудио- и видеоканалом: без них клиент не услышит и не увидит специалиста до перезвона.
+      const tracks = [];
+      const at = mic && mic.getAudioTracks()[0];
+      if (at) tracks.push(at);
+      else {
         const t = silentAudioTrack();
-        answerStream = t ? new MediaStream([t]) : undefined;
+        if (t) tracks.push(t);
         micPromise.then((s) => { if (s && currentCall === call) attachMic(call, s); });
       }
-      call.answer(answerStream, { sdpTransform: preferH264 });
+      const vt = cam && cam.readyState === 'live' ? cam : placeholderTrack;
+      if (vt) tracks.push(vt);
+      if (!cam && prefs.specCam) camPromise.then((t) => { if (t && currentCall === call) { renderSelf(); attachCam(call); } });
+      call.answer(tracks.length ? new MediaStream(tracks) : undefined, { sdpTransform: preferH264 });
 
       call.on('stream', async (stream) => {
         if (currentCall !== call) return;
@@ -2926,7 +3067,7 @@
       watchPeerConnection(pc, () => {
         if (currentCall !== call) return;
         setStatus('Клиент на связи', 'ok');
-        prioritizeAudio(pc);
+        prioritizeAudio(pc).then(() => attachCam(call));
         if (micStream) attachMic(call, micStream);
         startStats(pc);
       }, (why) => { if (currentCall === call) endCall(why); });
@@ -2939,6 +3080,7 @@
         if (quality !== 'auto') { try { conn.send({ t: 'quality', q: quality }); } catch (e) { /* нет */ } }
         pushCtx();
         if (Stopwatch.running || Stopwatch.acc > 0) pushStopwatch();
+        if (currentCall) attachCam(currentCall);
       });
       conn.on('data', (m) => { if (m && typeof m === 'object') onClientMessage(m); });
       conn.on('close', () => { if (ctrl === conn) ctrl = null; });
