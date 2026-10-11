@@ -8,6 +8,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rifat.trainercount.data.Store
@@ -22,10 +24,13 @@ sealed interface Screen {
     data object Settings : Screen
     data class ClientView(val id: String) : Screen
     data class Edit(val id: String?) : Screen
+    data class EditPlace(val id: String?) : Screen
 }
 
 class Nav(private val stack: SnapshotStateList<Screen>) {
     val current get() = stack.last()
+    /** Открыть вопрос «с кем было занятие» на главном экране. */
+    var openPending by mutableStateOf<String?>(null)
     fun go(s: Screen) = stack.add(s)
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex)
@@ -57,6 +62,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Settings -> SettingsScreen(data, nav)
                     is Screen.ClientView -> ClientScreen(data, s.id, nav)
                     is Screen.Edit -> EditClientScreen(data, s.id, nav)
+                    is Screen.EditPlace -> EditPlaceScreen(data, s.id, nav)
                 }
             }
         }
@@ -68,7 +74,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFrom(i: Intent?) {
-        val id = i?.getStringExtra(Notifier.EXTRA_CLIENT) ?: return
+        if (i == null || !Store.data.value.settings.setupDone) return
+        i.getStringExtra(Notifier.EXTRA_PENDING)?.let { pid ->
+            i.removeExtra(Notifier.EXTRA_PENDING)
+            nav.reset(Screen.Home)
+            nav.openPending = pid
+            return
+        }
+        val id = i.getStringExtra(Notifier.EXTRA_CLIENT) ?: return
         i.removeExtra(Notifier.EXTRA_CLIENT)
         if (Store.data.value.settings.setupDone && nav.current != Screen.ClientView(id)) nav.go(Screen.ClientView(id))
     }

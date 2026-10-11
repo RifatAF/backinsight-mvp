@@ -99,6 +99,9 @@ fun HomeScreen(data: AppData, nav: Nav) {
             if (!data.settings.hasHome) item {
                 WarnCard("Дом не задан: рабочее время не считается.") { nav.go(Screen.Settings) }
             }
+            items(data.pending.sortedByDescending { it.start }, key = { "pending" + it.id }) { p ->
+                PendingCard(data, p) { nav.openPending = p.id }
+            }
             if (toCheck.isNotEmpty()) item {
                 WarnCard("Проверьте ${toCheck.size} ${if (toCheck.size == 1) "визит" else "визита"}: выход не был зафиксирован.") {
                     nav.go(Screen.ClientView(toCheck.first().clientId))
@@ -123,6 +126,9 @@ fun HomeScreen(data: AppData, nav: Nav) {
             }
         }
     }
+
+    val pending = nav.openPending?.let { id -> data.pending.firstOrNull { it.id == id } }
+    if (pending != null) PendingDialog(data, pending) { nav.openPending = null }
 }
 
 @Composable
@@ -131,7 +137,7 @@ private fun StatusCard(data: AppData, now: Long) {
     val trip = data.openTrip
     val (title, sub) = when {
         open != null -> {
-            val name = data.client(open.key)?.name ?: "клиента"
+            val name = data.client(open.key)?.name ?: data.place(open.key.removePrefix("p:"))?.name ?: "клиента"
             "Сейчас у: $name" to "с ${fTime(open.value)} · ${fDur((now - open.value) / 60_000)}. Засчитается при выходе"
         }
         trip != null -> "В работе" to "вышли в ${fTime(trip.start)} · ${fDur((now - trip.start) / 60_000)}"
@@ -168,7 +174,11 @@ fun ClientCard(data: AppData, c: Client, onClick: () -> Unit) {
                     Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     val sub = buildList {
                         if (c.members.size > 1) add(c.members.joinToString(", "))
-                        if (!c.hasPlace) add("адрес не задан")
+                        val place = c.placeId?.let { data.place(it) }
+                        when {
+                            place != null -> add("«${place.name}»" + if (c.slots.isNotEmpty()) " " + c.slots.joinToString(", ", transform = ::slotText) else "")
+                            !c.hasPlace -> add("адрес не задан")
+                        }
                         add(last?.let { "был ${fDate(it.start)}" } ?: "ещё не был")
                     }.joinToString(" · ")
                     Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

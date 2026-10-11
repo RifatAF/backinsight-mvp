@@ -13,9 +13,38 @@ data class Client(
     val price: Int = 0,
     val archived: Boolean = false,
     val createdAt: Long = 0,
+    /** Общее место (кафе, зал), где проходят занятия с этим клиентом. */
+    val placeId: String? = null,
+    /** Расписание в общем месте: по нему приложение само понимает, с кем было занятие. */
+    val slots: List<Slot> = emptyList(),
 ) {
     val hasPlace get() = lat != null && lng != null
 }
+
+/** День недели ISO (1 = пн) и время начала в минутах от полуночи. */
+data class Slot(val day: Int, val min: Int)
+
+/** Место, где бывают разные клиенты: кафе для онлайн-занятий, зал. */
+data class Place(
+    val id: String,
+    val name: String,
+    val lat: Double,
+    val lng: Double,
+    val radius: Int = 100,
+    val sessionMin: Int = 60,
+    val minMin: Int = 30,
+)
+
+/** Пробыли в общем месте, но непонятно с кем: ждёт ответа. */
+data class Pending(
+    val id: String,
+    val placeId: String,
+    val start: Long,
+    val end: Long,
+    val count: Int,
+    /** Кого подставить заранее (совпали по расписанию). */
+    val suggested: List<String> = emptyList(),
+)
 
 data class Pack(
     val id: String,
@@ -63,13 +92,16 @@ data class Settings(
 
 data class AppData(
     val clients: List<Client> = emptyList(),
+    val places: List<Place> = emptyList(),
+    val pending: List<Pending> = emptyList(),
     val packs: List<Pack> = emptyList(),
     val visits: List<Visit> = emptyList(),
     val trips: List<Trip> = emptyList(),
     val settings: Settings = Settings(),
-    /** clientId → время входа в зону. */
+    /** clientId или «p:»+placeId → время входа в зону. */
     val open: Map<String, Long> = emptyMap(),
 ) {
     fun client(id: String) = clients.firstOrNull { it.id == id }
+    fun place(id: String) = places.firstOrNull { it.id == id }
     val openTrip get() = trips.lastOrNull { it.end == null }
 }

@@ -135,7 +135,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                     }
                 }
             }
-            if (!c.hasPlace) item {
+            if (!c.hasPlace && c.placeId == null) item {
                 Spacer(Modifier.height(10.dp))
                 WarnCard("Адрес не задан: тренировки считаются только вручную.") { nav.go(Screen.Edit(id)) }
             }

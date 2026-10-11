@@ -267,6 +267,8 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { HomeBlock(data) } }
             SectionTitle("Рабочие часы")
             Card { Column(Modifier.padding(12.dp)) { HoursBlock(data) } }
+            SectionTitle("Общие места")
+            Card { Column(Modifier.padding(12.dp)) { PlacesBlock(data, nav) } }
             SectionTitle("Данные")
             Card {
                 Column(Modifier.padding(12.dp)) {
@@ -289,7 +291,9 @@ fun SettingsScreen(data: AppData, nav: Nav) {
                     "Пороги меняются в карточке клиента.\n" +
                     "• После выхода приходит тихое уведомление с кнопками «Отменить» и «+1».\n" +
                     "• Рабочее время: от выхода из дома до возвращения (по домашнему Wi‑Fi или по месту). " +
-                    "Выходы без тренировок считаются личными, это можно поменять в статистике.",
+                    "Выходы без тренировок считаются личными, это можно поменять в статистике.\n" +
+                    "• Общее место (кафе): если у клиентов задано расписание, занятия разбираются сами. " +
+                    "Иначе после выхода приходит вопрос «С кем?».",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(32.dp))

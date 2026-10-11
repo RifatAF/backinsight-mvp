@@ -30,6 +30,8 @@ import com.rifat.trainercount.logic.onClientEnter
 import com.rifat.trainercount.logic.onClientExit
 import com.rifat.trainercount.logic.onHomeArrive
 import com.rifat.trainercount.logic.onHomeLeave
+import com.rifat.trainercount.logic.onPlaceEnter
+import com.rifat.trainercount.logic.onPlaceExit
 import java.util.concurrent.TimeUnit
 
 object Perms {
@@ -82,6 +84,7 @@ object Tracker {
 object GeoSync {
     private const val HOME = "home"
     private const val CLIENT = "c:"
+    private const val PLACE = "p:"
 
     private fun flags() = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
 
@@ -107,7 +110,9 @@ object GeoSync {
         val s = d.settings
         val list = buildList {
             if (s.homeLat != null && s.homeLng != null) add(fence(HOME, s.homeLat, s.homeLng, s.homeRadius))
-            d.clients.filter { !it.archived && it.hasPlace }.forEach { add(fence(CLIENT + it.id, it.lat!!, it.lng!!, it.radius)) }
+            d.clients.filter { !it.archived && it.hasPlace && it.placeId == null }
+                .forEach { add(fence(CLIENT + it.id, it.lat!!, it.lng!!, it.radius)) }
+            d.places.forEach { add(fence(PLACE + it.id, it.lat, it.lng, it.radius)) }
         }
         val gc = LocationServices.getGeofencingClient(ctx)
         val pi = geofencePi(ctx)
@@ -138,10 +143,12 @@ object GeoSync {
     fun dispatch(ctx: Context, id: String, enter: Boolean, t: Long) {
         Tracker.handle(ctx) { d ->
             when {
-                id == HOME && enter -> onHomeArrive(d, t)
+                id == HOME && enter -> onHomeArrive(d, t, byGeofence = true)
                 id == HOME -> onHomeLeave(d, t)
                 id.startsWith(CLIENT) && enter -> onClientEnter(d, id.removePrefix(CLIENT), t)
                 id.startsWith(CLIENT) -> onClientExit(d, id.removePrefix(CLIENT), t)
+                id.startsWith(PLACE) && enter -> onPlaceEnter(d, id.removePrefix(PLACE), t)
+                id.startsWith(PLACE) -> onPlaceExit(d, id.removePrefix(PLACE), t)
                 else -> Step(d)
             }
         }

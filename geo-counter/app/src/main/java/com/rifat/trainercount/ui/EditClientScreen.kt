@@ -1,10 +1,11 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 
 package com.rifat.trainercount.ui
 
-import android.location.Address
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +42,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,12 +57,10 @@ import com.rifat.trainercount.logic.Client
 import com.rifat.trainercount.logic.fDur
 import com.rifat.trainercount.logic.newId
 import com.rifat.trainercount.logic.thresholdFor
-import kotlinx.coroutines.launch
 
 @Composable
 fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val orig = id?.let { data.client(it) }
     val c0 = remember { orig ?: Client(newId(), "", createdAt = System.currentTimeMillis()) }
 
@@ -75,10 +74,9 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
     var minMin by remember { mutableIntStateOf(c0.minMin) }
     var price by remember { mutableStateOf(if (c0.price > 0) c0.price.toString() else "") }
     var archived by remember { mutableStateOf(c0.archived) }
+    var placeId by remember { mutableStateOf(c0.placeId) }
+    var slots by remember { mutableStateOf(c0.slots) }
 
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<Address>>(emptyList()) }
-    var busy by remember { mutableStateOf(false) }
     var askDelete by remember { mutableStateOf(false) }
 
     fun current() = c0.copy(
@@ -86,13 +84,8 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
         members = members.split(',').map { it.trim() }.filter { it.isNotEmpty() },
         address = address.trim(), lat = lat, lng = lng, radius = radius.toInt(),
         sessionMin = sessionMin, minMin = minMin, price = price.toIntOrNull() ?: 0, archived = archived,
+        placeId = placeId, slots = slots,
     )
-
-    fun setPlace(la: Double, lo: Double, addr: String?) {
-        lat = la; lng = lo
-        if (!addr.isNullOrBlank()) address = addr
-        else scope.launch { reverseGeocode(ctx, la, lo)?.let { if (address.isBlank()) address = it } }
-    }
 
     fun save() {
         if (name.isBlank()) {
@@ -129,67 +122,32 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
             )
 
-            SectionTitle("Адрес")
+            SectionTitle("Где занятия")
+            if (data.places.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = placeId == null, onClick = { placeId = null }, label = { Text("У клиента") })
+                    data.places.forEach { p ->
+                        FilterChip(selected = placeId == p.id, onClick = { placeId = p.id }, label = { Text(p.name) })
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             Card {
                 Column(Modifier.padding(12.dp)) {
-                    Text(
-                        when {
-                            lat != null && address.isNotBlank() -> "✓ $address"
-                            lat != null -> "✓ Место задано: %.5f, %.5f".format(lat, lng)
-                            else -> "Место не задано. Проще всего нажать «Я здесь», стоя у дома клиента."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Button(enabled = !busy, onClick = {
-                        busy = true
-                        currentLocation(ctx) { l ->
-                            busy = false
-                            if (l == null) Toast.makeText(ctx, "Не удалось определить место", Toast.LENGTH_SHORT).show()
-                            else setPlace(l.latitude, l.longitude, null)
+                    if (placeId == null) {
+                        LocationPicker(
+                            lat, lng, address, radius, "Место не задано. Проще всего нажать «Я здесь», стоя у дома клиента.",
+                            onPlace = { la, lo, a -> lat = la; lng = lo; if (a != null) address = a },
+                            onAutoAddress = { if (address.isBlank()) address = it },
+                            onAddress = { address = it },
+                            onRadius = { radius = it },
+                        )
+                        if (data.places.isEmpty()) TextButton(onClick = { nav.go(Screen.EditPlace(null)) }) {
+                            Text("Занимаетесь в кафе или зале с разными клиентами? Добавить общее место")
                         }
-                    }) {
-                        Icon(Icons.Default.LocationOn, null)
-                        Text(if (busy) "  Определяю…" else "  Я здесь")
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { q ->
-                            query = q
-                            parseCoords(q)?.let { (la, lo) -> setPlace(la, lo, null); results = emptyList() }
-                        },
-                        label = { Text("Или адрес / координаты / ссылка на карту") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        trailingIcon = {
-                            IconButton(onClick = {
-                                scope.launch {
-                                    results = geocode(ctx, query)
-                                    if (results.isEmpty()) Toast.makeText(ctx, "Ничего не нашлось", Toast.LENGTH_SHORT).show()
-                                }
-                            }) { Icon(Icons.Default.Search, "Найти") }
-                        },
-                    )
-                    results.forEach { a ->
-                        TextButton(onClick = {
-                            setPlace(a.latitude, a.longitude, shortAddress(a))
-                            results = emptyList(); query = ""
-                        }) { Text(a.getAddressLine(0) ?: shortAddress(a)) }
-                    }
-                    if (lat != null) {
-                        OutlinedTextField(
-                            value = address, onValueChange = { address = it }, label = { Text("Подпись адреса") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        )
-                        Text("Радиус зоны: ${radius.toInt()} м", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                        Slider(value = radius, onValueChange = { radius = it }, valueRange = 80f..300f, steps = 21)
-                        Text(
-                            "Больше радиус: надёжнее срабатывает. Меньше: не путает с соседними домами.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    } else {
+                        Text("Расписание", style = MaterialTheme.typography.titleSmall)
+                        SlotsEditor(slots) { slots = it }
                     }
                 }
             }
@@ -197,22 +155,24 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
             SectionTitle("Как считать")
             Card {
                 Column(Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Длина тренировки", modifier = Modifier.weight(1f))
-                        Stepper(sessionMin, { sessionMin = it }, 30..180, 15) { fDur(it.toLong()) }
+                    if (placeId == null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Длина тренировки", modifier = Modifier.weight(1f))
+                            Stepper(sessionMin, { sessionMin = it }, 30..180, 15) { fDur(it.toLong()) }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Засчитывать от", modifier = Modifier.weight(1f))
+                            Stepper(minMin, { minMin = it }, 10..90, 5) { "$it мин" }
+                        }
+                        val preview = current()
+                        Text(
+                            "1 тренировка от ${fDur(thresholdFor(1, preview).toLong())}, " +
+                                "2 от ${fDur(thresholdFor(2, preview).toLong())}, 3 от ${fDur(thresholdFor(3, preview).toLong())}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Засчитывать от", modifier = Modifier.weight(1f))
-                        Stepper(minMin, { minMin = it }, 10..90, 5) { "$it мин" }
-                    }
-                    val preview = current()
-                    Text(
-                        "1 тренировка от ${fDur(thresholdFor(1, preview).toLong())}, " +
-                            "2 от ${fDur(thresholdFor(2, preview).toLong())}, 3 от ${fDur(thresholdFor(3, preview).toLong())}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
                     OutlinedTextField(
                         value = price, onValueChange = { price = it.filter(Char::isDigit).take(7) },
                         label = { Text("Цена тренировки, ₽ (для статистики)") },

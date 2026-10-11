@@ -4,6 +4,9 @@ import android.content.Context
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.Client
 import com.rifat.trainercount.logic.Pack
+import com.rifat.trainercount.logic.Pending
+import com.rifat.trainercount.logic.Place
+import com.rifat.trainercount.logic.Slot
 import com.rifat.trainercount.logic.Settings
 import com.rifat.trainercount.logic.Trip
 import com.rifat.trainercount.logic.Visit
@@ -67,6 +70,26 @@ object Store {
                     put("address", c.address); put("lat", c.lat ?: JSONObject.NULL); put("lng", c.lng ?: JSONObject.NULL)
                     put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin)
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
+                    put("placeId", c.placeId ?: JSONObject.NULL)
+                    put("slots", JSONArray().apply {
+                        c.slots.forEach { sl -> put(JSONObject().apply { put("day", sl.day); put("min", sl.min) }) }
+                    })
+                })
+            }
+        })
+        put("places", JSONArray().apply {
+            d.places.forEach { p ->
+                put(JSONObject().apply {
+                    put("id", p.id); put("name", p.name); put("lat", p.lat); put("lng", p.lng)
+                    put("radius", p.radius); put("sessionMin", p.sessionMin); put("minMin", p.minMin)
+                })
+            }
+        })
+        put("pending", JSONArray().apply {
+            d.pending.forEach { p ->
+                put(JSONObject().apply {
+                    put("id", p.id); put("placeId", p.placeId); put("start", p.start); put("end", p.end)
+                    put("count", p.count); put("suggested", arr(p.suggested))
                 })
             }
         })
@@ -118,6 +141,20 @@ object Store {
                     radius = c.optInt("radius", 120), sessionMin = c.optInt("sessionMin", 60),
                     minMin = c.optInt("minMin", 30), price = c.optInt("price", 0),
                     archived = c.optBoolean("archived"), createdAt = c.optLong("createdAt"),
+                    placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
+                    slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
+                )
+            },
+            places = o.optJSONArray("places").list { p ->
+                Place(
+                    id = p.getString("id"), name = p.getString("name"), lat = p.getDouble("lat"), lng = p.getDouble("lng"),
+                    radius = p.optInt("radius", 100), sessionMin = p.optInt("sessionMin", 60), minMin = p.optInt("minMin", 30),
+                )
+            },
+            pending = o.optJSONArray("pending").list { p ->
+                Pending(
+                    p.getString("id"), p.getString("placeId"), p.getLong("start"), p.getLong("end"),
+                    p.getInt("count"), strings(p.optJSONArray("suggested")),
                 )
             },
             packs = o.optJSONArray("packs").list { p ->

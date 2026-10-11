@@ -13,16 +13,33 @@ const val SHORT_TRIP_MIN = 5
 
 fun newId(): String = UUID.randomUUID().toString().take(12)
 
+const val PLACE = "p:"
+/** Насколько раньше времени по расписанию можно прийти, чтобы занятие с ним совпало. */
+const val SLOT_EARLY_MIN = 20
+
 /** 1 тренировка от minMin, каждая следующая через sessionMin (+10 мин запаса на неточность выхода). */
-fun sessionsFor(durationMin: Long, c: Client): Int {
-    if (durationMin < c.minMin) return 0
-    val extra = (durationMin - c.minMin - SLACK_MIN).coerceAtLeast(0) / c.sessionMin.coerceAtLeast(1)
+fun sessionsFor(durationMin: Long, sessionMin: Int, minMin: Int): Int {
+    if (durationMin < minMin) return 0
+    val extra = (durationMin - minMin - SLACK_MIN).coerceAtLeast(0) / sessionMin.coerceAtLeast(1)
     return (1 + extra.toInt()).coerceAtMost(MAX_PER_VISIT)
 }
 
+fun sessionsFor(durationMin: Long, c: Client): Int = sessionsFor(durationMin, c.sessionMin, c.minMin)
+
 /** Минимальная длительность для n тренировок, для подсказки в настройках. */
-fun thresholdFor(n: Int, c: Client): Int =
-    if (n <= 1) c.minMin else c.minMin + SLACK_MIN + (n - 1) * c.sessionMin
+fun thresholdFor(n: Int, sessionMin: Int, minMin: Int): Int =
+    if (n <= 1) minMin else minMin + SLACK_MIN + (n - 1) * sessionMin
+
+fun thresholdFor(n: Int, c: Client): Int = thresholdFor(n, c.sessionMin, c.minMin)
+
+fun distanceM(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+    val r = 6_371_000.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLng = Math.toRadians(lng2 - lng1)
+    val a = Math.sin(dLat / 2).let { it * it } +
+        Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLng / 2).let { it * it }
+    return 2 * r * Math.asin(Math.sqrt(a))
+}
 
 // ---------- Баланс ----------
 
@@ -84,6 +101,10 @@ fun inHours(s: Settings, t: Long, zone: ZoneId = ZoneId.systemDefault()): Boolea
 
 sealed class Effect {
     data class VisitAdded(val visit: Visit) : Effect()
+    /** Занятия в общем месте разобраны по расписанию. */
+    data class PlaceAuto(val place: Place, val visits: List<Visit>) : Effect()
+    /** Занятия в общем месте, нужно отметить с кем. */
+    data class PendingAdded(val pending: Pending) : Effect()
 }
 
 data class Step(val data: AppData, val effects: List<Effect> = emptyList())
@@ -99,10 +120,47 @@ private fun closeVisit(d: AppData, clientId: String, t: Long, forced: Boolean): 
     return Step(base.copy(visits = base.visits + v), listOf(Effect.VisitAdded(v)))
 }
 
+/** Клиенты общего места, у которых время по расписанию попало в пребывание, по порядку. */
+fun matchSlots(d: AppData, place: Place, start: Long, end: Long, zone: ZoneId = ZoneId.systemDefault()): List<Pair<Client, Long>> {
+    val dates = setOf(dayOf(start, zone), dayOf(end, zone))
+    val latest = end - place.minMin * MIN
+    val out = mutableListOf<Pair<Client, Long>>()
+    for (c in d.clients.filter { it.placeId == place.id && !it.archived }) {
+        val at = c.slots.flatMap { s ->
+            dates.filter { it.dayOfWeek.value == s.day }
+                .map { it.atStartOfDay(zone).plusMinutes(s.min.toLong()).toInstant().toEpochMilli() }
+        }.filter { it in (start - SLOT_EARLY_MIN * MIN)..latest }.minOrNull() ?: continue
+        out += c to at
+    }
+    return out.sortedBy { it.second }
+}
+
+private fun closePlace(d: AppData, placeId: String, t: Long, forced: Boolean): Step {
+    val key = PLACE + placeId
+    val start = d.open[key] ?: return Step(d)
+    val base = d.copy(open = d.open - key)
+    val p = d.place(placeId) ?: return Step(base)
+    val count = sessionsFor((t - start) / MIN, p.sessionMin, p.minMin)
+    if (count == 0) return Step(base)
+    val matched = matchSlots(base, p, start, t)
+    if (!forced && matched.size == count) {
+        val vs = matched.map { (c, at) ->
+            val from = maxOf(at, start)
+            Visit(newId(), c.id, from, minOf(from + p.sessionMin * MIN, t), 1)
+        }
+        return Step(base.copy(visits = base.visits + vs), listOf(Effect.PlaceAuto(p, vs)))
+    }
+    val pd = Pending(newId(), p.id, start, t, count, matched.map { it.first.id })
+    return Step(base.copy(pending = base.pending + pd), listOf(Effect.PendingAdded(pd)))
+}
+
+private fun closeOpen(d: AppData, key: String, t: Long, forced: Boolean): Step =
+    if (key.startsWith(PLACE)) closePlace(d, key.removePrefix(PLACE), t, forced) else closeVisit(d, key, t, forced)
+
 private fun closeAllVisits(d: AppData, t: Long, except: String? = null): Step {
     var cur = Step(d)
-    for (id in d.open.keys.filter { it != except }) {
-        val s = closeVisit(cur.data, id, t, forced = true)
+    for (key in d.open.keys.filter { it != except }) {
+        val s = closeOpen(cur.data, key, t, forced = true)
         cur = Step(s.data, cur.effects + s.effects)
     }
     return cur
@@ -115,16 +173,59 @@ private fun closeTrip(d: AppData, end: Long): AppData {
     return d.copy(trips = trips + trip.copy(end = end))
 }
 
-fun onClientEnter(d: AppData, clientId: String, t: Long): Step {
-    val c = d.client(clientId) ?: return Step(d)
-    if (c.archived || clientId in d.open || !inHours(d.settings, t)) return Step(d)
-    val closed = closeAllVisits(d, t, except = clientId)
-    var nd = closed.data.copy(open = closed.data.open + (clientId to t))
+private fun enter(d: AppData, key: String, t: Long): Step {
+    if (key in d.open || !inHours(d.settings, t)) return Step(d)
+    val closed = closeAllVisits(d, t, except = key)
+    var nd = closed.data.copy(open = closed.data.open + (key to t))
     if (nd.openTrip == null && nd.settings.hasHome) nd = nd.copy(trips = nd.trips + Trip(newId(), t))
     return Step(nd, closed.effects)
 }
 
+fun onClientEnter(d: AppData, clientId: String, t: Long): Step {
+    val c = d.client(clientId) ?: return Step(d)
+    if (c.archived) return Step(d)
+    return enter(d, clientId, t)
+}
+
 fun onClientExit(d: AppData, clientId: String, t: Long): Step = closeVisit(d, clientId, t, forced = false)
+
+fun onPlaceEnter(d: AppData, placeId: String, t: Long): Step {
+    d.place(placeId) ?: return Step(d)
+    return enter(d, PLACE + placeId, t)
+}
+
+fun onPlaceExit(d: AppData, placeId: String, t: Long): Step = closePlace(d, placeId, t, forced = false)
+
+/** Отметить, с кем было занятие в общем месте. picks: clientId → сколько занятий. */
+fun resolvePending(d: AppData, pendingId: String, picks: List<Pair<String, Int>>): AppData {
+    val p = d.pending.firstOrNull { it.id == pendingId } ?: return d
+    val total = picks.sumOf { it.second }.coerceAtLeast(1)
+    val span = p.end - p.start
+    var acc = 0
+    val vs = picks.filter { it.second > 0 }.map { (id, n) ->
+        val from = p.start + span * acc / total
+        acc += n
+        Visit(newId(), id, from, p.start + span * acc / total, n)
+    }
+    return d.copy(pending = d.pending - p, visits = d.visits + vs)
+}
+
+fun dismissPending(d: AppData, pendingId: String): AppData = d.copy(pending = d.pending.filter { it.id != pendingId })
+
+/** Место клиента или общее место рядом с домом: геозона дома там тоже срабатывает. */
+private fun nearHome(d: AppData, key: String): Boolean {
+    val s = d.settings
+    val hl = s.homeLat ?: return false
+    val hg = s.homeLng ?: return false
+    val (lat, lng, r) = if (key.startsWith(PLACE)) {
+        val p = d.place(key.removePrefix(PLACE)) ?: return false
+        Triple(p.lat, p.lng, p.radius)
+    } else {
+        val c = d.client(key) ?: return false
+        Triple(c.lat ?: return false, c.lng ?: return false, c.radius)
+    }
+    return distanceM(hl, hg, lat, lng) < s.homeRadius + r
+}
 
 fun onHomeLeave(d: AppData, t: Long): Step {
     if (!inHours(d.settings, t)) return Step(d)
@@ -138,7 +239,12 @@ fun onHomeLeave(d: AppData, t: Long): Step {
     return Step(nd.copy(trips = nd.trips + Trip(newId(), t)))
 }
 
-fun onHomeArrive(d: AppData, t: Long): Step {
+/**
+ * Вернулись домой. byGeofence: событие от зоны дома. Если сейчас идёт занятие в месте рядом с домом
+ * (кафе через дорогу), зона дома срабатывает и там, поэтому такое событие пропускаем: дом подтвердит Wi‑Fi.
+ */
+fun onHomeArrive(d: AppData, t: Long, byGeofence: Boolean = false): Step {
+    if (byGeofence && d.open.keys.any { nearHome(d, it) }) return Step(d)
     val closed = closeAllVisits(d, t)
     return Step(closeTrip(closed.data, t), closed.effects)
 }

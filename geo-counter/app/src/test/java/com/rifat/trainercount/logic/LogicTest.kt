@@ -141,4 +141,77 @@ class LogicTest {
         assertEquals("11 тренировок", trainings(11))
         assertEquals("22 тренировки", trainings(22))
     }
+
+    // ---------- Общее место (кафе) ----------
+
+    private val cafe = Place("cafe", "Кафе", 0.0005, 0.0, radius = 80)
+
+    private fun withCafe(vararg slots: Pair<String, List<Slot>>): AppData {
+        val online = slots.map { (name, sl) -> Client(name, name, placeId = "cafe", slots = sl) }
+        return base.copy(clients = base.clients + online, places = listOf(cafe))
+    }
+
+    private fun cafeStay(d: AppData, from: Long, to: Long): Step {
+        val a = onPlaceEnter(d, "cafe", from)
+        val b = onPlaceExit(a.data, "cafe", to)
+        return Step(b.data, a.effects + b.effects)
+    }
+
+    @Test fun cafeBySchedule() {
+        val d = withCafe("Аня" to listOf(Slot(3, 18 * 60)), "Борис" to listOf(Slot(3, 19 * 60)), "Вера" to listOf(Slot(5, 18 * 60)))
+        val s = cafeStay(d, t(17, 55), t(20, 5))
+        val vs = s.data.visits.sortedBy { it.start }
+        assertEquals(listOf("Аня", "Борис"), vs.map { it.clientId })
+        assertEquals(t(18), vs[0].start)
+        assertEquals(t(19), vs[1].start)
+        assertTrue(s.data.pending.isEmpty())
+        assertTrue(s.effects.single() is Effect.PlaceAuto)
+    }
+
+    @Test fun cafeWithoutScheduleAsks() {
+        val d = withCafe("Аня" to emptyList(), "Борис" to emptyList())
+        val s = cafeStay(d, t(18), t(19, 50))
+        assertTrue(s.data.visits.isEmpty())
+        val p = s.data.pending.single()
+        assertEquals(2, p.count)
+        assertTrue(p.suggested.isEmpty())
+        val r = resolvePending(s.data, p.id, listOf("Аня" to 1, "Борис" to 1))
+        assertTrue(r.pending.isEmpty())
+        assertEquals(listOf(1, 1), r.visits.map { it.count })
+        assertEquals(t(18), r.visits[0].start)
+        assertEquals(r.visits[0].end, r.visits[1].start)
+        assertEquals(t(19, 50), r.visits[1].end)
+    }
+
+    @Test fun cafeScheduleMismatchSuggests() {
+        // По расписанию одна Аня, а сидели на два занятия: спросить, подставив Аню.
+        val d = withCafe("Аня" to listOf(Slot(3, 18 * 60)), "Борис" to emptyList())
+        val p = cafeStay(d, t(18), t(19, 50)).data.pending.single()
+        assertEquals(listOf("Аня"), p.suggested)
+        assertEquals(2, p.count)
+    }
+
+    @Test fun cafeShortStayIgnoredAndDismiss() {
+        val d = withCafe("Аня" to emptyList())
+        assertTrue(cafeStay(d, t(18), t(18, 15)).data.pending.isEmpty())
+        val p = cafeStay(d, t(18), t(19)).data
+        assertTrue(dismissPending(p, p.pending.single().id).pending.isEmpty())
+    }
+
+    @Test fun cafeNextToHomeIgnoresHomeGeofence() {
+        // Кафе в 55 м от дома: зона дома срабатывает внутри кафе, это не возвращение домой.
+        val d = withCafe("Аня" to listOf(Slot(3, 18 * 60)))
+        var x = onPlaceEnter(d, "cafe", t(17, 58)).data
+        x = onHomeArrive(x, t(18, 30), byGeofence = true).data
+        assertEquals(setOf("p:cafe"), x.open.keys)
+        // Wi‑Fi дома: это точно дом, занятие закрывается.
+        val y = onHomeArrive(x, t(19, 5))
+        assertTrue(y.data.open.isEmpty())
+        assertTrue(y.data.pending.isNotEmpty())
+    }
+
+    @Test fun distance() {
+        val m = distanceM(55.0, 37.0, 55.001, 37.0)
+        assertTrue(m in 110.0..112.0, "$m")
+    }
 }
