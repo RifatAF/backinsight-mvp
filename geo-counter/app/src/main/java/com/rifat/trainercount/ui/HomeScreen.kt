@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import com.rifat.trainercount.geo.Diag
 import com.rifat.trainercount.geo.Perms
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.Client
@@ -93,6 +94,13 @@ fun HomeScreen(data: AppData, nav: Nav) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item { StatusCard(data, now) }
+            val todayIso = java.time.LocalDate.now().dayOfWeek.value
+            if (todayIso !in data.settings.days) item {
+                WarnCard("Сегодня учёт выключен: этот день не отмечен как рабочий. Нажмите, чтобы изменить.") { nav.go(Screen.Settings) }
+            }
+            if (Diag.state.value?.ok == false && permsOk) item {
+                WarnCard("Автоучёт не работает: ${Diag.state.value?.text}. Нажмите, чтобы открыть журнал.") { nav.go(Screen.Log) }
+            }
             if (!permsOk) item {
                 WarnCard("Фоновый учёт выключен: не хватает разрешений. Нажмите, чтобы исправить.") { nav.go(Screen.Settings) }
             }
@@ -141,7 +149,7 @@ private fun StatusCard(data: AppData, now: Long) {
             "Сейчас у: $name" to "с ${fTime(open.value)} · ${fDur((now - open.value) / 60_000)}. Засчитается при выходе"
         }
         trip != null -> "В работе" to "вышли в ${fTime(trip.start)} · ${fDur((now - trip.start) / 60_000)}"
-        !inHours(data.settings, now) -> "Отдых" to "вне рабочих часов учёт выключен"
+        !inHours(data.settings, now) -> "Учёт выключен" to "сейчас не рабочее время по настройкам"
         else -> "Дома" to "учёт включится, когда выйдете"
     }
     val today = LocalDate.now()

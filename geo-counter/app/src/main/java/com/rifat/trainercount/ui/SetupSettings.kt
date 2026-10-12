@@ -166,7 +166,7 @@ fun HoursBlock(data: AppData) {
     val ctx = LocalContext.current
     val s = data.settings
     Column {
-        Text("Вне этих часов приложение ничего не считает.", style = MaterialTheme.typography.bodyMedium)
+        Text("Учёт работает только в эти часы и дни. В остальное время приложение ничего не считает.", style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
             OutlinedButton(onClick = {
                 pickTime(ctx, s.startMin) { m -> Store.update { it.copy(settings = it.settings.copy(startMin = m)) } }
@@ -190,6 +190,23 @@ fun HoursBlock(data: AppData) {
                 )
             }
         }
+        val on = DAYS.filterIndexed { i, _ -> (i + 1) in s.days }
+        val off = DAYS.filterIndexed { i, _ -> (i + 1) !in s.days }
+        Text(
+            when {
+                off.isEmpty() -> "✓ Учёт каждый день"
+                on.isEmpty() -> "✗ Не выбран ни один день: учёт выключен"
+                else -> "Учёт: ${on.joinToString(", ")}. Выходные: ${off.joinToString(", ")}"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (on.size < 3) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            "Выделенный день: учёт включён. Нажатие включает или выключает день.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -263,6 +280,11 @@ fun SettingsScreen(data: AppData, nav: Nav) {
         Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             SectionTitle("Проверка работы")
             Card { Column(Modifier.padding(12.dp)) { PermissionChecklist() } }
+            Spacer(Modifier.height(8.dp))
+            GeoStateCard { nav.go(Screen.Log) }
+            OutlinedButton(onClick = { nav.go(Screen.Log) }, modifier = Modifier.padding(top = 8.dp)) {
+                Text("Журнал работы и проверка «Где я сейчас?»")
+            }
             SectionTitle("Дом")
             Card { Column(Modifier.padding(12.dp)) { HomeBlock(data) } }
             SectionTitle("Рабочие часы")

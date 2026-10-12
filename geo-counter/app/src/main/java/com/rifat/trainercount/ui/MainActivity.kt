@@ -25,6 +25,7 @@ sealed interface Screen {
     data class ClientView(val id: String) : Screen
     data class Edit(val id: String?) : Screen
     data class EditPlace(val id: String?) : Screen
+    data object Log : Screen
 }
 
 class Nav(private val stack: SnapshotStateList<Screen>) {
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
                     is Screen.ClientView -> ClientScreen(data, s.id, nav)
                     is Screen.Edit -> EditClientScreen(data, s.id, nav)
                     is Screen.EditPlace -> EditPlaceScreen(data, s.id, nav)
+                    Screen.Log -> LogScreen(nav)
                 }
             }
         }

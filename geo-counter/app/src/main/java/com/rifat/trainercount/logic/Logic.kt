@@ -249,6 +249,65 @@ fun onHomeArrive(d: AppData, t: Long, byGeofence: Boolean = false): Step {
     return Step(closeTrip(closed.data, t), closed.effects)
 }
 
+// ---------- Страховочная проверка места ----------
+
+const val HOME_KEY = "home"
+/** Если с прошлой проверки прошло не больше, время входа/выхода берём посередине. */
+const val POLL_GAP_MIN = 40
+
+data class Zone(val key: String, val name: String, val lat: Double, val lng: Double, val radius: Int)
+
+fun zones(d: AppData): List<Zone> = buildList {
+    val s = d.settings
+    if (s.homeLat != null && s.homeLng != null) add(Zone(HOME_KEY, "Дом", s.homeLat, s.homeLng, s.homeRadius))
+    d.clients.filter { !it.archived && it.hasPlace && it.placeId == null }
+        .forEach { add(Zone(it.id, it.name, it.lat!!, it.lng!!, it.radius)) }
+    d.places.forEach { add(Zone(PLACE + it.id, it.name, it.lat, it.lng, it.radius)) }
+}
+
+/** Ближайшая зона и расстояние до её края (отрицательное: внутри). */
+fun nearestZone(d: AppData, lat: Double, lng: Double): Pair<Zone, Double>? =
+    zones(d).map { it to distanceM(lat, lng, it.lat, it.lng) - it.radius }.minByOrNull { it.second }
+
+/**
+ * Фоновая проверка места раз в 15 минут. Нужна на случай, когда система не прислала событие геозоны.
+ * Внутри зоны: расстояние до центра не больше радиуса + 25 м. Точно снаружи: больше радиуса + погрешность + 50 м.
+ */
+fun onPoll(d: AppData, lat: Double, lng: Double, acc: Float, t: Long): Step {
+    val prev = d.lastPoll
+    val est = if (prev != null && t - prev in 0..POLL_GAP_MIN * MIN) (prev + t) / 2 else t
+    val margin = acc.coerceIn(0f, 150f)
+    val all = zones(d).map { it to distanceM(lat, lng, it.lat, it.lng) }
+    fun inside(z: Pair<Zone, Double>) = z.second <= z.first.radius + 25
+    fun outside(z: Pair<Zone, Double>) = z.second > z.first.radius + margin + 50
+
+    var cur = Step(d.copy(lastPoll = t))
+    fun apply(s: Step) { cur = Step(s.data, cur.effects + s.effects) }
+
+    // 1. Ушли от клиента или из кафе, а выход не пришёл.
+    for (key in cur.data.open.keys.toList()) {
+        val z = all.firstOrNull { it.first.key == key } ?: continue
+        if (outside(z)) apply(
+            if (key.startsWith(PLACE)) onPlaceExit(cur.data, key.removePrefix(PLACE), est)
+            else onClientExit(cur.data, key, est)
+        )
+    }
+    val home = all.firstOrNull { it.first.key == HOME_KEY }
+    val atHome = home != null && inside(home)
+    // 2. Пришли к клиенту, а вход не пришёл.
+    val here = all.filter { it.first.key != HOME_KEY && inside(it) }.minByOrNull { it.second }
+    if (here != null && here.first.key !in cur.data.open) {
+        val key = here.first.key
+        apply(if (key.startsWith(PLACE)) onPlaceEnter(cur.data, key.removePrefix(PLACE), est) else onClientEnter(cur.data, key, est))
+    }
+    // 3. Дом.
+    if (home != null) {
+        if (atHome && here == null && cur.data.openTrip != null) apply(onHomeArrive(cur.data, est, byGeofence = true))
+        else if (outside(home) && cur.data.openTrip == null) apply(onHomeLeave(cur.data, est))
+    }
+    return cur
+}
+
 // ---------- Статистика ----------
 
 fun isWork(d: AppData, trip: Trip, now: Long): Boolean =

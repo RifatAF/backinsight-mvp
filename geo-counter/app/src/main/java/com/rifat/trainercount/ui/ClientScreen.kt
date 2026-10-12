@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.rifat.trainercount.data.Store
+import com.rifat.trainercount.geo.GeoSync
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.Client
 import com.rifat.trainercount.logic.MAX_PER_VISIT
@@ -59,6 +60,7 @@ import com.rifat.trainercount.logic.Pack
 import com.rifat.trainercount.logic.Visit
 import com.rifat.trainercount.logic.VisitKind
 import com.rifat.trainercount.logic.balance
+import com.rifat.trainercount.logic.distanceM
 import com.rifat.trainercount.logic.fDate
 import com.rifat.trainercount.logic.fDateY
 import com.rifat.trainercount.logic.fDow
@@ -133,6 +135,15 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                             }) { Text("Отчёт клиенту") }
                         }
                     }
+                }
+            }
+            val samePlace = if (c.placeId == null && c.lat != null && c.lng != null)
+                data.places.firstOrNull { distanceM(it.lat, it.lng, c.lat, c.lng) < it.radius + 30 } else null
+            if (samePlace != null) item {
+                Spacer(Modifier.height(10.dp))
+                WarnCard("Адрес совпадает с общим местом «${samePlace.name}». Нажмите, чтобы считать занятия с ${c.name} там.") {
+                    Store.update { d -> d.copy(clients = d.clients.map { if (it.id == c.id) it.copy(placeId = samePlace.id) else it }) }
+                    GeoSync.sync(ctx)
                 }
             }
             if (!c.hasPlace && c.placeId == null) item {

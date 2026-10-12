@@ -214,4 +214,43 @@ class LogicTest {
         val m = distanceM(55.0, 37.0, 55.001, 37.0)
         assertTrue(m in 110.0..112.0, "$m")
     }
+
+    // ---------- Страховочная проверка ----------
+
+    @Test fun pollCatchesMissedVisit() {
+        // Геозоны молчали: проверки в 9:50 (у дома нет, вышли), 10:05 и 10:50 у Светланы, 11:05 ушли.
+        var s = onPoll(base, 0.003, 0.0, 20f, t(9, 50))
+        assertTrue(s.data.openTrip != null)
+        s = onPoll(s.data, 1.0, 1.0, 20f, t(10, 5))
+        assertEquals(t(9, 57) + 30_000, s.data.open["s"])
+        s = onPoll(s.data, 1.0, 1.0, 20f, t(10, 50))
+        s = onPoll(s.data, 1.01, 1.0, 20f, t(11, 5))
+        val v = s.data.visits.single()
+        assertEquals("s", v.clientId)
+        assertEquals(1, v.count)
+        assertTrue(s.effects.single() is Effect.VisitAdded)
+        // Дома: выход закрывается.
+        s = onPoll(s.data, 0.0, 0.0, 20f, t(11, 35))
+        assertNull(s.data.openTrip)
+    }
+
+    @Test fun pollKeepsGeofenceTimes() {
+        // Вход пришёл от геозоны в 10:00, проверка не должна сдвинуть время.
+        var d = onClientEnter(base, "s", t(10)).data
+        d = onPoll(d, 1.0, 1.0, 20f, t(10, 10)).data
+        assertEquals(t(10), d.open["s"])
+    }
+
+    @Test fun pollIgnoresInaccurateFix() {
+        // Погрешность 400 м рядом с краем зоны: не выходим.
+        var d = onClientEnter(base, "s", t(10)).data
+        d = onPoll(d, 1.0025, 1.0, 400f, t(10, 30)).data
+        assertEquals(setOf("s"), d.open.keys)
+    }
+
+    @Test fun nearest() {
+        val (z, edge) = nearestZone(base, 1.0, 1.001)!!
+        assertEquals("s", z.key)
+        assertTrue(edge < 0)
+    }
 }

@@ -100,6 +100,8 @@ data class AppData(
     val settings: Settings = Settings(),
     /** clientId или «p:»+placeId → время входа в зону. */
     val open: Map<String, Long> = emptyMap(),
+    /** Время последней фоновой проверки места (страховка, если геозона не сработала). */
+    val lastPoll: Long? = null,
 ) {
     fun client(id: String) = clients.firstOrNull { it.id == id }
     fun place(id: String) = places.firstOrNull { it.id == id }
