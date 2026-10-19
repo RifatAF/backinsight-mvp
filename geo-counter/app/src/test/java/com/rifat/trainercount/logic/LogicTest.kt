@@ -131,8 +131,55 @@ class LogicTest {
         val paid = base.copy(packs = listOf(Pack("p", "s", t(8, day = 1), 10, 10000)))
         val d = visit(paid, "s", t(10), t(11)).data
         val r = reportText(d, sveta)
-        assertTrue("Осталось: 9 тренировок" in r, r)
-        assertTrue("1. 07.10" in r, r)
+        assertTrue("Оплачено: 10 занятий (01.10.2026)" in r, r)
+        assertTrue("1. Ср 07.10, 10:00" in r, r)
+        assertTrue("Проведено: 1 из 10\nОсталось: 9 занятий" in r, r)
+    }
+
+    @Test fun reportSkipsUsedPacksAndNumbersFamily() {
+        val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0)
+        val d = base.copy(
+            clients = base.clients + fam,
+            packs = listOf(Pack("p1", "f", t(8, day = 1), 2, 0), Pack("p2", "f", t(8, day = 5), 4, 0)),
+            visits = listOf(
+                Visit("v1", "f", t(10, day = 2), t(10, day = 2), 2, VisitKind.MANUAL, listOf("Ерлан", "Рита")),
+                Visit("v2", "f", t(10, day = 6), t(10, day = 6), 2, VisitKind.MANUAL, listOf("Ерлан", "Рита")),
+                Visit("v3", "f", t(10, day = 7), t(10, day = 7), 1, VisitKind.MANUAL, listOf("Рита")),
+            ),
+        )
+        val r = reportText(d, fam)
+        assertTrue("Оплачено: 4 занятия (05.10.2026)" in r, r)
+        assertTrue("1–2. Вт 06.10 · Ерлан, Рита" in r, r)
+        assertTrue("3. Ср 07.10 · Рита" in r, r)
+        assertTrue("02.10" !in r, r)
+        assertTrue("Проведено: 3 из 4\nОсталось: 1 занятие" in r, r)
+    }
+
+    @Test fun reportDebt() {
+        val d = base.copy(
+            packs = listOf(Pack("p", "s", t(8, day = 1), 1, 0)),
+            visits = (2..4).map { Visit("v$it", "s", t(10, day = it), t(10, day = it), 1, VisitKind.MANUAL) },
+        )
+        val r = reportText(d, sveta)
+        assertTrue("Последняя оплата: 1 занятие" in r, r)
+        assertTrue("1. Сб 03.10" in r && "2. Вс 04.10" in r, r)
+        assertTrue("Сверх оплаты: 2 занятия, нужна оплата" in r, r)
+    }
+
+    @Test fun familyCountsEachMember() {
+        val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0, sessionMin = 120, minMin = 90)
+        val d0 = base.copy(clients = base.clients + fam)
+        val d = visit(d0, "f", t(10), t(12)).data
+        val v = d.visits.single()
+        assertEquals(2, v.count)
+        assertEquals(listOf("Ерлан", "Рита"), v.members)
+        assertEquals(1, perPerson(v, fam))
+        val onlyRita = withMembers(v, fam, listOf("Рита"), 1)
+        assertEquals(1, onlyRita.count)
+        // Без раздельного счёта: одно занятие на всю семью.
+        val joint = fam.copy(perMember = false)
+        val d2 = visit(d0.copy(clients = base.clients + joint), "f", t(10), t(12)).data
+        assertEquals(1, d2.visits.single().count)
     }
 
     @Test fun plurals() {

@@ -49,6 +49,8 @@ data class Balance(
     /** Пакет, который сейчас расходуется (null: всё израсходовано или оплат нет). */
     val current: Pack?,
     val leftInCurrent: Int,
+    /** Сумма текущей и следующих оплат: «осталось left из activeTotal». */
+    val activeTotal: Int = 0,
 ) {
     val left get() = paid - used
 }
@@ -58,7 +60,10 @@ fun balance(d: AppData, clientId: String): Balance {
     val used = d.visits.filter { it.clientId == clientId }.sumOf { it.count }
     var u = used
     for (p in packs) {
-        if (u < p.sessions) return Balance(packs.sumOf { it.sessions }, used, p, p.sessions - u)
+        if (u < p.sessions) {
+            val active = packs.dropWhile { it !== p }.sumOf { it.sessions }
+            return Balance(packs.sumOf { it.sessions }, used, p, p.sessions - u, active)
+        }
         u -= p.sessions
     }
     return Balance(packs.sumOf { it.sessions }, used, null, 0)
@@ -113,11 +118,22 @@ private fun closeVisit(d: AppData, clientId: String, t: Long, forced: Boolean): 
     val start = d.open[clientId] ?: return Step(d)
     val base = d.copy(open = d.open - clientId)
     val c = d.client(clientId) ?: return Step(base)
-    var count = sessionsFor((t - start) / MIN, c)
-    if (count == 0) return Step(base)
-    if (forced) count = 1
-    val v = Visit(newId(), clientId, start, t, count, VisitKind.AUTO, check = forced)
+    var per = sessionsFor((t - start) / MIN, c)
+    if (per == 0) return Step(base)
+    if (forced) per = 1
+    val v = withMembers(Visit(newId(), clientId, start, t, per, VisitKind.AUTO, check = forced), c, c.members, per)
     return Step(base.copy(visits = base.visits + v), listOf(Effect.VisitAdded(v)))
+}
+
+/** Сколько занятий на одного человека в визите семьи. */
+fun perPerson(v: Visit, c: Client?): Int =
+    if (c?.countsEach == true && v.members.isNotEmpty()) (v.count / v.members.size).coerceAtLeast(1) else v.count
+
+/** Визит с указанным составом: в семье с раздельным счётом count = занятий на человека × пришедших. */
+fun withMembers(v: Visit, c: Client, members: List<String>, per: Int): Visit {
+    val who = if (c.isFamily) members.filter { it in c.members } else emptyList()
+    val n = if (c.countsEach) per * who.size.coerceAtLeast(1) else per
+    return v.copy(members = if (c.countsEach) who.ifEmpty { c.members.take(1) } else who, count = n)
 }
 
 /** Клиенты общего места, у которых время по расписанию попало в пребывание, по порядку. */

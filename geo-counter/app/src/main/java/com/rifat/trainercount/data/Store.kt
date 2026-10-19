@@ -71,6 +71,7 @@ object Store {
                     put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin)
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
                     put("placeId", c.placeId ?: JSONObject.NULL)
+                    put("perMember", c.perMember)
                     put("slots", JSONArray().apply {
                         c.slots.forEach { sl -> put(JSONObject().apply { put("day", sl.day); put("min", sl.min) }) }
                     })
@@ -141,6 +142,7 @@ object Store {
                     radius = c.optInt("radius", 120), sessionMin = c.optInt("sessionMin", 60),
                     minMin = c.optInt("minMin", 30), price = c.optInt("price", 0),
                     archived = c.optBoolean("archived"), createdAt = c.optLong("createdAt"),
+                    perMember = c.optBoolean("perMember", true),
                     placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
                     slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
                 )

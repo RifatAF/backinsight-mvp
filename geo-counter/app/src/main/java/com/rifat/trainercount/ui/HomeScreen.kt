@@ -199,8 +199,8 @@ fun ClientCard(data: AppData, c: Client, onClick: () -> Unit) {
                             Text("сверх оплаты", style = MaterialTheme.typography.bodySmall, color = color)
                         }
                         b.current != null -> {
-                            Text("${b.leftInCurrent}", style = MaterialTheme.typography.headlineMedium, color = color)
-                            Text("из ${b.current.sessions}", style = MaterialTheme.typography.bodySmall)
+                            Text("${b.left}", style = MaterialTheme.typography.headlineMedium, color = color)
+                            Text("из ${b.activeTotal}", style = MaterialTheme.typography.bodySmall)
                         }
                         b.paid > 0 -> Text("пакет закончился", style = MaterialTheme.typography.bodySmall, color = color)
                         else -> Text("нет оплат", style = MaterialTheme.typography.bodySmall)
@@ -211,7 +211,7 @@ fun ClientCard(data: AppData, c: Client, onClick: () -> Unit) {
             if (cur != null) {
                 Spacer(Modifier.height(10.dp))
                 LinearProgressIndicator(
-                    progress = { (cur.sessions - b.leftInCurrent).toFloat() / cur.sessions },
+                    progress = { (b.activeTotal - b.left).toFloat() / b.activeTotal.coerceAtLeast(1) },
                     modifier = Modifier.fillMaxWidth(),
                     color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 )

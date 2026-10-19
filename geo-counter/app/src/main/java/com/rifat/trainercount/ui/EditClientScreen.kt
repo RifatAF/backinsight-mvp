@@ -75,6 +75,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
     var price by remember { mutableStateOf(if (c0.price > 0) c0.price.toString() else "") }
     var archived by remember { mutableStateOf(c0.archived) }
     var placeId by remember { mutableStateOf(c0.placeId) }
+    var perMember by remember { mutableStateOf(c0.perMember) }
     var slots by remember { mutableStateOf(c0.slots) }
 
     var askDelete by remember { mutableStateOf(false) }
@@ -84,7 +85,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
         members = members.split(',').map { it.trim() }.filter { it.isNotEmpty() },
         address = address.trim(), lat = lat, lng = lng, radius = radius.toInt(),
         sessionMin = sessionMin, minMin = minMin, price = price.toIntOrNull() ?: 0, archived = archived,
-        placeId = placeId, slots = slots,
+        placeId = placeId, slots = slots, perMember = perMember,
     )
 
     fun save() {
@@ -121,6 +122,20 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
             )
+
+            if (members.split(',').count { it.isNotBlank() } > 1) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Считать каждого отдельно")
+                        Text(
+                            if (perMember) "Пришли двое: спишется 2 занятия" else "Одно занятие на всю семью",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = perMember, onCheckedChange = { perMember = it })
+                }
+            }
 
             SectionTitle("Где занятия")
             if (data.places.isNotEmpty()) {

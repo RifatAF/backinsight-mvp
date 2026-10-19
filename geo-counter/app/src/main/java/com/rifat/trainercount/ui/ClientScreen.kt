@@ -68,6 +68,8 @@ import com.rifat.trainercount.logic.fDur
 import com.rifat.trainercount.logic.fMoney
 import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.newId
+import com.rifat.trainercount.logic.perPerson
+import com.rifat.trainercount.logic.withMembers
 import com.rifat.trainercount.logic.pricePerSession
 import com.rifat.trainercount.logic.reportText
 import com.rifat.trainercount.logic.trainings
@@ -108,9 +110,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                     Column(Modifier.padding(16.dp)) {
                         val (big, small) = when {
                             b.left < 0 -> "${-b.left}" to "сверх оплаты, нужно получить оплату"
-                            b.current != null -> "${b.leftInCurrent}" to
-                                "осталось из ${b.current.sessions} · пакет от ${fDate(b.current.paidAt)}" +
-                                if (b.left > b.leftInCurrent) " (+${b.left - b.leftInCurrent} в следующем)" else ""
+                            b.current != null -> "${b.left}" to "осталось из ${b.activeTotal} оплаченных"
                             b.paid > 0 -> "0" to "пакет закончился"
                             else -> "—" to "оплат пока нет"
                         }
@@ -120,7 +120,10 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                         )
                         Text(small, style = MaterialTheme.typography.bodyMedium)
                         if (c.members.size > 1) {
-                            Text("Семья: ${c.members.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "Семья: ${c.members.joinToString(", ")}" + if (c.countsEach) " · каждый считается отдельно" else " · одно занятие на всех",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -223,12 +226,22 @@ private fun MembersPicker(c: Client, selected: List<String>, onChange: (List<Str
 }
 
 @Composable
+private fun TotalHint(total: Int) {
+    Text(
+        "Спишется: ${trainings(total)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+@Composable
 private fun AddVisitDialog(c: Client, close: () -> Unit) {
     val ctx = LocalContext.current
     var date by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var count by remember { mutableIntStateOf(1) }
     var burned by remember { mutableStateOf(false) }
-    var members by remember { mutableStateOf(listOf<String>()) }
+    var members by remember { mutableStateOf(c.members) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Добавить вручную") },
@@ -239,16 +252,19 @@ private fun AddVisitDialog(c: Client, close: () -> Unit) {
                     FilterChip(selected = !burned, onClick = { burned = false }, label = { Text("Тренировка") })
                     FilterChip(selected = burned, onClick = { burned = true }, label = { Text("Отмена, списать") })
                 }
+                MembersPicker(c, members) { members = it }
                 Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Сколько", modifier = Modifier.weight(1f))
+                    Text(if (c.countsEach) "Занятий на каждого" else "Сколько", modifier = Modifier.weight(1f))
                     Stepper(count, { count = it }, 1..MAX_PER_VISIT)
                 }
-                MembersPicker(c, members) { members = it }
+                if (c.countsEach) TotalHint(count * members.size.coerceAtLeast(1))
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val v = Visit(newId(), c.id, date, date, count, if (burned) VisitKind.BURNED else VisitKind.MANUAL, members)
+            TextButton(enabled = !c.countsEach || members.isNotEmpty(), onClick = {
+                val v = withMembers(
+                    Visit(newId(), c.id, date, date, count, if (burned) VisitKind.BURNED else VisitKind.MANUAL), c, members, count,
+                )
                 Store.update { it.copy(visits = it.visits + v) }
                 close()
             }) { Text("Добавить") }
@@ -259,8 +275,8 @@ private fun AddVisitDialog(c: Client, close: () -> Unit) {
 
 @Composable
 private fun EditVisitDialog(c: Client, v: Visit, close: () -> Unit) {
-    var count by remember { mutableIntStateOf(v.count) }
-    var members by remember { mutableStateOf(v.members) }
+    var count by remember { mutableIntStateOf(perPerson(v, c)) }
+    var members by remember { mutableStateOf(if (c.countsEach && v.members.isEmpty()) c.members else v.members) }
     var confirmDelete by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = close,
@@ -273,11 +289,12 @@ private fun EditVisitDialog(c: Client, v: Visit, close: () -> Unit) {
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                MembersPicker(c, members) { members = it }
                 Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Тренировок", modifier = Modifier.weight(1f))
+                    Text(if (c.countsEach) "Занятий на каждого" else "Тренировок", modifier = Modifier.weight(1f))
                     Stepper(count, { count = it }, 1..MAX_PER_VISIT)
                 }
-                MembersPicker(c, members) { members = it }
+                if (c.countsEach) TotalHint(count * members.size.coerceAtLeast(1))
                 TextButton(onClick = { confirmDelete = true }, modifier = Modifier.padding(top = 8.dp)) {
                     Text(if (confirmDelete) "Нажмите «Удалить» ниже" else "Удалить визит", color = MaterialTheme.colorScheme.error)
                 }
@@ -287,7 +304,7 @@ private fun EditVisitDialog(c: Client, v: Visit, close: () -> Unit) {
             TextButton(onClick = {
                 Store.update { d ->
                     if (confirmDelete) d.copy(visits = d.visits.filter { it.id != v.id })
-                    else d.copy(visits = d.visits.map { if (it.id == v.id) it.copy(count = count, members = members, check = false) else it })
+                    else d.copy(visits = d.visits.map { if (it.id == v.id) withMembers(it, c, members, count).copy(check = false) else it })
                 }
                 close()
             }) { Text(if (confirmDelete) "Удалить" else "Сохранить") }

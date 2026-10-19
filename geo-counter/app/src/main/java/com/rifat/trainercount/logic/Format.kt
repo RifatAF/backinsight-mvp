@@ -54,26 +54,84 @@ fun visitLine(v: Visit): String {
         .filter { it.isNotBlank() }.joinToString("  ")
 }
 
-/** Текст для отправки клиенту в мессенджер. */
+fun lessons(n: Int) = "$n " + plural(n, "занятие", "занятия", "занятий")
+
+private fun dowCap(t: Long) = fDow(t).replaceFirstChar { it.uppercase() }
+
+/**
+ * Текст для отправки клиенту. Показывает текущий оплаченный период: оплаты, которые ещё не
+ * израсходованы, и занятия в счёт них с порядковыми номерами. Если оплата закончилась, показывает
+ * занятия сверх оплаты.
+ */
 fun reportText(d: AppData, c: Client): String {
-    val b = balance(d, c.id)
-    val pack = b.current ?: d.packs.filter { it.clientId == c.id }.maxByOrNull { it.paidAt }
-    val sb = StringBuilder()
-    sb.append("Тренировки: ${c.name}\n")
-    if (pack != null) {
-        sb.append("Пакет ${trainings(pack.sessions)}, оплачен ${fDateY(pack.paidAt)}\n\n")
-        visitsOfPack(d, pack).forEachIndexed { i, v -> sb.append("${i + 1}. ${visitLine(v)}\n") }
-    } else {
-        d.visits.filter { it.clientId == c.id }.sortedBy { it.start }.takeLast(20)
-            .forEachIndexed { i, v -> sb.append("${i + 1}. ${visitLine(v)}\n") }
+    val packs = d.packs.filter { it.clientId == c.id }.sortedBy { it.paidAt }
+    val visits = d.visits.filter { it.clientId == c.id }.sortedBy { it.start }
+    val used = visits.sumOf { it.count }
+    val paid = packs.sumOf { it.sessions }
+
+    // Начало периода: сколько занятий покрыто полностью израсходованными оплатами.
+    var from = 0
+    val active = mutableListOf<Pack>()
+    for (p in packs) {
+        if (from + p.sessions <= used && active.isEmpty()) from += p.sessions else active += p
     }
-    sb.append('\n')
-    sb.append(
-        when {
-            b.left > 0 -> "Осталось: ${trainings(b.left)}"
-            b.left == 0 -> "Пакет закончился"
-            else -> "Сверх оплаты: ${trainings(-b.left)}"
+    val last = packs.lastOrNull()
+    // Оплата закончилась ровно: показываем последний пакет целиком.
+    if (active.isEmpty() && used == paid && last != null) {
+        from = paid - last.sessions
+        active += last
+    }
+
+    val sb = StringBuilder()
+    sb.append("${c.name}: занятия\n")
+    when {
+        packs.isEmpty() -> sb.append("Оплат пока не было\n")
+        active.isNotEmpty() -> {
+            val sum = active.sumOf { it.sessions }
+            sb.append(
+                if (active.size == 1) "Оплачено: ${lessons(sum)} (${fDateY(active[0].paidAt)})\n"
+                else "Оплачено: ${lessons(sum)} (" + active.joinToString(" + ") { "${it.sessions} от ${fDate(it.paidAt)}" } + ")\n"
+            )
         }
-    )
+        else -> sb.append("Последняя оплата: ${lessons(last!!.sessions)} (${fDateY(last.paidAt)})\n")
+    }
+
+    // Занятия периода с номерами: визит на 2 занятия получает «3–4».
+    val lines = mutableListOf<String>()
+    var pos = 0
+    for (v in visits) {
+        val a = pos
+        pos += v.count
+        val start = maxOf(a, from)
+        if (pos <= from) continue
+        val n1 = start - from + 1
+        val n2 = pos - from
+        val num = if (n1 == n2) "$n1" else "$n1–$n2"
+        val details = buildList {
+            if (v.kind == VisitKind.BURNED) add("отмена, занятие списано")
+            if (v.members.isNotEmpty() && c.isFamily) add(v.members.joinToString(", "))
+        }
+        val time = if (v.kind == VisitKind.AUTO) ", ${fTime(v.start)}" else ""
+        lines += "$num. ${dowCap(v.start)} ${fDate(v.start)}$time" + if (details.isEmpty()) "" else " · " + details.joinToString(" · ")
+    }
+    if (packs.isEmpty() && lines.size > 30) {
+        val skip = lines.size - 30
+        lines.subList(0, skip).clear()
+        sb.append("…\n")
+    }
+    if (lines.isNotEmpty()) {
+        sb.append('\n')
+        lines.forEach { sb.append(it).append('\n') }
+    }
+
+    sb.append('\n')
+    val inPeriod = used - from
+    val left = paid - used
+    when {
+        packs.isEmpty() -> sb.append("Проведено: ${lessons(used)}")
+        left > 0 -> sb.append("Проведено: $inPeriod из ${active.sumOf { it.sessions }}\nОсталось: ${lessons(left)}")
+        left == 0 -> sb.append("Проведено: $inPeriod из ${active.sumOf { it.sessions }}\nОплаченные занятия закончились")
+        else -> sb.append("Сверх оплаты: ${lessons(-left)}, нужна оплата")
+    }
     return sb.toString()
 }

@@ -17,8 +17,12 @@ data class Client(
     val placeId: String? = null,
     /** Расписание в общем месте: по нему приложение само понимает, с кем было занятие. */
     val slots: List<Slot> = emptyList(),
+    /** Семья: каждый пришедший считается отдельным занятием. */
+    val perMember: Boolean = true,
 ) {
     val hasPlace get() = lat != null && lng != null
+    val isFamily get() = members.size > 1
+    val countsEach get() = isFamily && perMember
 }
 
 /** День недели ISO (1 = пн) и время начала в минутах от полуночи. */

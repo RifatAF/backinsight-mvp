@@ -16,6 +16,8 @@ import com.rifat.trainercount.logic.MAX_PER_VISIT
 import com.rifat.trainercount.logic.Pending
 import com.rifat.trainercount.logic.Place
 import com.rifat.trainercount.logic.dismissPending
+import com.rifat.trainercount.logic.perPerson
+import com.rifat.trainercount.logic.withMembers
 import com.rifat.trainercount.logic.Visit
 import com.rifat.trainercount.logic.balance
 import com.rifat.trainercount.logic.fTime
@@ -120,13 +122,14 @@ object Notifier {
         val c = d.client(v.clientId) ?: return
         val b = balance(d, c.id)
         val left = when {
-            b.current != null && b.left > 1 -> "Осталось ${b.leftInCurrent} из ${b.current.sessions}"
+            b.current != null && b.left > 1 -> "Осталось ${b.left} из ${b.activeTotal}"
             b.left == 1 -> "Осталась 1, пора напомнить об оплате"
             b.left == 0 && b.paid > 0 -> "Пакет закончился, пора напомнить об оплате"
             b.left < 0 -> "Сверх оплаты: ${trainings(-b.left)}"
             else -> "Оплат пока нет"
         }
         val text = buildString {
+            if (c.isFamily && v.members.isNotEmpty()) append("${v.members.joinToString(", ")}\n")
             append("${fTime(v.start)}–${fTime(v.end)} · $left")
             if (v.check) append("\nВыход не зафиксирован, проверьте время")
         }
@@ -144,15 +147,22 @@ object Notifier {
             .setContentIntent(open)
             .setAutoCancel(true)
             .addAction(0, "Отменить", action(ctx, ActionReceiver.UNDO, v))
-        if (v.count < MAX_PER_VISIT) n.addAction(0, "+1", action(ctx, ActionReceiver.PLUS, v))
+        when {
+            // Семья: одной кнопкой «был только один».
+            c.countsEach && v.members.size == 2 -> v.members.forEach { m ->
+                n.addAction(0, "Только $m", action(ctx, ActionReceiver.ONLY, v, m))
+            }
+            c.countsEach -> {}
+            v.count < MAX_PER_VISIT -> n.addAction(0, "+1", action(ctx, ActionReceiver.PLUS, v))
+        }
         NotificationManagerCompat.from(ctx).notify(nid(v), n.build())
     }
 
     fun cancel(ctx: Context, v: Visit) = NotificationManagerCompat.from(ctx).cancel(nid(v))
 
-    private fun action(ctx: Context, act: String, v: Visit) = PendingIntent.getBroadcast(
-        ctx, (act + v.id).hashCode(),
-        Intent(ctx, ActionReceiver::class.java).setAction(act).putExtra("visitId", v.id),
+    private fun action(ctx: Context, act: String, v: Visit, member: String? = null) = PendingIntent.getBroadcast(
+        ctx, (act + v.id + (member ?: "")).hashCode(),
+        Intent(ctx, ActionReceiver::class.java).setAction(act).putExtra("visitId", v.id).putExtra("member", member),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 }
@@ -162,6 +172,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val UNDO = "com.rifat.trainercount.UNDO"
         const val PLUS = "com.rifat.trainercount.PLUS"
         const val DISMISS = "com.rifat.trainercount.DISMISS"
+        const val ONLY = "com.rifat.trainercount.ONLY"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
@@ -184,6 +195,13 @@ class ActionReceiver : BroadcastReceiver() {
             UNDO -> {
                 Store.update { d -> d.copy(visits = d.visits.filter { it.id != id }) }
                 Notifier.cancel(ctx, v)
+            }
+            ONLY -> {
+                val c = Store.data.value.client(v.clientId) ?: return
+                val m = intent.getStringExtra("member") ?: return
+                val nv = withMembers(v, c, listOf(m), perPerson(v, c))
+                Store.update { d -> d.copy(visits = d.visits.map { if (it.id == id) nv else it }) }
+                Notifier.show(ctx, nv)
             }
             PLUS -> {
                 val nv = v.copy(count = (v.count + 1).coerceAtMost(MAX_PER_VISIT))
