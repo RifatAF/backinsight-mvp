@@ -36,6 +36,10 @@ Stage 5, funding / crowd strategies on low-liquidity perpetuals (settings in per
   python run_pipeline.py perps-holdout     one-time holdout run, only if the checks passed
   python run_pipeline.py paper [CONFIG]    paper trading on live public data, fills on Hyperliquid's book
   python run_pipeline.py paper-report      -> out/paper.md
+
+Everything at once:
+  python run_all.py                        every step that is not done yet, then out/FINAL_REPORT.md
+  python run_pipeline.py multi             multi-strategy from all saved OOS curves -> out/multi.md
 """
 import hashlib
 import json
@@ -79,6 +83,8 @@ def main(cmd="benchmarks", name=None, *_):
         return print(season(cfg, conn))
     if cmd.startswith("perps-"):
         return perps_cmd(cmd, cfg, conn)
+    if cmd == "multi":
+        return multi_cmd(cfg, conn)
     if cmd == "paper":
         return paper(cfg, conn, name)
     if cmd == "paper-report":
@@ -150,7 +156,7 @@ def select(cfg, conn):
     bars = data.load_raw(sym)
     fday = costs.funding_daily(bars.index, cfg["costs"], data.load_funding(sym)).to_numpy()
     t0 = time.time()
-    replayed = any(t["dataset_sha256"] == sha for t in journal.trials(conn))
+    replayed = any(t["dataset_sha256"] == sha and "stage" not in t["config"] for t in journal.trials(conn))
     found = (selection.replay if replayed else selection.search)(bars, cfg, conn, fday, sha)
     basket = {s: data.load_raw(s) for s in info["basket"]}
     funding = {s: data.load_funding(s) for s in info["basket"]}
@@ -160,6 +166,7 @@ def select(cfg, conn):
     r["seconds"] = round(time.time() - t0, 1)
     r["replay"] = replayed
     journal.log_event(conn, "selection_replay" if replayed else "selection", r)
+    save_oos("grid", bars.index[found["wf"]["oos"]], found["wf"]["net_oos"])
     out = data.ROOT / "out"
     (out / "selection.json").write_text(json.dumps(r, indent=1, ensure_ascii=False, default=float))
     md = selection_md(r, facts, cfg)
@@ -278,6 +285,7 @@ def gen(cmd, cfg, conn):
         r["seconds"] = round(time.time() - t0, 1)
         r["replay"] = replayed
         journal.log_event(conn, "generator_selection_replay" if replayed else "generator_selection", r)
+        save_oos("generator", bars.index[wf["oos"]], wf["net_oos"])
         lb = generator.leaderboard(specs, net, trades, gcfg, cfg, bars.index)
         lb.to_csv(out / "generator_leaderboard.csv", index=False)
         oos = wf["oos"]
@@ -353,6 +361,16 @@ def gen_md(r, lb, gcfg, cfg):
             + report.md_table(top) + "\nПолная таблица: generator_leaderboard.csv.\n")
 
 
+OOS_DIR = data.ROOT / "out" / "oos"
+
+
+def save_oos(name, dates, net):
+    """Stitched out-of-sample daily net of a procedure: the honest building block of the multi-strategy."""
+    OOS_DIR.mkdir(parents=True, exist_ok=True)
+    idx = pd.DatetimeIndex(dates).floor("D")
+    pd.DataFrame({"net": list(map(float, net))}, index=idx).to_parquet(OOS_DIR / f"{name}.parquet")
+
+
 def exp_events(conn, kind, name):
     return [ev for ev in journal.events(conn, kind) if ev["payload"].get("experiment") == name]
 
@@ -406,6 +424,7 @@ def exp(cmd, name, cfg, conn):
         r["replay"] = replayed
         r["power_phi_0.20"] = cal[-1]["payload"]["power_phi_0.20"]
         journal.log_event(conn, "experiment_selection", r)
+        save_oos(f"exp_{name}", days[wf["oos"]], wf["net_oos"])
         lb = generator.leaderboard(specs, net, trades, gcfg, cfg, days)
         lb.to_csv(out / f"exp_{name}_leaderboard.csv", index=False)
         bench = experiment.benchmarks(coins, cfg, days)
@@ -478,6 +497,7 @@ def perps_cmd(cmd, cfg, conn):
         wf = r.pop("wf")
         r["seconds"] = round(time.time() - t0, 1)
         journal.log_event(conn, "perps_selection", r)
+        save_oos("perps", wf["days"], wf["proc"])
         lb = perpsearch.leaderboard(confs, net, trades, cfg)
         lb.to_csv(out / "perps_leaderboard.csv", index=False)
         report.plot_equity({"procedure": wf["proc"], "bh": wf["bh"], "vt": wf["vt"]}, wf["days"], out / "perps_equity.png")
@@ -587,6 +607,44 @@ def paper(cfg, conn, conf_json):
     print(f"бумажная торговля: {json.dumps(conf)}; лог paper.sqlite; остановка Ctrl+C", flush=True)
     print(f"первый шаг (загрузка истории ~10 мин): капитал {bot.step():,.2f}", flush=True)
     bot.run()
+
+def multi_cmd(cfg, conn):
+    from tradelab import multi, perpsearch
+
+    comps = multi.load(OOS_DIR)
+    if len(comps) < 2:
+        raise SystemExit("нужно хотя бы два прогона с сохранённым OOS (select, gen-search, exp-search, perps-search)")
+    x = multi.matrix(comps)
+    eb = perpsearch.eth_benchmarks(cfg, x.index)
+    bench = {k: pd.Series(v, index=x.index) for k, v in eb.items()}
+    r, curves = multi.run(comps, cfg, conn, bench)
+    journal.log_event(conn, "multi_selection", r)
+    out = data.ROOT / "out"
+    report.plot_equity({"procedure": curves["rule_B"].to_numpy(), "bh": curves["bh"].to_numpy(), "vt": curves["vt"].to_numpy()},
+                       curves.index, out / "multi_equity.png")
+    md = multi_md(r)
+    (out / "multi.md").write_text(md)
+    return print(md)
+
+
+def multi_md(r):
+    f = lambda x: f"{x:.2f}"
+    rows = [{"кривая": f"правило {k}" + (" (основное)" if k == "B" else ""), "Шарп": f(v["sharpe"]),
+             "CAGR": f"{v['cagr']:.1%}", "MaxDD": f"{v['max_dd']:.1%}", "Кальмар": f(v["calmar"]),
+             "ДИ низ vs bh": f(v["ci_vs_bh"]["lo"]), "ДИ низ vs vt": f(v["ci_vs_vt"]["lo"]), "DSR": f"{v['dsr']:.3f}"}
+            for k, v in r["rules"].items()]
+    rows += [{"кривая": k, "Шарп": f(r[k]["sharpe"]), "CAGR": f"{r[k]['cagr']:.1%}", "MaxDD": f"{r[k]['max_dd']:.1%}",
+              "Кальмар": f(r[k]["calmar"])} for k in ("bh", "vt")]
+    comp = [{"компонент": k, "OOS с": v["start"], "дней": v["days"], "Шарп": f(v["sharpe"]), "CAGR": f"{v['cagr']:.1%}",
+             "MaxDD": f"{v['max_dd']:.1%}", "средний вес B": f"{v['avg_weight_B']:.0%}"}
+            for k, v in r["component_stats"].items()]
+    checks = pd.DataFrame([{"check": k, "ok": "да" if v else "нет"} for k, v in r["checks"].items()])
+    return (f"# Мульти-стратегия\n\nВердикт: **{r['verdict']}**\n\nСобрана из честных OOS-кривых {len(r['components'])} "
+            f"процедур, с {r['start']} ({r['days']} дней). Правила: A обратная волатильность по всем; B то же, но только "
+            "компоненты с положительным Шарпом за прошлый год (основное); C половина ETH с таргетом волатильности и "
+            f"половина B. Веса раз в месяц только по прошлым данным. Проб в журнале {r['n_trials_total']}.\n\n"
+            + report.md_table(pd.DataFrame(rows)) + "\n![капитал](multi_equity.png)\n\n## Проверки (правило B)\n\n"
+            + report.md_table(checks) + "\n## Компоненты\n\n" + report.md_table(pd.DataFrame(comp)))
 
 def season(cfg, conn):
     info = data.dataset_info(conn)

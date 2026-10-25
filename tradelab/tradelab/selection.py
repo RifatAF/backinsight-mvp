@@ -60,7 +60,7 @@ def verify_replay(conn, pairs, label):
 
 def search(bars, cfg, conn, funding_day, dataset_sha256):
     """Every config is a journal trial: 'started' rows first, metrics as events after the run."""
-    if any(t["dataset_sha256"] == dataset_sha256 for t in journal.trials(conn)):
+    if any(t["dataset_sha256"] == dataset_sha256 and "stage" not in t["config"] for t in journal.trials(conn)):
         raise SearchAlreadyRun("trials for this dataset are already in the journal; the search runs once")
     rng = [str(bars.index[0].date()), str(bars.index[-1].date())]
     ids = [journal.start_trial(conn, {"id": grid.config_id(c), **c}, rng, dataset_sha256) for c in grid.configs()]
@@ -73,7 +73,7 @@ def search(bars, cfg, conn, funding_day, dataset_sha256):
 
 def replay(bars, cfg, conn, funding_day, dataset_sha256):
     """Recompute the journaled search without adding trials; every trial's metrics must match the journal."""
-    trials = [t for t in journal.trials(conn) if t["dataset_sha256"] == dataset_sha256]
+    trials = [t for t in journal.trials(conn) if t["dataset_sha256"] == dataset_sha256 and "stage" not in t["config"]]
     if len(trials) != len(grid.configs()):
         raise SearchAlreadyRun(f"expected {len(grid.configs())} journaled trials, found {len(trials)}")
     logged = {e["payload"]["trial_id"]: e["payload"]["metrics"] for e in journal.events(conn, "trial_metrics")}
