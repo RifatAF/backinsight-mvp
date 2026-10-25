@@ -130,3 +130,33 @@ def test_search_replay_and_calibrate(cfg, conn):
     assert r["passed"] == all(r["checks"].values()) and r["n_trials_total"] == 40
     cal = experiment.calibrate(e, coins, cfg, days, specs[:10], gcfg, jobs=1, n_paths=1)
     assert len(cal) == 2
+
+
+def test_resample_and_htf_causal(cfg):
+    idx = pd.date_range("2022-01-01", periods=24 * 400, freq="1h", tz="UTC")
+    rng = np.random.default_rng(0)
+    c = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.005, len(idx)))), index=idx)
+    bars = pd.DataFrame({"open": c.shift(1).fillna(100), "high": c * 1.002, "low": c * 0.998, "close": c,
+                         "quote_volume": 1e6}, index=idx)
+    d = experiment.resample(bars, "1d")
+    assert len(d) == 400 and d["close"].iloc[0] == c.iloc[23] and d["high"].iloc[0] == bars["high"].iloc[:24].max()
+    sig = experiment.align_htf(pd.Series(np.arange(400.0), index=d.index), "1d", bars, "1h")
+    assert sig.iloc[:23].eq(0).all() and sig.iloc[23] == 0 and sig.iloc[47] == 1  # day 0 visible from its last hour's close
+    f = _daily_feats(d.index)
+    coin = experiment.coin_context("A", "1h", cfg, bars, d["close"], f, None, "1d")
+    spec = {"family": "roc", "params": {"n": 24}, "confirm": None, "trend": None, "v": None, "p": None,
+            "direction": "both", "htf": {"family": "ema_cross", "params": {"fast": 5, "slow": 50}}}
+    base = experiment.target(coin, cfg, spec)
+    t = 24 * 200 + 5
+    alt = bars.copy()
+    alt.iloc[t + 1:, :4] *= 1.5
+    coin2 = experiment.coin_context("A", "1h", cfg, alt, experiment.resample(alt, "1d")["close"], f, None, "1d")
+    np.testing.assert_array_equal(base[: t + 1], experiment.target(coin2, cfg, spec)[: t + 1])
+
+
+def test_htf_generation_only_when_configured():
+    e = _ecfg()
+    a = generator.generate(experiment.gen_config(e))
+    e2 = dict(e, htf="1d", htf_share=0.6)
+    b = generator.generate(experiment.gen_config(e2))
+    assert not any("htf" in s for s in a) and any("htf" in s for s in b)

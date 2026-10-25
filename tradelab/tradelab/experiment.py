@@ -20,7 +20,7 @@ from tradelab import (backtest, data, features, generator, indicators, journal, 
                       strategies, synth, walkforward)
 
 EXP_DIR = Path(__file__).resolve().parent.parent / "experiments"
-BPD = {"1d": 1, "6h": 4}
+BPD = {"1d": 1, "12h": 2, "6h": 4, "4h": 6, "1h": 24}
 WARMUP_DAYS = 250  # a coin enters the equal-weight portfolio 250 days after its first bar
 FAMILY_SETS = {"price": list(indicators.FAMILIES), "features": list(indicators.FEATURE_FAMILIES),
                "all": list(indicators.ALL_FAMILIES)}
@@ -42,7 +42,30 @@ def gen_config(e):
     g = {k: e[k] for k in ("seed", "n_strategies", "combo_share", "trend_filter_share", "screen", "plateau_top_k")}
     g["families"] = FAMILY_SETS[e["families"]]
     g["direction"] = e["direction"]
+    if e.get("htf"):  # multi-timeframe: a price-family filter computed on higher-timeframe bars
+        g["htf_share"] = e["htf_share"]
+        g["htf_families"] = list(indicators.FAMILIES)
     return g
+
+
+def resample(bars, tf):
+    """Higher-timeframe OHLC built from the lower-timeframe bars (so real, synthetic and holdout
+    paths all get consistent higher-timeframe bars)."""
+    rule = {"1d": "1D", "12h": "12h", "6h": "6h", "4h": "4h"}[tf]
+    g = bars.resample(rule, label="left", closed="left")
+    out = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(),
+                        "close": g["close"].last(), "quote_volume": g["quote_volume"].sum()}).dropna()
+    return out
+
+
+def align_htf(series, htf, bars, tf):
+    """A higher-timeframe signal is known when its bar closes; each lower bar sees the last
+    higher bar that closed by the lower bar's close."""
+    s = series.copy()
+    s.index = s.index + pd.Timedelta(milliseconds=data.TF_MS[htf])
+    close_t = bars.index + pd.Timedelta(milliseconds=data.TF_MS[tf])
+    out = s.reindex(s.index.union(close_t)).ffill().reindex(close_t).fillna(0.0)
+    return pd.Series(out.to_numpy(), index=bars.index)
 
 
 def universe(e, info):
@@ -68,7 +91,7 @@ def bar_funding(bars, tf, events, daily, costs):
     return np.where(inside, per.to_numpy(), fb)
 
 
-def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events):
+def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events, htf=None):
     bpd = BPD[tf]
     fd = feats_daily.copy() if feats_daily is not None else pd.DataFrame(index=daily_close.index, columns=features.COLUMNS)
     fd["cb_premium"] = fd["cb_close"] / daily_close.reindex(fd.index) - 1
@@ -76,6 +99,7 @@ def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events):
     feats.attrs["bpd"] = bpd
     fday = bar_funding(bars, tf, events, feats_daily, cfg["costs"])
     return {"sym": sym, "tf": tf, "bpd": bpd, "bars": bars, "inv": indicators.invert(bars), "feats": feats,
+            "htf": htf, "htf_bars": resample(bars, htf) if htf else None,
             "fday": fday, "inputs": strategies.layer_inputs(bars, cfg, fday, bpd),
             "day": bars.index[:-1].floor("D"), "start": bars.index[0].floor("D") + pd.Timedelta(days=WARMUP_DAYS)}
 
@@ -86,13 +110,15 @@ def load_coins(e, cfg, info):
     for sym in universe(e, info):
         bars = data.load_raw(sym, tf)
         out.append(coin_context(sym, tf, cfg, bars, data.load_raw(sym, "1d")["close"], features.load(sym),
-                                data.load_funding(sym)))
+                                data.load_funding(sym), e.get("htf")))
     return out
 
 
 def with_bars(coin, cfg, bars):
     """Same coin with other price bars (synthetic paths): features and funding stay real."""
     c = dict(coin, bars=bars, inv=indicators.invert(bars))
+    if coin.get("htf"):
+        c["htf_bars"] = resample(bars, coin["htf"])
     c["inputs"] = strategies.layer_inputs(bars, cfg, c["fday"], c["bpd"])
     return c
 
@@ -111,6 +137,11 @@ def target(coin, cfg, spec):
     if spec["confirm"]:
         l2, s2 = indicators.long_short(bars, feats, spec["confirm"]["family"], spec["confirm"]["params"], coin["inv"])
         lo, sh = lo * l2, sh * s2
+    if spec.get("htf"):
+        hb = coin["htf_bars"]
+        hl, hs = indicators.long_short(hb, None, spec["htf"]["family"], spec["htf"]["params"])
+        lo = lo * align_htf(hl, coin["htf"], bars, coin["tf"])
+        sh = sh * align_htf(hs, coin["htf"], bars, coin["tf"])
     if spec["trend"]:
         sma = bars["close"].rolling(spec["trend"] * coin["bpd"]).mean()
         lo, sh = lo * (bars["close"] > sma), sh * (bars["close"] < sma)
@@ -370,7 +401,7 @@ def transfer_coins(e, cfg, info, coins):
         if sym == e["universe"] or not (data.RAW_DIR / data.fname(sym, tf)).exists():
             continue
         out.append(coin_context(sym, tf, cfg, data.load_raw(sym, tf), data.load_raw(sym, "1d")["close"],
-                                features.load(sym), data.load_funding(sym)))
+                                features.load(sym), data.load_funding(sym), e.get("htf")))
     return out
 
 
@@ -429,7 +460,7 @@ def holdout_run(e, cfg, conn, info, spec):
         eh = hold.get(f"{stem}_funding")
         if ev is not None and eh is not None:
             ev = pd.concat([ev, eh["funding_rate"]])
-        coins.append(coin_context(sym, tf, cfg, bars, close, fd, ev))
+        coins.append(coin_context(sym, tf, cfg, bars, close, fd, ev, e.get("htf")))
     days = days_index(coins)
     net, _ = evaluate(coins, cfg, [spec_target(spec), bh_target, vt_target], days)
     m = days >= start

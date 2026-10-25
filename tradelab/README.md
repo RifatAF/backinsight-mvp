@@ -24,17 +24,51 @@
                                           # out/generator_leaderboard.csv
     python run_pipeline.py gen-holdout    # один раз: holdout для кандидата, только если проверки пройдены
 
-## Этап 3: признаки, шорты, 6h, портфель
+## Этап 3: признаки, шорты, несколько таймфреймов, портфель
 
-    python run_pipeline.py features                     # OI, long/short, taker, basis, фандинг, Coinbase, Fear & Greed
-    python run_pipeline.py exp-calibrate basket_1d_both # сначала калибровка на синтетике
-    python run_pipeline.py exp-search basket_1d_both    # потом поиск -> out/exp_basket_1d_both.md
-    python run_pipeline.py exp-summary                  # сводка всех экспериментов -> out/experiments.md
-    python run_pipeline.py exp-holdout basket_1d_both   # один раз, только если проверки пройдены
+Уже посчитано (см. out/experiments.md): eth_1d_long, eth_1d_both, eth_6h_both. Признаки (OI, long/short,
+taker, basis, фандинг, Coinbase, Fear & Greed) уже скачаны и лежат в data/.
 
-Эксперименты лежат в experiments/: eth_1d_long, eth_1d_both, eth_6h_both, basket_1d_long, basket_1d_both.
-Новый эксперимент = новый файл experiments/имя.yaml (можно больше стратегий, другие семейства, другие монеты).
-Каждая стратегия становится пробой в журнале, и поправка DSR за перебор растёт вместе с их числом.
+Осталось посчитать у себя (Xeon E5-2620 v3, 12 потоков; время примерное):
+
+    set TRADELAB_N_JOBS=12
+
+    rem 1) портфели по корзине из 16 монет, дневные свечи (~15-25 мин каждый)
+    python run_pipeline.py exp-calibrate basket_1d_long
+    python run_pipeline.py exp-search basket_1d_long
+    python run_pipeline.py exp-calibrate basket_1d_both
+    python run_pipeline.py exp-search basket_1d_both
+
+    rem 2) дополнительные таймфреймы (скачивание ~5-20 мин)
+    python run_pipeline.py bars 12h,4h,1h ETH/USDT,BTC/USDT
+    python run_pipeline.py bars 4h basket
+
+    rem 3) таймфреймы и мультитаймфрейм (фильтр по дневным свечам)
+    python run_pipeline.py exp-calibrate eth_12h_both
+    python run_pipeline.py exp-search eth_12h_both
+    python run_pipeline.py exp-calibrate eth_4h_both_htf1d
+    python run_pipeline.py exp-search eth_4h_both_htf1d
+    python run_pipeline.py exp-calibrate eth_1h_both_htf1d      (самый долгий, ~1-2 ч)
+    python run_pipeline.py exp-search eth_1h_both_htf1d
+    python run_pipeline.py exp-calibrate basket_4h_both_htf1d   (~1-2 ч)
+    python run_pipeline.py exp-search basket_4h_both_htf1d
+
+    rem 4) сводка
+    python run_pipeline.py exp-summary
+
+Если в каком-то эксперименте вердикт «кандидат допущен к holdout»:
+
+    python run_pipeline.py exp-holdout ИМЯ
+
+Holdout читается один раз за всю жизнь журнала, поэтому выбирайте лучший эксперимент по сводке.
+
+Свой эксперимент: скопируйте любой файл в experiments/ под новым именем и поменяйте настройки
+(universe, timeframe 1d/12h/6h/4h/1h, direction long/both, htf, n_strategies). Менять уже запущенный файл
+нельзя, программа это блокирует. Каждая стратегия становится пробой в журнале, и поправка DSR за перебор
+растёт вместе с их числом, поэтому 100 000 стратегий не помогут, а скорее навредят.
+
+После расчётов закоммитьте journal.sqlite и out/ (или просто сохраните папку): журнал является
+доказательством того, что и сколько проверялось.
 
 Повторный gen-search пересчитывает всё и сверяет с журналом, новых проб не добавляет.
 Изменение generator.yaml после первого запуска блокируется: это защита от перебора «пока не получится».

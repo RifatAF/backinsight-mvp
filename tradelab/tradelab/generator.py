@@ -69,6 +69,9 @@ def generate(gcfg):
                 spec["confirm"] = {"family": g, "params": _rand_params(rng, g)}
         if rng.random() < gcfg["trend_filter_share"]:
             spec["trend"] = TREND_AXIS[1 + rng.integers(2)]
+        if "htf_share" in gcfg and rng.random() < gcfg["htf_share"]:  # multi-timeframe experiments only
+            h = gcfg["htf_families"][rng.integers(len(gcfg["htf_families"]))]
+            spec["htf"] = {"family": h, "params": _rand_params(rng, h)}
         if "direction" in gcfg:  # stage 3 only, so stage 2 spec ids stay unchanged
             spec["direction"] = gcfg["direction"]
         k = spec_id(spec)

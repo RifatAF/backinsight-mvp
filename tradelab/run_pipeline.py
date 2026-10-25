@@ -16,6 +16,7 @@ Stage 2, strategy generator (settings in generator.yaml):
 Stage 3, experiments with derivatives / sentiment features, shorts, 6h bars and basket portfolios:
   python run_pipeline.py features              download OI, long/short ratios, taker ratio, basis, funding,
                                                Coinbase close, Fear & Greed -> data/raw/*_features.parquet
+  python run_pipeline.py bars 4h,1h basket     extra timeframes (12h, 6h, 4h, 1h) for ETH/USDT,BTC/USDT or "basket"
   python run_pipeline.py exp-calibrate NAME    experiment procedure on bootstrap paths (FDR, power)
   python run_pipeline.py exp-search NAME       journaled search + checks -> out/exp_NAME.md
   python run_pipeline.py exp-summary           table of all experiments -> out/experiments.md
@@ -32,7 +33,7 @@ import pandas as pd
 from tradelab import config, costs, data, experiment, features, generator, holdout, journal, parallel, report, selection, synth
 
 
-def main(cmd="benchmarks", name=None):
+def main(cmd="benchmarks", name=None, *_):
     cfg = config.load()
     conn = journal.connect()
     print(f"config sha256 {config.lock(conn)}; workers {parallel.n_jobs()}")
@@ -46,6 +47,13 @@ def main(cmd="benchmarks", name=None):
         return calibrate(cfg, conn)
     if cmd == "select":
         return select(cfg, conn)
+    if cmd == "bars":
+        info = data.dataset_info(conn)
+        tfs = name.split(",")
+        syms = (list(dict.fromkeys(cfg["data"]["symbols_main"] + info["basket"])) if len(sys.argv) > 3 and sys.argv[3] == "basket"
+                else sys.argv[3].split(",") if len(sys.argv) > 3 else cfg["data"]["symbols_main"])
+        out = data.download_bars(cfg, conn, tfs, syms)
+        return print(json.dumps(out["reports"], indent=1))
     if cmd == "features":
         info = features.download(cfg, conn)
         return print(json.dumps(info["first_valid"], indent=1))

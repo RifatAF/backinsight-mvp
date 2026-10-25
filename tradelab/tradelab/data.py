@@ -21,7 +21,7 @@ MIRROR_SPOT = "https://data-api.binance.vision/api/v3"
 ARCHIVE = "https://data.binance.vision"
 ARCHIVE_LIST = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 
-TF_MS = {"1d": 86_400_000, "6h": 21_600_000}
+TF_MS = {"1d": 86_400_000, "12h": 43_200_000, "6h": 21_600_000, "4h": 14_400_000, "1h": 3_600_000}
 BIG_MOVE = 0.50
 KLINE_LIMIT = 1000
 
@@ -292,3 +292,27 @@ def dataset_info(conn):
         raise DataUnavailable("no dataset in journal: run `python run_pipeline.py data` first")
     return ev[-1]["payload"]
 
+
+def download_bars(cfg, conn, timeframes, symbols):
+    """Extra timeframes for given symbols, cut at the existing holdout start; sha256 to the journal."""
+    from tradelab import journal
+
+    info = dataset_info(conn)
+    start = pd.Timestamp(info["holdout_start"])
+    ex = spot_exchange(cfg)
+    files, reports = {}, {}
+    for sym in symbols:
+        mid = ex.market(sym)["id"]
+        for tf in timeframes:
+            df, rep = check(fetch_klines(ex, mid, tf), tf)
+            last_day = start + pd.Timedelta(days=cfg["data"]["holdout_days"])
+            df = df[df.index < last_day]  # same end as the daily data
+            pre, hold = split(df, start)
+            files[f"raw/{fname(sym, tf)}"] = save(pre, fname(sym, tf), RAW_DIR)[1]
+            files[f"holdout/{fname(sym, tf)}"] = save(hold, fname(sym, tf), HOLDOUT_DIR)[1]
+            reports[f"{sym} {tf}"] = {k: (len(v) if isinstance(v, list) else v) for k, v in rep.items()}
+    combined = hashlib.sha256("".join(f"{k}:{v}" for k, v in sorted(files.items())).encode()).hexdigest()
+    payload = {"timeframes": list(timeframes), "symbols": list(symbols), "files": files,
+               "bars_sha256": combined, "reports": reports}
+    journal.log_event(conn, "dataset_bars", payload)
+    return payload
