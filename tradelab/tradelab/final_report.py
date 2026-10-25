@@ -46,6 +46,11 @@ def build(conn, steps, out):
         rows.append(_row("этап 5: фандинг и толпа", r))
         if r["passed"]:
             passed.append("perps")
+    r = _last(conn, "mtf_selection")
+    if r:
+        rows.append(_row("этап 6: три слоя", r))
+        if r["passed"]:
+            passed.append("mtf")
     m = _last(conn, "multi_selection")
     trials = len(journal.trials(conn))
     hold = journal.events(conn, "holdout_read")
@@ -71,7 +76,7 @@ def build(conn, steps, out):
                   "(подробно out/seasonality.md).\n")
     md.append("\n## Что дальше\n\n" + (
         "Проверки до holdout прошли: " + ", ".join(passed) + ". Holdout читается ОДИН раз на весь журнал: выберите одну "
-        "процедуру и запустите для неё exp-holdout ИМЯ (или perps-holdout), затем пришлите этот отчёт снова.\n"
+        "процедуру и запустите для неё exp-holdout ИМЯ (или perps-holdout, mtf-holdout), затем пришлите этот отчёт снова.\n"
         if passed else "Ни одна процедура не прошла проверки до holdout, holdout не тронут.\n"))
     st = pd.DataFrame([{"шаг": s["step"], "статус": s["status"], "минут": f"{s['seconds'] / 60:.1f}",
                         "примечание": s.get("note", "")[:120]} for s in steps])

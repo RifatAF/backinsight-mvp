@@ -103,6 +103,12 @@ def main():
         run("этап 5: калибровка", "run_pipeline.py", "perps-calibrate")
     if not (OOS / "perps.parquet").exists():
         run("этап 5: поиск", "run_pipeline.py", "perps-search")
+    if not journal.events(conn, "dataset_mtf"):
+        run("этап 6: данные", "run_pipeline.py", "mtf-data")
+    if not journal.events(conn, "mtf_calibration"):
+        run("этап 6: калибровка", "run_pipeline.py", "mtf-calibrate")
+    if not (OOS / "mtf.parquet").exists():
+        run("этап 6: поиск", "run_pipeline.py", "mtf-search")
     run("мульти-стратегия", "run_pipeline.py", "multi")
     finish()
 

@@ -37,6 +37,12 @@ Stage 5, funding / crowd strategies on low-liquidity perpetuals (settings in per
   python run_pipeline.py paper [CONFIG]    paper trading on live public data, fills on Hyperliquid's book
   python run_pipeline.py paper-report      -> out/paper.md
 
+Stage 6, three layers (regime 1M/1W, setup 1D/4H, trigger 1H/15m/5m) on 12 liquid perps (mtf.yaml):
+  python run_pipeline.py mtf-data          5m candles, 5m open interest / long-short / taker, funding, Coinbase 1h
+  python run_pipeline.py mtf-calibrate     signal-shift null: FDR
+  python run_pipeline.py mtf-search        45 configs journaled, walk-forward, checks, layer effects -> out/mtf.md
+  python run_pipeline.py mtf-holdout       one-time holdout, only if the checks passed
+
 Everything at once:
   python run_all.py                        every step that is not done yet, then out/FINAL_REPORT.md
   python run_pipeline.py multi             multi-strategy from all saved OOS curves -> out/multi.md
@@ -83,6 +89,8 @@ def main(cmd="benchmarks", name=None, *_):
         return print(season(cfg, conn))
     if cmd.startswith("perps-"):
         return perps_cmd(cmd, cfg, conn)
+    if cmd.startswith("mtf-"):
+        return mtf_cmd(cmd, cfg, conn)
     if cmd == "multi":
         return multi_cmd(cfg, conn)
     if cmd == "paper":
@@ -645,6 +653,124 @@ def multi_md(r):
             f"половина B. Веса раз в месяц только по прошлым данным. Проб в журнале {r['n_trials_total']}.\n\n"
             + report.md_table(pd.DataFrame(rows)) + "\n![капитал](multi_equity.png)\n\n## Проверки (правило B)\n\n"
             + report.md_table(checks) + "\n## Компоненты\n\n" + report.md_table(pd.DataFrame(comp)))
+
+def mtf_cmd(cmd, cfg, conn):
+    import os
+
+    import yaml
+
+    from tradelab import mtf, mtfdata, mtfsearch
+
+    out = data.ROOT / "out"
+    raw = (data.ROOT / "mtf.yaml").read_bytes()
+    mcfg, msha = yaml.safe_load(raw), hashlib.sha256(raw).hexdigest()
+    if cmd == "mtf-data":
+        return print(json.dumps(mtfdata.download(cfg, mcfg, conn), indent=1, ensure_ascii=False))
+    lock = journal.events(conn, "mtf_config_sha256")
+    if not lock:
+        journal.log_event(conn, "mtf_config_sha256", {"sha256": msha})
+    elif lock[0]["payload"]["sha256"] != msha:
+        raise SystemExit("mtf.yaml изменён после первого запуска: верните файл или ведите новый журнал")
+    ds = journal.events(conn, "dataset_mtf")
+    if not ds:
+        raise SystemExit("сначала: python run_pipeline.py mtf-data")
+    t0 = time.time()
+    frames, cb = mtfdata.load()
+    a = mtf.prepare(frames, cb, mcfg)
+    print(f"монет: {len(a['symbols'])}, 5-минутных баров: {len(a['index'])}, подготовка слоёв {time.time() - t0:.0f} с", flush=True)
+    jobs = int(os.environ.get("TRADELAB_MTF_JOBS", min(parallel.n_jobs(), 6)))
+    if cmd == "mtf-calibrate":
+        res = mtfsearch.calibrate(a, cb, cfg, mcfg, jobs)
+        res.to_parquet(out / "mtf_calibration.parquet")
+        fdr = float(res["finding"].mean())
+        payload = {"fdr": fdr, "paths": len(res), "status": "stop_fdr" if fdr > cfg["thresholds"]["fdr_max"] else "ok",
+                   "best_null_sharpe_oos": float(res["sharpe_oos"].max()), "seconds": round(time.time() - t0, 1)}
+        journal.log_event(conn, "mtf_calibration", payload)
+        return print(json.dumps(payload, ensure_ascii=False))
+    if cmd == "mtf-search":
+        cal = journal.events(conn, "mtf_calibration")
+        if not cal or cal[-1]["payload"]["status"] != "ok":
+            raise SystemExit("сначала mtf-calibrate; поиск запрещён, пока FDR выше порога")
+        confs, net, trades = mtfsearch.search(a, cfg, mcfg, conn, ds[-1]["payload"]["mtf_sha256"], jobs)
+        r = mtfsearch.check(a, cfg, mcfg, conn, confs, net, cal[-1]["payload"]["fdr"])
+        wf = r.pop("wf")
+        r["seconds"] = round(time.time() - t0, 1)
+        journal.log_event(conn, "mtf_selection", r)
+        save_oos("mtf", wf["days"], wf["proc"])
+        lb = mtfsearch.leaderboard(confs, net, trades, cfg)
+        lb.to_csv(out / "mtf_leaderboard.csv", index=False)
+        report.plot_equity({"procedure": wf["proc"], "bh": wf["bh"], "vt": wf["vt"]}, wf["days"], out / "mtf_equity.png")
+        md = mtf_md(r, lb, cfg)
+        (out / "mtf.md").write_text(md)
+        return print(md)
+    if cmd == "mtf-holdout":
+        sel = journal.events(conn, "mtf_selection")
+        if not sel:
+            raise SystemExit("сначала mtf-search")
+        r = sel[-1]["payload"]
+        if not r["passed"]:
+            raise SystemExit("проверки до holdout не пройдены (" + ", ".join(k for k, v in r["checks"].items() if not v)
+                             + "); holdout не читается")
+        res = mtf_holdout(cfg, mcfg, conn, r["candidate"]["config"])
+        journal.log_event(conn, "mtf_final_verdict", res)
+        md = (f"# Этап 6: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
+              + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
+                                               for k, x in res["holdout"].items()])))
+        (out / "mtf_holdout.md").write_text(md)
+        return print(md)
+    raise SystemExit(f"неизвестная команда {cmd}")
+
+
+def mtf_holdout(cfg, mcfg, conn, conf):
+    from tradelab import mtf, mtfdata, perpsearch, selection
+
+    start = pd.Timestamp(data.dataset_info(conn)["holdout_start"])
+    hold = holdout.load(allow=True, conn=conn, path=[mtfdata.HOLD, holdout.DEFAULT_DIR])
+    frames, cb = mtfdata.load()
+    frames = {s: pd.concat([f, hold[s]]) if s in hold else f for s, f in frames.items()}
+    if cb is not None and "coinbase_1h" in hold:
+        cb = pd.concat([cb, hold["coinbase_1h"]])
+    a = mtf.prepare(frames, cb, mcfg)
+    di = mtf.days(a, mcfg)
+    net = mtf.run_config(conf, a, mcfg)[0]
+    eth = pd.concat([data.load_raw("ETH/USDT"), hold["ETH_USDT_1d"]])
+    fund = data.load_funding("ETH/USDT")
+    if fund is not None and "ETH_USDT_funding" in hold:
+        fund = pd.concat([fund, hold["ETH_USDT_funding"]["funding_rate"]])
+    bench = perpsearch.eth_benchmarks(cfg, di, eth, fund)
+    m = di >= start
+    cur = {"candidate": selection._curve(net[m]), "bh": selection._curve(bench["bh"][m]),
+           "vt": selection._curve(bench["vt"][m])}
+    ok = all(cur["candidate"][k] >= cur[b][k] for b in ("bh", "vt") for k in ("sharpe", "calmar"))
+    return {"verdict": holdout.FOUND if ok else holdout.NOT_FOUND, "holdout_read": True, "candidate": conf,
+            "days": int(m.sum()), "holdout": cur}
+
+
+def mtf_md(r, lb, cfg):
+    f = lambda x: f"{x:.3f}"
+    th = cfg["thresholds"]
+    rows = [{"curve": k, **{m: f(v) for m, v in r[k].items()}} for k in ("procedure", "bh", "vt")]
+    checks = pd.DataFrame([{"check": k, "ok": "да" if v else "нет"} for k, v in r["checks"].items()])
+    c = r["candidate"]
+    cand = "нет" if c is None else (
+        f"`{c['id']}`; полная история: Шарп {f(c['full_sample']['sharpe'])}, CAGR {c['full_sample']['cagr']:.1%}, "
+        f"MaxDD {c['full_sample']['max_dd']:.1%}; плато {f(c['plateau'])}; стресс "
+        f"{'пройден' if c['stress']['passed'] else 'не пройден'}")
+    lay = lambda key: pd.DataFrame([{**x, "медиана ΔШарп": f"{x['медиана ΔШарп']:+.2f}",
+                                     "доля пар, где лучше": f"{x['доля пар, где лучше']:.0%}"} for x in r[key]])
+    top = lb.head(10).copy()
+    for col in ("sharpe_is", "cagr_is", "max_dd_is", "active_days_per_month"):
+        top[col] = top[col].map(f)
+    return (f"# Этап 6: три слоя (режим 1M/1W, сетап 1D/4H, вход 1H/15m/5m)\n\nВердикт до holdout: **{r['verdict']}**\n\n"
+            f"Монеты: {', '.join(r['coins'])}. Конфигураций {r['n_configs']}, всего проб в журнале {r['n_trials_total']}. "
+            f"Склеенный OOS {r['oos_days']} дней с {r['oos_start']}: DSR {f(r['dsr'])} (порог {th['dsr_min']}), PBO {f(r['pbo'])}, "
+            f"FDR {f(r['fdr'])}. ДИ разницы Шарпов: против bh [{f(r['ci_vs_bh']['lo'])}, {f(r['ci_vs_bh']['hi'])}], "
+            f"против vt [{f(r['ci_vs_vt']['lo'])}, {f(r['ci_vs_vt']['hi'])}].\n\nКандидат: {cand}.\n\n"
+            + report.md_table(pd.DataFrame(rows)) + "\n![капитал](mtf_equity.png)\n\n## Проверки\n\n" + report.md_table(checks)
+            + "\n## Что даёт каждый слой\n\nРазница Шарпа варианта слоя и того же набора без этого слоя (вариант none), "
+            "остальные два слоя те же. Дни склеенного OOS:\n\n" + report.md_table(lay("layers_oos"))
+            + "\nВся история (in-sample, для обзора):\n\n" + report.md_table(lay("layers_all"))
+            + "\n## Топ-10 (in-sample, только для обзора)\n\n" + report.md_table(top) + "\nПолная таблица: mtf_leaderboard.csv.\n")
 
 def season(cfg, conn):
     info = data.dataset_info(conn)
