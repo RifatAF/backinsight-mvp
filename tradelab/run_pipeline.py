@@ -4,6 +4,7 @@
   python run_pipeline.py calibrate   selection procedure on synthetic paths A and C -> out/calibration.*
   python run_pipeline.py select      real-data search (once; later runs replay it from the journal
                                      without new trials), final candidate and checks -> out/selection.*
+  python run_pipeline.py report      full report -> out/report.md and png figures
 """
 import json
 import sys
@@ -28,6 +29,9 @@ def main(cmd="benchmarks"):
         return calibrate(cfg, conn)
     if cmd == "select":
         return select(cfg, conn)
+    if cmd == "report":
+        md = report.build(cfg, conn, data.ROOT / "out")
+        return print(md)
     info = data.dataset_info(conn)
     start = pd.Timestamp(info["holdout_start"])
     sym = cfg["data"]["symbols_main"][0]
