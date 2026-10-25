@@ -69,3 +69,10 @@ def test_short_pays_negative_funding_and_cap(cfg, bars):
     assert backtest.run(up, pd.Series(-1.0, index=bars.index), cfg)["gross"].iloc[1:].lt(0).all()
     with pytest.raises(AssertionError):
         backtest.run(bars, pd.Series(-5.0, index=bars.index), cfg)
+
+
+def test_loss_beyond_capital_is_liquidated(cfg):
+    idx = pd.date_range("2020-01-01", periods=5, freq="D", tz="UTC")
+    bars = pd.DataFrame({"open": [1.0, 1.0, 1.0, 3.0, 3.0], "quote_volume": 1e12}, index=idx)
+    r = backtest.run(bars, pd.Series(-2.0, index=idx), cfg)
+    assert r["net"].min() == backtest.LIQUIDATION and np.isfinite(np.log1p(r["net"])).all()

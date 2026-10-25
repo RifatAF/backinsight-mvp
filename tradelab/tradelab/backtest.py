@@ -4,6 +4,8 @@ import pandas as pd
 
 from tradelab import costs as costs_mod
 
+LIQUIDATION = -0.9999
+
 
 def apply_band(target, band):
     """Position moves to target only if |target - current| > band. NaN target means 0."""
@@ -37,8 +39,10 @@ def pnl(bars, pos, cfg, funding_day):
     gross = pos * r_oo
     cost = costs_mod.trade_cost(turnover, qv, c)
     fund = costs_mod.funding_cost(pos, fday)
+    # a bar cannot lose more than the capital behind the position: beyond -100% it is liquidated
+    net = np.maximum(gross - cost - fund, LIQUIDATION)
     return {"pos": pos, "r_oo": np.broadcast_to(r_oo, pos.shape), "turnover": turnover,
-            "gross": gross, "cost": cost, "fund": fund, "net": gross - cost - fund}
+            "gross": gross, "cost": cost, "fund": fund, "net": net}
 
 
 def run(bars, signal, cfg, funding=None):
