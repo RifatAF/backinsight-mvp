@@ -172,10 +172,10 @@ def load(symbol):
     return pd.read_parquet(p) if p.exists() else None
 
 
-def align(daily, bars, tf):
+def align(daily, bars, tf, columns=COLUMNS):
     """Daily features (known at the end of day D) onto bars: each bar sees the last day that closed by its close."""
     if daily is None:
-        return pd.DataFrame(np.nan, index=bars.index, columns=COLUMNS)
+        return pd.DataFrame(np.nan, index=bars.index, columns=columns)
     step = pd.Timedelta(milliseconds=data.TF_MS[tf])
     shifted = daily.copy()
     shifted.index = shifted.index + pd.Timedelta(days=1)  # available at 00:00 of D+1

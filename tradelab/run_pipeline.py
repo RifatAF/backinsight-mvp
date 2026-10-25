@@ -22,6 +22,12 @@ Stage 3, experiments with derivatives / sentiment features, shorts, 6h bars and 
   python run_pipeline.py exp-summary           table of all experiments -> out/experiments.md
   python run_pipeline.py exp-holdout NAME      one-time holdout run, only if that experiment passed its checks
 NAME is a file in experiments/ without .yaml.
+
+Stage 4, macro / calendar / statistics:
+  python run_pipeline.py macro         S&P 500, Nasdaq, Nikkei, gold, dollar index, USD/JPY, US 3m and 10y
+                                       yields, VIX, MOVE (Yahoo Finance) -> data/raw/macro.parquet
+  python run_pipeline.py seasonality   weekday / month / hour effects with multiple-testing correction
+                                       -> out/seasonality.md (descriptive, no trials)
 """
 import hashlib
 import json
@@ -30,13 +36,14 @@ import time
 
 import pandas as pd
 
-from tradelab import config, costs, data, experiment, features, generator, holdout, journal, parallel, report, selection, synth
+from tradelab import (config, costs, data, experiment, features, generator, holdout, journal, macro, parallel, report,
+                      seasonality, selection, synth)
 
 
 def main(cmd="benchmarks", name=None, *_):
     cfg = config.load()
     conn = journal.connect()
-    print(f"config sha256 {config.lock(conn)}; workers {parallel.n_jobs()}")
+    print(f"config sha256 {config.lock(conn)}; workers {parallel.n_jobs()}", flush=True)
     if cmd == "data":
         info = data.download(cfg, conn)
         print(json.dumps({k: info[k] for k in ("holdout_start", "basket", "dataset_sha256")}, indent=1))
@@ -57,6 +64,11 @@ def main(cmd="benchmarks", name=None, *_):
     if cmd == "features":
         info = features.download(cfg, conn)
         return print(json.dumps(info["first_valid"], indent=1))
+    if cmd == "macro":
+        info = macro.download(cfg, conn)
+        return print(json.dumps(info["first_valid"], indent=1))
+    if cmd == "seasonality":
+        return print(season(cfg, conn))
     if cmd.startswith("exp-"):
         return exp(cmd, name, cfg, conn)
     if cmd.startswith("gen-"):
@@ -345,10 +357,15 @@ def exp(cmd, name, cfg, conn):
     if not fe:
         raise SystemExit("сначала: python run_pipeline.py features")
     sha = hashlib.sha256((info["dataset_sha256"] + fe[-1]["payload"]["features_sha256"]).encode()).hexdigest()
+    gcfg = experiment.gen_config(e)
+    specs = experiment.specs(e, gcfg)
+    if experiment.uses_macro(e, specs):
+        me = journal.events(conn, "dataset_macro")
+        if not me:
+            raise SystemExit("сначала: python run_pipeline.py macro")
+        sha = hashlib.sha256((sha + me[-1]["payload"]["macro_sha256"]).encode()).hexdigest()
     coins = experiment.load_coins(e, cfg, info)
     days = experiment.days_index(coins)
-    gcfg = experiment.gen_config(e)
-    specs = generator.generate(gcfg)
     th = cfg["thresholds"]
     if cmd == "exp-calibrate":
         t0 = time.time()
@@ -402,6 +419,22 @@ def exp(cmd, name, cfg, conn):
         (out / f"exp_{name}_holdout.md").write_text(md)
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
+
+
+def season(cfg, conn):
+    info = data.dataset_info(conn)
+    series = {}
+    for sym in cfg["data"]["symbols_main"]:
+        series[f"{sym} 1d"] = (data.load_raw(sym, "1d"), ("weekday", "month"))
+        if (data.RAW_DIR / data.fname(sym, "1h")).exists():
+            series[f"{sym} 1h"] = (data.load_raw(sym, "1h"), ("hour",))
+    df = seasonality.run(series)
+    c = cfg["costs"]
+    md = seasonality.report(df, c["fee_per_side"] + c["slippage_base"])
+    journal.log_event(conn, "research_seasonality", {"groups": len(df), "significant_q05": int((df["q"] < 0.05).sum()),
+                                                     "holdout_start": info["holdout_start"]})
+    (data.ROOT / "out" / "seasonality.md").write_text(md)
+    return md
 
 
 def exp_summary(conn, out):

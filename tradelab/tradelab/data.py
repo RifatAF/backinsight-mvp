@@ -21,7 +21,7 @@ MIRROR_SPOT = "https://data-api.binance.vision/api/v3"
 ARCHIVE = "https://data.binance.vision"
 ARCHIVE_LIST = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 
-TF_MS = {"1d": 86_400_000, "12h": 43_200_000, "6h": 21_600_000, "4h": 14_400_000, "1h": 3_600_000}
+TF_MS = {"1d": 86_400_000, "12h": 43_200_000, "6h": 21_600_000, "4h": 14_400_000, "1h": 3_600_000, "1w": 604_800_000}
 BIG_MOVE = 0.50
 KLINE_LIMIT = 1000
 

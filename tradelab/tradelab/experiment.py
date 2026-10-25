@@ -16,14 +16,22 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from tradelab import (backtest, data, features, generator, indicators, journal, metrics, parallel,
+from tradelab import (backtest, data, features, generator, indicators, journal, macro, metrics, parallel,
                       strategies, synth, walkforward)
 
 EXP_DIR = Path(__file__).resolve().parent.parent / "experiments"
 BPD = {"1d": 1, "12h": 2, "6h": 4, "4h": 6, "1h": 24}
 WARMUP_DAYS = 250  # a coin enters the equal-weight portfolio 250 days after its first bar
+_X = list(indicators.EXTRA_FAMILIES)
 FAMILY_SETS = {"price": list(indicators.FAMILIES), "features": list(indicators.FEATURE_FAMILIES),
-               "all": list(indicators.ALL_FAMILIES)}
+               # frozen: the stage 3 experiments drew their specs from exactly these 21 families
+               "all": list(indicators.FAMILIES) + list(indicators.FEATURE_FAMILIES),
+               "macro": [f for f in _X if f.startswith("macro_")],
+               "external": [f for f in _X if f.startswith("macro_")] + ["cb_premium", "fng_contra", "funding_contra"],
+               "calendar_daily": ["weekday_up", "weekday_down", "month_up", "month_down"],
+               "calendar": ["weekday_up", "weekday_down", "month_up", "month_down", "hour_up", "hour_down"],
+               "stat": ["ret_reversion", "ret_momentum", "autocorr", "vol_regime", "vol_regime_inv", "btc_lead"]}
+MACRO_FAMILIES = set(FAMILY_SETS["macro"])
 
 
 class ExperimentChanged(Exception):
@@ -51,8 +59,10 @@ def gen_config(e):
 def resample(bars, tf):
     """Higher-timeframe OHLC built from the lower-timeframe bars (so real, synthetic and holdout
     paths all get consistent higher-timeframe bars)."""
-    rule = {"1d": "1D", "12h": "12h", "6h": "6h", "4h": "4h"}[tf]
-    g = bars.resample(rule, label="left", closed="left")
+    if tf == "1w":  # Monday-to-Sunday UTC weeks as on Binance, labelled by their Monday
+        g = bars.groupby(bars.index.normalize() - pd.to_timedelta(bars.index.dayofweek, unit="D"))
+    else:
+        g = bars.resample({"1d": "1D", "12h": "12h", "6h": "6h", "4h": "4h"}[tf], label="left", closed="left")
     out = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(),
                         "close": g["close"].last(), "quote_volume": g["quote_volume"].sum()}).dropna()
     return out
@@ -91,11 +101,16 @@ def bar_funding(bars, tf, events, daily, costs):
     return np.where(inside, per.to_numpy(), fb)
 
 
-def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events, htf=None):
+def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events, htf=None, macro_daily=None, btc_close=None):
     bpd = BPD[tf]
     fd = feats_daily.copy() if feats_daily is not None else pd.DataFrame(index=daily_close.index, columns=features.COLUMNS)
     fd["cb_premium"] = fd["cb_close"] / daily_close.reindex(fd.index) - 1
     feats = features.align(fd, bars, tf)
+    idx = daily_close.index if macro_daily is None else daily_close.index.union(macro_daily.index)
+    ext = (macro_daily.reindex(idx) if macro_daily is not None
+           else pd.DataFrame(np.nan, index=idx, columns=macro.COLUMNS))
+    ext["btc_close"] = btc_close.reindex(idx) if btc_close is not None else np.nan
+    feats = feats.join(features.align(ext, bars, tf, ext.columns))
     feats.attrs["bpd"] = bpd
     fday = bar_funding(bars, tf, events, feats_daily, cfg["costs"])
     return {"sym": sym, "tf": tf, "bpd": bpd, "bars": bars, "inv": indicators.invert(bars), "feats": feats,
@@ -106,12 +121,30 @@ def coin_context(sym, tf, cfg, bars, daily_close, feats_daily, events, htf=None)
 
 def load_coins(e, cfg, info):
     tf = e["timeframe"]
+    m, btc = macro.load(), data.load_raw("BTC/USDT", "1d")["close"]
     out = []
     for sym in universe(e, info):
         bars = data.load_raw(sym, tf)
         out.append(coin_context(sym, tf, cfg, bars, data.load_raw(sym, "1d")["close"], features.load(sym),
-                                data.load_funding(sym), e.get("htf")))
+                                data.load_funding(sym), e.get("htf"), m, btc))
     return out
+
+
+def specs(e, gcfg):
+    """Fixed, pre-registered specs if the experiment lists them, else the generator's random specs."""
+    if "specs" in e:
+        base = {"confirm": None, "trend": None, "v": None, "p": None, "direction": e["direction"]}
+        return [{**base, **s} for s in e["specs"]]
+    return generator.generate(gcfg)
+
+
+def uses_macro(e, specs_):
+    def fams(s):
+        out = {s["family"]}
+        if s.get("confirm"):
+            out.add(s["confirm"]["family"])
+        return out
+    return any(fams(s) & MACRO_FAMILIES for s in specs_)
 
 
 def with_bars(coin, cfg, bars):
@@ -399,12 +432,13 @@ def transfer_coins(e, cfg, info, coins):
     if e["universe"] == "basket":
         return coins
     tf = e["timeframe"]
+    m, btc = macro.load(), data.load_raw("BTC/USDT", "1d")["close"]
     out = []
     for sym in dict.fromkeys(cfg["data"]["symbols_main"] + info["basket"]):
         if sym == e["universe"] or not (data.RAW_DIR / data.fname(sym, tf)).exists():
             continue
         out.append(coin_context(sym, tf, cfg, data.load_raw(sym, tf), data.load_raw(sym, "1d")["close"],
-                                features.load(sym), data.load_funding(sym), e.get("htf")))
+                                features.load(sym), data.load_funding(sym), e.get("htf"), m, btc))
     return out
 
 
@@ -451,6 +485,10 @@ def holdout_run(e, cfg, conn, info, spec):
     hold = holdout.load(allow=True, conn=conn)
     tf = e["timeframe"]
     start = pd.Timestamp(info["holdout_start"])
+    m = macro.load()
+    if m is not None and "macro" in hold:
+        m = pd.concat([m, hold["macro"]])
+    btc = pd.concat([data.load_raw("BTC/USDT", "1d")["close"], hold["BTC_USDT_1d"]["close"]])
     coins = []
     for sym in universe(e, info):
         stem = sym.replace("/", "_")
@@ -463,7 +501,7 @@ def holdout_run(e, cfg, conn, info, spec):
         eh = hold.get(f"{stem}_funding")
         if ev is not None and eh is not None:
             ev = pd.concat([ev, eh["funding_rate"]])
-        coins.append(coin_context(sym, tf, cfg, bars, close, fd, ev, e.get("htf")))
+        coins.append(coin_context(sym, tf, cfg, bars, close, fd, ev, e.get("htf"), m, btc))
     days = days_index(coins)
     net, _ = evaluate(coins, cfg, [spec_target(spec), bh_target, vt_target], days)
     m = days >= start

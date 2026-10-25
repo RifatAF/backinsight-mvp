@@ -249,7 +249,183 @@ FEATURE_FAMILIES = {
     "fng_contra": (fng_contra, {"low": [15, 20, 25, 30], "high": [50, 60, 70]}),
     "oi_flush": (oi_flush, {"drop": [0.05, 0.08, 0.12], "ret": [0.03, 0.05, 0.08], "hold": [3, 7, 14]}),
 }
-ALL_FAMILIES = {**FAMILIES, **FEATURE_FAMILIES}
+
+
+# ---------- stage 4: macro, calendar and pure-statistics families ----------
+# A family and its mirror ("_inv", "_down") are separate families, so plateau neighbours never
+# flip the sign of a rule.
+
+MACRO_SERIES = ["spx", "ndx", "nikkei", "gold", "dxy", "usdjpy", "us3m", "us10y", "vix", "move"]
+
+
+def _trend(feats, series, n):
+    x = feats[series]
+    return x - x.shift(_days(n, feats))
+
+
+def macro_trend(bars, feats, series, n):
+    """Crypto follows the macro series: long while it rose over n days, short while it fell."""
+    d = _trend(feats, series, n)
+    return _pair(d > 0, d < 0)
+
+
+def macro_trend_inv(bars, feats, series, n):
+    d = _trend(feats, series, n)
+    return _pair(d < 0, d > 0)
+
+
+def _regime(feats, series, q):
+    p = _pct(feats[series], feats)
+    return p > 1 - q, p < q
+
+
+def macro_regime(bars, feats, series, q):
+    """Long while the series is in its top q of history so far, short in its bottom q."""
+    hi, lo = _regime(feats, series, q)
+    return _pair(hi, lo)
+
+
+def macro_regime_inv(bars, feats, series, q):
+    hi, lo = _regime(feats, series, q)
+    return _pair(lo, hi)
+
+
+def _shock(feats, series, z, hold):
+    """One-day move of the series beyond z rolling (60-day) standard deviations, held `hold` days."""
+    k = _days(1, feats)
+    d = feats[series] - feats[series].shift(k)
+    sd = d.rolling(_days(60, feats)).std()
+    h = _days(hold, feats)
+    up = (d > z * sd).astype(float).rolling(h, min_periods=1).max() > 0
+    dn = (d < -z * sd).astype(float).rolling(h, min_periods=1).max() > 0
+    return up, dn
+
+
+def macro_shock(bars, feats, series, z, hold):
+    """React with the shock: long after a jump up of the series, short after a drop."""
+    up, dn = _shock(feats, series, z, hold)
+    return _pair(up & ~dn, dn & ~up)
+
+
+def macro_shock_inv(bars, feats, series, z, hold):
+    up, dn = _shock(feats, series, z, hold)
+    return _pair(dn & ~up, up & ~dn)
+
+
+def _next_bar(bars):
+    """Calendar rules decide at the close of t about the bar held next (executed at open of t+1)."""
+    step = bars.index[1] - bars.index[0] if len(bars) > 1 else pd.Timedelta(days=1)
+    return bars.index + step
+
+
+def _cal(bars, flag):
+    return pd.Series(flag, index=bars.index)
+
+
+def weekday_up(bars, feats, day):
+    return _pair(_cal(bars, _next_bar(bars).dayofweek == day), _cal(bars, False))
+
+
+def weekday_down(bars, feats, day):
+    return _pair(_cal(bars, False), _cal(bars, _next_bar(bars).dayofweek == day))
+
+
+def month_up(bars, feats, month):
+    return _pair(_cal(bars, _next_bar(bars).month == month), _cal(bars, False))
+
+
+def month_down(bars, feats, month):
+    return _pair(_cal(bars, False), _cal(bars, _next_bar(bars).month == month))
+
+
+def hour_up(bars, feats, hour):
+    return _pair(_cal(bars, _next_bar(bars).hour == hour), _cal(bars, False))
+
+
+def hour_down(bars, feats, hour):
+    return _pair(_cal(bars, False), _cal(bars, _next_bar(bars).hour == hour))
+
+
+def _logret(bars):
+    return np.log(bars["close"]).diff()
+
+
+def _zret(bars, feats, n):
+    r = _logret(bars)
+    k = _days(n, feats)
+    return r.rolling(k).sum() / (r.rolling(_days(60, feats)).std() * np.sqrt(k))
+
+
+def ret_reversion(bars, feats, n, z):
+    """Fade an n-day move larger than z volatility-scaled standard deviations."""
+    x = _zret(bars, feats, n)
+    return _pair(x < -z, x > z)
+
+
+def ret_momentum(bars, feats, n, z):
+    x = _zret(bars, feats, n)
+    return _pair(x > z, x < -z)
+
+
+def autocorr(bars, feats, w, n):
+    """Follow the last n-day move while returns were positively autocorrelated over w days, fade it otherwise."""
+    r = _logret(bars)
+    ac = r.rolling(_days(w, feats)).corr(r.shift(1))
+    m = r.rolling(_days(n, feats)).sum()
+    sign = np.sign(ac) * np.sign(m)
+    return _pair(sign > 0, sign < 0)
+
+
+def _vol_pct(bars, feats, n):
+    v = _logret(bars).rolling(_days(n, feats)).std()
+    return _pct(v, feats)
+
+
+def vol_regime(bars, feats, n, q):
+    """Long in calm markets (realized vol in its bottom q so far), short in turbulent ones."""
+    p = _vol_pct(bars, feats, n)
+    return _pair(p < q, p > 1 - q)
+
+
+def vol_regime_inv(bars, feats, n, q):
+    p = _vol_pct(bars, feats, n)
+    return _pair(p > 1 - q, p < q)
+
+
+def btc_lead(bars, feats, n):
+    """Follow bitcoin's n-day move (daily BTC close)."""
+    d = _trend(feats, "btc_close", n)
+    return _pair(d > 0, d < 0)
+
+
+def hold(bars, feats):
+    """Always long: a base for strategies driven only by a higher-timeframe filter."""
+    return _pair(_cal(bars, True), _cal(bars, False))
+
+
+_SERIES = {"series": MACRO_SERIES}
+EXTRA_FAMILIES = {
+    "hold": (hold, {}),
+    "macro_trend": (macro_trend, {**_SERIES, "n": [5, 10, 20, 60]}),
+    "macro_trend_inv": (macro_trend_inv, {**_SERIES, "n": [5, 10, 20, 60]}),
+    "macro_regime": (macro_regime, {**_SERIES, "q": [0.2, 0.3, 0.5]}),
+    "macro_regime_inv": (macro_regime_inv, {**_SERIES, "q": [0.2, 0.3, 0.5]}),
+    "macro_shock": (macro_shock, {**_SERIES, "z": [1.5, 2.0, 2.5], "hold": [1, 3, 5]}),
+    "macro_shock_inv": (macro_shock_inv, {**_SERIES, "z": [1.5, 2.0, 2.5], "hold": [1, 3, 5]}),
+    "weekday_up": (weekday_up, {"day": list(range(7))}),
+    "weekday_down": (weekday_down, {"day": list(range(7))}),
+    "month_up": (month_up, {"month": list(range(1, 13))}),
+    "month_down": (month_down, {"month": list(range(1, 13))}),
+    "hour_up": (hour_up, {"hour": list(range(24))}),
+    "hour_down": (hour_down, {"hour": list(range(24))}),
+    "ret_reversion": (ret_reversion, {"n": [1, 3, 5, 10], "z": [1.0, 1.5, 2.0]}),
+    "ret_momentum": (ret_momentum, {"n": [1, 3, 5, 10], "z": [1.0, 1.5, 2.0]}),
+    "autocorr": (autocorr, {"w": [30, 60, 120], "n": [1, 3, 5]}),
+    "vol_regime": (vol_regime, {"n": [10, 20, 60], "q": [0.2, 0.3, 0.5]}),
+    "vol_regime_inv": (vol_regime_inv, {"n": [10, 20, 60], "q": [0.2, 0.3, 0.5]}),
+    "btc_lead": (btc_lead, {"n": [1, 3, 7, 14]}),
+}
+ALL_FAMILIES = {**FAMILIES, **FEATURE_FAMILIES, **EXTRA_FAMILIES}
 
 
 def grid(family):
@@ -260,5 +436,7 @@ def long_short(bars, feats, family, params, inverted=None):
     """(long, short) signals in {0, 1}; price families get their short side from inverted bars."""
     if family in FEATURE_FAMILIES:
         return FEATURE_FAMILIES[family][0](bars, feats, **params)
+    if family in EXTRA_FAMILIES:
+        return EXTRA_FAMILIES[family][0](bars, feats, **params)
     inv = invert(bars) if inverted is None else inverted
     return FAMILIES[family][0](bars, **params), FAMILIES[family][0](inv, **params)

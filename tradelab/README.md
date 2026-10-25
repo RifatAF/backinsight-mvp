@@ -56,6 +56,35 @@ taker, basis, фандинг, Coinbase, Fear & Greed) уже скачаны и �
     rem 4) сводка
     python run_pipeline.py exp-summary
 
+## Этап 4: макро, календарь, чистая статистика, недельный MACD
+
+Распакуйте архив обновления поверх папки (journal.sqlite, out\ и data\ не трогаются), затем:
+
+    pytest -q
+    python run_pipeline.py macro          rem S&P 500, Nasdaq, Nikkei, золото, индекс доллара, USD/JPY,
+                                          rem ставки США 3 мес и 10 лет, VIX, MOVE (Yahoo Finance), ~1 мин
+    python run_pipeline.py seasonality    rem дни недели, месяцы, часы с поправкой на множественность -> out\seasonality.md
+
+    rem одна заранее записанная гипотеза: недельный MACD 12/26/9, только лонг (~2 мин)
+    python run_pipeline.py exp-calibrate eth_1w_macd_long
+    python run_pipeline.py exp-search eth_1w_macd_long
+
+    rem календарь: день недели и месяц (ETH, дневные свечи), час суток (ETH, 1h; нужны bars 1h)
+    python run_pipeline.py exp-calibrate eth_1d_calendar_both
+    python run_pipeline.py exp-search eth_1d_calendar_both
+    python run_pipeline.py exp-calibrate eth_1h_calendar_both     (~1-2 ч)
+    python run_pipeline.py exp-search eth_1h_calendar_both
+
+    rem внешние данные по корзине: макро + премия Coinbase + страх и жадность + фандинг
+    python run_pipeline.py exp-calibrate basket_1d_external_both  (~25 мин)
+    python run_pipeline.py exp-search basket_1d_external_both
+
+    rem чистая статистика по корзине: возврат к среднему, импульс, автокорреляция, режим волатильности, BTC ведёт
+    python run_pipeline.py exp-calibrate basket_1d_stat_both
+    python run_pipeline.py exp-search basket_1d_stat_both
+
+    python run_pipeline.py exp-summary
+
 Если в каком-то эксперименте вердикт «кандидат допущен к holdout»:
 
     python run_pipeline.py exp-holdout ИМЯ
