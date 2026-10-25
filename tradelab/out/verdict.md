@@ -2,7 +2,7 @@
 
 **Вердикт: не найдена.**
 
-Holdout прочитан: нет. проверки до holdout не пройдены: candidate_max_dd, ci_low_above_0_vs_bh, ci_low_above_0_vs_vt, dsr, oos_calmar_above_bh_vt, oos_max_dd, oos_sharpe_above_bh_vt, pbo, plateau
+Holdout прочитан: нет. Причина: проверки до holdout не пройдены: candidate_max_dd, ci_low_above_0_vs_bh, ci_low_above_0_vs_vt, dsr, oos_calmar_above_bh_vt, oos_max_dd, oos_sharpe_above_bh_vt, pbo, plateau.
 
 ## Допуск по разделу 13
 

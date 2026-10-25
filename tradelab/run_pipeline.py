@@ -168,7 +168,8 @@ def final(cfg, conn):
         rows.append({"критерий раздела 13": "holdout: Шарп и Кальмар не ниже bh и vt", "итог": "не проверялся"})
     md = "\n".join([
         "# tradelab: итог", "", f"**Вердикт: {out['verdict']}.**", "",
-        f"Holdout прочитан: {'да' if out['holdout_read'] else 'нет'}. " + out.get("reason", ""), "",
+        f"Holdout прочитан: {'да' if out['holdout_read'] else 'нет'}."
+        + (f" Причина: {out['reason']}." if "reason" in out else ""), "",
         "## Допуск по разделу 13", "", report.md_table(pd.DataFrame(rows)),
         "## Отклонения от CLAUDE.md", "", *[f"{i}. {d}" for i, d in enumerate(DEVIATIONS, 1)], "",
         f"Подробности: report.md, selection.md, calibration.md, DECISIONS.md. Пороги: {th}.", ""])
