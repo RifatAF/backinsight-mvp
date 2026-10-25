@@ -56,6 +56,13 @@ def final(cfg, conn, sel, raw_bars, raw_funding, symbol="ETH/USDT", path=DEFAULT
         journal.log_event(conn, "final_verdict", out)
         return out
     conf = {grid.config_id(c): c for c in grid.configs()}[sel["candidate"]["after_ablation"]]
+    out = run_once(cfg, conn, conf, sel["candidate"]["after_ablation"], raw_bars, raw_funding, symbol, path)
+    journal.log_event(conn, "final_verdict", out)
+    return out
+
+
+def run_once(cfg, conn, conf, label, raw_bars, raw_funding, symbol="ETH/USDT", path=DEFAULT_DIR):
+    """Reads the holdout (once per journal) and compares the candidate with bh and vt on holdout days."""
     hold = load(allow=True, conn=conn, path=path)
     stem = symbol.replace("/", "_")
     bars = pd.concat([raw_bars, hold[f"{stem}_1d"]])
@@ -66,7 +73,5 @@ def final(cfg, conn, sel, raw_bars, raw_funding, symbol="ETH/USDT", path=DEFAULT
     cur = _curves(bars, cfg, conf, funding, start)
     c = cur["candidate"]
     ok = all(c[m] >= cur[b][m] for b in ("bh", "vt") for m in ("sharpe", "calmar"))
-    out = {"verdict": FOUND if ok else NOT_FOUND, "holdout_read": True, "candidate": sel["candidate"]["after_ablation"],
-           "holdout": cur, "holdout_start": str(start)}
-    journal.log_event(conn, "final_verdict", out)
-    return out
+    return {"verdict": FOUND if ok else NOT_FOUND, "holdout_read": True, "candidate": label,
+            "holdout": cur, "holdout_start": str(start)}

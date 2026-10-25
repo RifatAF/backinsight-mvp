@@ -6,6 +6,12 @@
                                      without new trials), final candidate and checks -> out/selection.*
   python run_pipeline.py report      full report -> out/report.md and png figures
   python run_pipeline.py final       step 6: holdout only if checks passed, verdict -> out/verdict.md
+
+Stage 2, strategy generator (settings in generator.yaml):
+  python run_pipeline.py gen-calibrate  generator procedure on bootstrap paths: FDR and power -> out/gen_calibration.md
+  python run_pipeline.py gen-search     all generated specs on real data (journaled once), walk-forward, checks
+                                        -> out/generator.md, out/generator_leaderboard.csv, out/gen_equity.png
+  python run_pipeline.py gen-holdout    one-time holdout run of the generator candidate, only if its checks passed
 """
 import json
 import sys
@@ -13,7 +19,7 @@ import time
 
 import pandas as pd
 
-from tradelab import config, costs, data, holdout, journal, parallel, report, selection, synth
+from tradelab import config, costs, data, generator, holdout, journal, parallel, report, selection, synth
 
 
 def main(cmd="benchmarks"):
@@ -30,6 +36,8 @@ def main(cmd="benchmarks"):
         return calibrate(cfg, conn)
     if cmd == "select":
         return select(cfg, conn)
+    if cmd.startswith("gen-"):
+        return gen(cmd, cfg, conn)
     if cmd == "final":
         return final(cfg, conn)
     if cmd == "report":
@@ -175,6 +183,124 @@ def final(cfg, conn):
         f"Подробности: report.md, selection.md, calibration.md, DECISIONS.md. Пороги: {th}.", ""])
     (data.ROOT / "out" / "verdict.md").write_text(md)
     print(md)
+
+
+def _eth(cfg):
+    sym = cfg["data"]["symbols_main"][0]
+    bars = data.load_raw(sym)
+    return sym, bars, costs.funding_daily(bars.index, cfg["costs"], data.load_funding(sym)).to_numpy()
+
+
+def gen(cmd, cfg, conn):
+    gcfg, gsha = generator.load_config()
+    generator.lock(conn, gsha)
+    info = data.dataset_info(conn)
+    sym, bars, fday = _eth(cfg)
+    specs = generator.generate(gcfg)
+    out = data.ROOT / "out"
+    th = cfg["thresholds"]
+    if cmd == "gen-calibrate":
+        t0 = time.time()
+        res = generator.calibrate(bars, cfg, fday, specs, gcfg)
+        res.to_parquet(out / "gen_calibration.parquet")
+        fdr = float(res.loc[res.phi == 0, "finding"].mean())
+        power = float(res.loc[res.phi > 0, "finding"].mean())
+        status = "stop_fdr" if fdr > th["fdr_max"] else "ok"
+        payload = {"fdr": fdr, "power_phi_0.20": power, "paths": int((res.phi == 0).sum()), "status": status,
+                   "n_specs": len(specs), "seconds": round(time.time() - t0, 1), "generator_sha256": gsha}
+        journal.log_event(conn, "generator_calibration", payload)
+        md = (f"# Калибровка генератора\n\nСтатус: **{status}**. На {payload['paths']} нулевых путях A генератор "
+              f"из {len(specs)} стратегий «находит» стратегию в {fdr:.1%} случаев (порог {th['fdr_max']:.0%}). "
+              f"Мощность на путях C (AR phi=0.20): {power:.1%}. Время {payload['seconds']:.0f} с на {parallel.n_jobs()} воркерах.\n")
+        (out / "gen_calibration.md").write_text(md)
+        return print(md)
+    cal = journal.events(conn, "generator_calibration")
+    if cmd == "gen-search":
+        if not cal or cal[-1]["payload"]["status"] != "ok":
+            raise SystemExit("сначала gen-calibrate; поиск запрещён, пока FDR генератора выше порога")
+        t0 = time.time()
+        pos, net, trades, replayed = generator.search(bars, cfg, conn, fday, specs, info["dataset_sha256"], gsha)
+        wf = generator.walk_forward(bars, cfg, fday, specs, pos, net, trades, gcfg)
+        basket = {s: data.load_raw(s) for s in info["basket"]}
+        fund = {s: f for s in info["basket"] if (f := data.load_funding(s)) is not None}
+        r = generator.check(bars, cfg, conn, fday, specs, net, wf, info["dataset_sha256"],
+                            cal[-1]["payload"]["fdr"], basket, fund)
+        r["seconds"] = round(time.time() - t0, 1)
+        r["replay"] = replayed
+        journal.log_event(conn, "generator_selection_replay" if replayed else "generator_selection", r)
+        lb = generator.leaderboard(specs, net, trades, gcfg, cfg, bars.index)
+        lb.to_csv(out / "generator_leaderboard.csv", index=False)
+        oos = wf["oos"]
+        nets = {"procedure": wf["net_oos"]}
+        for name, fn in (("bh", strategies_bh), ("vt", strategies_vt)):
+            nets[name] = backtest_net(bars, cfg, fday, fn)[oos]
+        report.plot_equity(nets, bars.index[oos], out / "gen_equity.png")
+        md = gen_md(r, lb, gcfg, cfg)
+        (out / "generator.md").write_text(md)
+        return print(md)
+    if cmd == "gen-holdout":
+        ev = journal.events(conn, "generator_selection_replay") or journal.events(conn, "generator_selection")
+        if not ev:
+            raise SystemExit("сначала gen-search")
+        r = ev[-1]["payload"]
+        if journal.events(conn, "generator_final_verdict"):
+            raise SystemExit("вердикт генератора уже записан")
+        if not r["passed"]:
+            res = {"verdict": holdout.NOT_FOUND, "holdout_read": False,
+                   "reason": ", ".join(k for k, v in r["checks"].items() if not v)}
+        else:
+            spec = r["candidate"]["spec"]
+            res = holdout.run_once(cfg, conn, generator.spec_fn(spec), r["candidate"]["after_ablation"],
+                                   bars, data.load_funding(sym), sym)
+        journal.log_event(conn, "generator_final_verdict", res)
+        md = f"# Генератор: итог\n\n**Вердикт: {res['verdict']}.** Holdout прочитан: {'да' if res['holdout_read'] else 'нет'}.\n"
+        md += (f"\nНе пройдены проверки: {res['reason']}.\n" if not res["holdout_read"] else
+               "\n" + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
+                                                     for k, x in res["holdout"].items()])))
+        (out / "gen_verdict.md").write_text(md)
+        return print(md)
+    raise SystemExit(f"неизвестная команда {cmd}")
+
+
+def strategies_bh(bars, cfg):
+    from tradelab import strategies
+    return strategies.bh(bars, cfg)
+
+
+def strategies_vt(bars, cfg):
+    from tradelab import strategies
+    return strategies.vt(bars, cfg)
+
+
+def backtest_net(bars, cfg, fday, fn):
+    from tradelab import backtest
+    return backtest.pnl(bars, backtest.positions(fn(bars, cfg).to_numpy(), cfg), cfg, fday)["net"][:-1]
+
+
+def gen_md(r, lb, gcfg, cfg):
+    f = lambda x: f"{x:.3f}"
+    th = cfg["thresholds"]
+    rows = [{"curve": k, **{m: f(v) for m, v in r[k].items()}} for k in ("procedure", "bh", "vt")]
+    checks = pd.DataFrame([{"check": k, "ok": "да" if v else "нет"} for k, v in r["checks"].items()])
+    c = r["candidate"]
+    top = lb.head(15).copy()
+    for col in ("sharpe_is", "cagr_is", "max_dd_is", "trades_per_month"):
+        top[col] = top[col].map(f)
+    cand = "нет" if c is None else (
+        f"`{c['after_ablation']}`; полная история: Шарп {f(c['full_sample']['sharpe'])}, MaxDD "
+        f"{c['full_sample']['max_dd']:.1%}; плато {f(c['plateau'])}; переносимость {f(c['transfer_share'])}; "
+        f"стресс {'пройден' if c['stress']['passed'] else 'не пройден'}")
+    return (f"# Генератор стратегий: отбор\n\nВердикт до holdout: **{r['verdict']}**\n\n"
+            f"Сгенерировано {r['n_generated']} стратегий из {lb['family'].nunique()} семейств; всего проб в журнале "
+            f"на этих данных {r['n_trials_total']} (DSR учитывает все). «Не сливают» на всей истории: "
+            f"{int(lb['does_not_lose'].sum())}. На фолдах фильтр проходили {min(r['fold_survivors'])}..{max(r['fold_survivors'])}.\n\n"
+            f"Склеенный OOS {r['oos_days']} дней с {r['oos_start']}: DSR {f(r['dsr'])} (порог {th['dsr_min']}), "
+            f"PBO {f(r['pbo'])}, FDR генератора {f(r['fdr'])}. ДИ разницы Шарпов: против bh "
+            f"[{f(r['ci_vs_bh']['lo'])}, {f(r['ci_vs_bh']['hi'])}], против vt [{f(r['ci_vs_vt']['lo'])}, {f(r['ci_vs_vt']['hi'])}].\n\n"
+            f"Кандидат: {cand}.\n\n" + report.md_table(pd.DataFrame(rows)) + "\n![капитал](gen_equity.png)\n\n## Проверки\n\n"
+            + report.md_table(checks)
+            + "\n## Топ-15 по Шарпу на всей истории (in-sample, только для обзора: этот список переобучен)\n\n"
+            + report.md_table(top) + "\nПолная таблица: generator_leaderboard.csv.\n")
 
 
 if __name__ == "__main__":

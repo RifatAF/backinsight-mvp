@@ -7,7 +7,11 @@ from tradelab import backtest, metrics, strategies, synth
 
 
 def candidate_net(bars, cfg, funding_day, conf, delay=0):
-    s = strategies.config_matrix(bars, cfg, funding_day, [conf])[:, 0]
+    """conf: a grid config dict, or a callable (bars, cfg, funding_day) -> target positions."""
+    if callable(conf):
+        s = np.asarray(conf(bars, cfg, funding_day), dtype=float)
+    else:
+        s = strategies.config_matrix(bars, cfg, funding_day, [conf])[:, 0]
     if delay:
         s = np.concatenate([np.zeros(delay), s[:-delay]])  # executes at open of t + 1 + delay
     return backtest.pnl(bars, backtest.positions(s, cfg), cfg, funding_day)["net"][:-1]
