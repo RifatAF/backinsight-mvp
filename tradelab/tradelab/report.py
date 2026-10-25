@@ -33,6 +33,9 @@ def benchmarks_md(table, symbol, start, end):
         t[c] = t[c].map("{:.2f}".format)
     for c in ("max_dd", "cagr"):
         t[c] = t[c].map("{:.1%}".format)
-    head = "| " + " | ".join(t.columns) + " |\n|" + "---|" * len(t.columns) + "\n"
-    body = "".join("| " + " | ".join(map(str, r)) + " |\n" for r in t.itertuples(index=False))
-    return f"# Эталоны {symbol}, {start.date()} .. {end.date()} (до holdout)\n\n{head}{body}"
+    return f"# Эталоны {symbol}, {start.date()} .. {end.date()} (до holdout)\n\n{md_table(t)}"
+
+
+def md_table(t):
+    head = "| " + " | ".join(map(str, t.columns)) + " |\n|" + "---|" * len(t.columns) + "\n"
+    return head + "".join("| " + " | ".join(map(str, r)) + " |\n" for r in t.itertuples(index=False))
