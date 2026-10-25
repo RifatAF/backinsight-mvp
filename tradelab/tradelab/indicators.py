@@ -165,3 +165,100 @@ def valid(family, params):
 
 def signal(bars, family, params):
     return FAMILIES[family][0](bars, **params)
+
+
+# ---------- stage 3: shorts and derivatives / sentiment families ----------
+
+def invert(bars):
+    """Price series 1/p: an uptrend in the inverted bars is a downtrend in the original, so any
+    long rule applied to invert(bars) is the mirrored short rule."""
+    out = bars.copy()
+    out["open"], out["close"] = 1 / bars["open"], 1 / bars["close"]
+    out["high"], out["low"] = 1 / bars["low"], 1 / bars["high"]
+    return out
+
+
+def _pct(x, feats, min_days=180):
+    return x.expanding(min_days * feats.attrs.get("bpd", 1)).rank(pct=True)
+
+
+def _days(n, feats):
+    return int(n * feats.attrs.get("bpd", 1))
+
+
+def _pair(long, short):
+    return long.fillna(False).astype(float), short.fillna(False).astype(float)
+
+
+def funding_contra(bars, feats, n, q):
+    p = _pct(feats["funding_day"].rolling(_days(n, feats)).mean(), feats)
+    return _pair(p < q, p > 1 - q)
+
+
+def oi_trend(bars, feats, n):
+    k = _days(n, feats)
+    pr = bars["close"] / bars["close"].shift(k) - 1
+    oi = feats["oi_value"] / feats["oi_value"].shift(k) - 1
+    return _pair((pr > 0) & (oi > 0), (pr < 0) & (oi > 0))
+
+
+def ls_contra(bars, feats, kind, q):
+    p = _pct(feats[kind], feats)
+    return _pair(p < q, p > 1 - q)
+
+
+def taker_momentum(bars, feats, n, level):
+    t = feats["taker_ratio"].rolling(_days(n, feats)).mean()
+    return _pair(t > level, t < 1 / level)
+
+
+def cb_premium(bars, feats, n, q):
+    p = _pct(feats["cb_premium"].rolling(_days(n, feats)).mean(), feats)
+    return _pair(p > 1 - q, p < q)
+
+
+def basis_contra(bars, feats, n, q):
+    p = _pct(feats["basis"].rolling(_days(n, feats)).mean(), feats)
+    return _pair(p < q, p > 1 - q)
+
+
+def fng_contra(bars, feats, low, high):
+    f = feats["fng"]
+    return latch(f < low, f > high), latch(f > 100 - low, f < 100 - high)
+
+
+def oi_flush(bars, feats, drop, ret, hold):
+    """Liquidation proxy: a one-day open-interest drop with a large price move. A flush down
+    (longs liquidated) opens a long for `hold` days, a flush up (shorts liquidated) a short."""
+    k = _days(1, feats)
+    d_oi = feats["oi_value"] / feats["oi_value"].shift(k) - 1
+    d_p = bars["close"] / bars["close"].shift(k) - 1
+    h = _days(hold, feats)
+    down = ((d_oi < -drop) & (d_p < -ret)).astype(float).rolling(h, min_periods=1).max()
+    up = ((d_oi < -drop) & (d_p > ret)).astype(float).rolling(h, min_periods=1).max()
+    return _pair(down > 0, up > 0)
+
+
+FEATURE_FAMILIES = {
+    "funding_contra": (funding_contra, {"n": [1, 3, 7, 14], "q": [0.1, 0.2, 0.3]}),
+    "oi_trend": (oi_trend, {"n": [3, 7, 14, 30]}),
+    "ls_contra": (ls_contra, {"kind": ["global_ls", "top_ls_acc", "top_ls_pos"], "q": [0.1, 0.2, 0.3]}),
+    "taker_momentum": (taker_momentum, {"n": [1, 3, 7, 14], "level": [1.0, 1.02, 1.05]}),
+    "cb_premium": (cb_premium, {"n": [1, 3, 7, 14], "q": [0.2, 0.3, 0.5]}),
+    "basis_contra": (basis_contra, {"n": [1, 3, 7, 14], "q": [0.1, 0.2, 0.3]}),
+    "fng_contra": (fng_contra, {"low": [15, 20, 25, 30], "high": [50, 60, 70]}),
+    "oi_flush": (oi_flush, {"drop": [0.05, 0.08, 0.12], "ret": [0.03, 0.05, 0.08], "hold": [3, 7, 14]}),
+}
+ALL_FAMILIES = {**FAMILIES, **FEATURE_FAMILIES}
+
+
+def grid(family):
+    return ALL_FAMILIES[family][1]
+
+
+def long_short(bars, feats, family, params, inverted=None):
+    """(long, short) signals in {0, 1}; price families get their short side from inverted bars."""
+    if family in FEATURE_FAMILIES:
+        return FEATURE_FAMILIES[family][0](bars, feats, **params)
+    inv = invert(bars) if inverted is None else inverted
+    return FAMILIES[family][0](bars, **params), FAMILIES[family][0](inv, **params)

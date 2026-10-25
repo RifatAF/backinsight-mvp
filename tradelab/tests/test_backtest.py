@@ -59,3 +59,13 @@ def test_seed_bitwise(cfg, bars):
     a = backtest.run(bars, strategies.vt(bars, cfg), cfg)
     b = backtest.run(bars, strategies.vt(bars, cfg), cfg)
     assert a.to_numpy().tobytes() == b.to_numpy().tobytes()
+
+
+def test_short_pays_negative_funding_and_cap(cfg, bars):
+    r = backtest.run(bars, pd.Series(-1.0, index=bars.index), cfg)
+    np.testing.assert_allclose(r["fund"].iloc[1:], -3 * cfg["costs"]["funding_fallback_per_8h"])
+    up = bars.copy()
+    up["open"] = np.linspace(100, 200, len(bars))
+    assert backtest.run(up, pd.Series(-1.0, index=bars.index), cfg)["gross"].iloc[1:].lt(0).all()
+    with pytest.raises(AssertionError):
+        backtest.run(bars, pd.Series(-5.0, index=bars.index), cfg)

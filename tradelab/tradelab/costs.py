@@ -29,5 +29,8 @@ def funding_daily(index, costs, funding=None):
 
 
 def funding_cost(pos, funding_day):
-    """fund[k] = max(pos[k] - 1, 0) * funding_day[k]; positive rate means long pays."""
-    return np.maximum(np.asarray(pos, dtype=float) - 1.0, 0.0) * np.asarray(funding_day, dtype=float)
+    """fund[k] = (max(pos[k] - 1, 0) + min(pos[k], 0)) * funding_day[k]; positive rate means long pays.
+    Longs up to 1x are spot (no funding); leverage above 1x and every short are perpetual positions,
+    so a short receives a positive rate."""
+    pos = np.asarray(pos, dtype=float)
+    return (np.maximum(pos - 1.0, 0.0) + np.minimum(pos, 0.0)) * np.asarray(funding_day, dtype=float)

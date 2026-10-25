@@ -63,10 +63,12 @@ def expanding_pct(x, min_days=PCT_MIN_DAYS):
     return x.expanding(min_days).rank(pct=True)
 
 
-def layer_inputs(bars, cfg, funding_day):
-    sig = sigma(bars["close"], cfg["benchmarks"]["vol_ewma_span"], cfg["annualization"])
-    fsum = pd.Series(np.asarray(funding_day, dtype=float), index=bars.index).rolling(7).sum()
-    return {"sigma": sig, "sigma_pct": expanding_pct(sig), "funding_pct": expanding_pct(fsum)}
+def layer_inputs(bars, cfg, funding_day, bpd=1):
+    """bpd = bars per day: windows defined in days scale with it (bpd = 4 for 6h bars)."""
+    sig = sigma(bars["close"], cfg["benchmarks"]["vol_ewma_span"] * bpd, cfg["annualization"] * bpd)
+    fsum = pd.Series(np.asarray(funding_day, dtype=float), index=bars.index).rolling(7 * bpd).sum()
+    return {"sigma": sig, "sigma_pct": expanding_pct(sig, PCT_MIN_DAYS * bpd),
+            "funding_pct": expanding_pct(fsum, PCT_MIN_DAYS * bpd)}
 
 
 def compose(b, conf, inputs, cfg):

@@ -44,10 +44,10 @@ def spec_id(spec):
 
 
 def _rand_params(rng, family):
-    grid = indicators.FAMILIES[family][1]
+    grid = indicators.grid(family)
     while True:
         p = {k: v[rng.integers(len(v))] for k, v in grid.items()}
-        p = {k: (float(v) if isinstance(v, float) else int(v)) for k, v in p.items()}
+        p = {k: (float(v) if isinstance(v, float) else v if isinstance(v, str) else int(v)) for k, v in p.items()}
         if indicators.valid(family, p):
             return p
 
@@ -55,7 +55,7 @@ def _rand_params(rng, family):
 def generate(gcfg):
     """Deterministic list of distinct random specs."""
     rng = np.random.default_rng(gcfg["seed"])
-    fams = list(indicators.FAMILIES)
+    fams = list(gcfg.get("families") or indicators.FAMILIES)  # stage 2 default: the 13 price families
     seen, out = set(), []
     tries = 0
     while len(out) < gcfg["n_strategies"] and tries < 100 * gcfg["n_strategies"]:
@@ -69,6 +69,8 @@ def generate(gcfg):
                 spec["confirm"] = {"family": g, "params": _rand_params(rng, g)}
         if rng.random() < gcfg["trend_filter_share"]:
             spec["trend"] = TREND_AXIS[1 + rng.integers(2)]
+        if "direction" in gcfg:  # stage 3 only, so stage 2 spec ids stay unchanged
+            spec["direction"] = gcfg["direction"]
         k = spec_id(spec)
         if k not in seen:
             seen.add(k)
@@ -79,7 +81,7 @@ def generate(gcfg):
 def neighbors(spec):
     """Specs one step away on one parameter of the main family, or on the v / p / trend axes."""
     out = []
-    grid = indicators.FAMILIES[spec["family"]][1]
+    grid = indicators.grid(spec["family"])
     for k, vals in grid.items():
         i = vals.index(spec["params"][k])
         for j in (i - 1, i + 1):

@@ -1,0 +1,17 @@
+# Stage 3 experiment. Locked by hash in the journal at its first exp-* run.
+universe: ETH/USDT          # one symbol, or "basket" = ETH + the 15-coin basket, equal weight
+timeframe: 1d
+direction: both           # long, or both (long and short via perpetuals)
+families: all           # price (13 indicator families) + features (funding, OI, long/short, taker, basis, Coinbase premium, Fear & Greed, OI flush)
+seed: 11
+n_strategies: 1000
+combo_share: 0.30
+trend_filter_share: 0.30
+screen:
+  min_sharpe: 0.0
+  min_cagr: 0.0
+  max_drawdown: 0.60
+  min_trades: 6
+plateau_top_k: 10
+n_null_paths: 30        # calibration paths A and C each
+n_synth_b: 30           # synthetic B paths in the stress test

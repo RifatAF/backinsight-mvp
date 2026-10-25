@@ -20,7 +20,7 @@ def positions(signal, cfg):
     """pos[t+1] = band(s)[t]; pos[0] = 0."""
     banded = apply_band(signal, cfg["costs"]["rebalance_band"])
     pos = np.concatenate([np.zeros((1,) + banded.shape[1:]), banded[:-1]])
-    assert pos.max() <= cfg["risk"]["hard_leverage_cap"], "position exceeds hard_leverage_cap"
+    assert np.abs(pos).max() <= cfg["risk"]["hard_leverage_cap"], "position exceeds hard_leverage_cap"
     return pos
 
 

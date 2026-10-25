@@ -12,17 +12,27 @@ Stage 2, strategy generator (settings in generator.yaml):
   python run_pipeline.py gen-search     all generated specs on real data (journaled once), walk-forward, checks
                                         -> out/generator.md, out/generator_leaderboard.csv, out/gen_equity.png
   python run_pipeline.py gen-holdout    one-time holdout run of the generator candidate, only if its checks passed
+
+Stage 3, experiments with derivatives / sentiment features, shorts, 6h bars and basket portfolios:
+  python run_pipeline.py features              download OI, long/short ratios, taker ratio, basis, funding,
+                                               Coinbase close, Fear & Greed -> data/raw/*_features.parquet
+  python run_pipeline.py exp-calibrate NAME    experiment procedure on bootstrap paths (FDR, power)
+  python run_pipeline.py exp-search NAME       journaled search + checks -> out/exp_NAME.md
+  python run_pipeline.py exp-summary           table of all experiments -> out/experiments.md
+  python run_pipeline.py exp-holdout NAME      one-time holdout run, only if that experiment passed its checks
+NAME is a file in experiments/ without .yaml.
 """
+import hashlib
 import json
 import sys
 import time
 
 import pandas as pd
 
-from tradelab import config, costs, data, generator, holdout, journal, parallel, report, selection, synth
+from tradelab import config, costs, data, experiment, features, generator, holdout, journal, parallel, report, selection, synth
 
 
-def main(cmd="benchmarks"):
+def main(cmd="benchmarks", name=None):
     cfg = config.load()
     conn = journal.connect()
     print(f"config sha256 {config.lock(conn)}; workers {parallel.n_jobs()}")
@@ -36,6 +46,11 @@ def main(cmd="benchmarks"):
         return calibrate(cfg, conn)
     if cmd == "select":
         return select(cfg, conn)
+    if cmd == "features":
+        info = features.download(cfg, conn)
+        return print(json.dumps(info["first_valid"], indent=1))
+    if cmd.startswith("exp-"):
+        return exp(cmd, name, cfg, conn)
     if cmd.startswith("gen-"):
         return gen(cmd, cfg, conn)
     if cmd == "final":
@@ -301,6 +316,102 @@ def gen_md(r, lb, gcfg, cfg):
             + report.md_table(checks)
             + "\n## Топ-15 по Шарпу на всей истории (in-sample, только для обзора: этот список переобучен)\n\n"
             + report.md_table(top) + "\nПолная таблица: generator_leaderboard.csv.\n")
+
+
+def exp_events(conn, kind, name):
+    return [ev for ev in journal.events(conn, kind) if ev["payload"].get("experiment") == name]
+
+
+def exp(cmd, name, cfg, conn):
+    out = data.ROOT / "out"
+    if cmd == "exp-summary":
+        return print(exp_summary(conn, out))
+    e, esha = experiment.load(name)
+    lock = exp_events(conn, "experiment_sha256", name)
+    if not lock:
+        journal.log_event(conn, "experiment_sha256", {"experiment": name, "sha256": esha})
+    elif lock[0]["payload"]["sha256"] != esha:
+        raise SystemExit(f"experiments/{name}.yaml изменён после первого запуска: создайте новый эксперимент с другим именем")
+    info = data.dataset_info(conn)
+    fe = journal.events(conn, "dataset_features")
+    if not fe:
+        raise SystemExit("сначала: python run_pipeline.py features")
+    sha = hashlib.sha256((info["dataset_sha256"] + fe[-1]["payload"]["features_sha256"]).encode()).hexdigest()
+    coins = experiment.load_coins(e, cfg, info)
+    days = experiment.days_index(coins)
+    gcfg = experiment.gen_config(e)
+    specs = generator.generate(gcfg)
+    th = cfg["thresholds"]
+    if cmd == "exp-calibrate":
+        t0 = time.time()
+        res = experiment.calibrate(e, coins, cfg, days, specs, gcfg)
+        res.to_parquet(out / f"exp_{name}_calibration.parquet")
+        fdr = float(res.loc[res.phi == 0, "finding"].mean())
+        power = float(res.loc[res.phi > 0, "finding"].mean())
+        status = "stop_fdr" if fdr > th["fdr_max"] else "ok"
+        payload = {"experiment": name, "fdr": fdr, "power_phi_0.20": power, "paths": int((res.phi == 0).sum()),
+                   "status": status, "seconds": round(time.time() - t0, 1)}
+        journal.log_event(conn, "experiment_calibration", payload)
+        return print(json.dumps(payload, ensure_ascii=False))
+    if cmd == "exp-search":
+        cal = exp_events(conn, "experiment_calibration", name)
+        if not cal or cal[-1]["payload"]["status"] != "ok":
+            raise SystemExit(f"сначала exp-calibrate {name}; поиск запрещён, пока FDR выше порога")
+        t0 = time.time()
+        net, trades, replayed = experiment.search(e, esha, coins, cfg, conn, specs, days, sha)
+        wf = experiment.walk_forward(coins, cfg, days, specs, net, trades, gcfg)
+        r = experiment.check(e, coins, cfg, conn, days, specs, net, wf, cal[-1]["payload"]["fdr"],
+                             experiment.transfer_coins(e, cfg, info, coins))
+        r["seconds"] = round(time.time() - t0, 1)
+        r["replay"] = replayed
+        r["power_phi_0.20"] = cal[-1]["payload"]["power_phi_0.20"]
+        journal.log_event(conn, "experiment_selection", r)
+        lb = generator.leaderboard(specs, net, trades, gcfg, cfg, days)
+        lb.to_csv(out / f"exp_{name}_leaderboard.csv", index=False)
+        bench = experiment.benchmarks(coins, cfg, days)
+        report.plot_equity({"procedure": wf["net_oos"], "bh": bench["bh"][wf["oos"]], "vt": bench["vt"][wf["oos"]]},
+                           days[wf["oos"]], out / f"exp_{name}_equity.png")
+        md = gen_md(r, lb, gcfg, cfg).replace("# Генератор стратегий: отбор", f"# Эксперимент {name}") \
+            .replace("gen_equity.png", f"exp_{name}_equity.png").replace("generator_leaderboard.csv", f"exp_{name}_leaderboard.csv")
+        md = md.replace("Вердикт до holdout", f"Монеты: {', '.join(r['coins'])}; свечи {r['timeframe']}; "
+                        f"направление {r['direction']}. Эталоны bh и vt считаются по тому же портфелю.\n\nВердикт до holdout", 1)
+        (out / f"exp_{name}.md").write_text(md)
+        print(md)
+        return print(exp_summary(conn, out))
+    if cmd == "exp-holdout":
+        sel = exp_events(conn, "experiment_selection", name)
+        if not sel:
+            raise SystemExit(f"сначала exp-search {name}")
+        r = sel[-1]["payload"]
+        if not r["passed"]:
+            raise SystemExit(f"{name}: проверки до holdout не пройдены ({', '.join(k for k, v in r['checks'].items() if not v)}); "
+                             "holdout не читается")
+        res = experiment.holdout_run(e, cfg, conn, info, r["candidate"]["spec"])
+        journal.log_event(conn, "experiment_final_verdict", res)
+        md = (f"# {name}: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
+              + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
+                                               for k, x in res["holdout"].items()])))
+        (out / f"exp_{name}_holdout.md").write_text(md)
+        return print(md)
+    raise SystemExit(f"неизвестная команда {cmd}")
+
+
+def exp_summary(conn, out):
+    rows = []
+    for ev in journal.events(conn, "experiment_selection"):
+        r = ev["payload"]
+        c = r["candidate"]
+        rows.append({"эксперимент": r["experiment"], "OOS Шарп": f"{r['procedure']['sharpe']:.2f}",
+                     "OOS CAGR": f"{r['procedure']['cagr']:.1%}", "OOS MaxDD": f"{r['procedure']['max_dd']:.1%}",
+                     "bh Шарп": f"{r['bh']['sharpe']:.2f}", "vt Шарп": f"{r['vt']['sharpe']:.2f}",
+                     "ДИ низ vs bh": f"{r['ci_vs_bh']['lo']:.2f}", "DSR": f"{r['dsr']:.3f}", "PBO": f"{r['pbo']:.2f}",
+                     "мощность": f"{r.get('power_phi_0.20', float('nan')):.0%}",
+                     "кандидат": c["after_ablation"][:90] if c else "нет", "вердикт": r["verdict"]})
+    df = pd.DataFrame(rows).drop_duplicates("эксперимент", keep="last") if rows else pd.DataFrame()
+    md = "# Эксперименты этапа 3\n\n" + (report.md_table(df) if len(df) else "пока нет\n")
+    md += f"\nВсего проб в журнале: {len(journal.trials(conn))}. DSR каждого эксперимента учитывает их все.\n"
+    (out / "experiments.md").write_text(md)
+    return md
 
 
 if __name__ == "__main__":
