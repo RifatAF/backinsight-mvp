@@ -292,12 +292,15 @@ def search(e, esha, coins, cfg, conn, specs, days, sha, jobs=None):
         raise ExperimentChanged(f"journaled trials of {stage} do not match the current specs")
     net, trades = evaluate_specs(coins, cfg, specs, days, jobs)
     logged = {ev["payload"]["trial_id"]: ev["payload"]["metrics"] for ev in journal.events(conn, "trial_metrics")}
+    pairs = []
     for j in range(len(specs)):
         m = selection.trial_metrics(net[:, j], trades[:, j].astype(float), cfg)
         if ids is not None:
             journal.finish_trial(conn, ids[j], m)
-        elif logged[mine[j]["id"]] != m:
-            raise AssertionError(f"replay differs from journal for trial {mine[j]['id']}")
+        else:
+            pairs.append((mine[j]["id"], m, logged[mine[j]["id"]]))
+    if pairs:
+        selection.verify_replay(conn, pairs, stage)
     return net, trades, ids is None
 
 

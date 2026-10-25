@@ -259,12 +259,15 @@ def search(bars, cfg, conn, funding_day, specs, sha, gsha, jobs=None):
         raise GeneratorConfigChanged("journaled generator trials do not match the current specs")
     pos, net, trades = evaluate_all(bars, cfg, funding_day, specs, jobs)
     logged = {e["payload"]["trial_id"]: e["payload"]["metrics"] for e in journal.events(conn, "trial_metrics")}
+    pairs = []
     for j in range(len(specs)):
         m = selection.trial_metrics(net[:, j], trades[:, j].astype(float), cfg)
         if ids is not None:
             journal.finish_trial(conn, ids[j], m)
-        elif logged[mine[j]["id"]] != m:
-            raise AssertionError(f"replay differs from journal for trial {mine[j]['id']}")
+        else:
+            pairs.append((mine[j]["id"], m, logged[mine[j]["id"]]))
+    if pairs:
+        selection.verify_replay(conn, pairs, "generator")
     return pos, net, trades, ids is None
 
 

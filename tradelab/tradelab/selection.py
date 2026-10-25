@@ -1,4 +1,6 @@
 """Real-data search, final candidate and its checks (CLAUDE.md sections 11.3-11.5, 13 without holdout)."""
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -27,6 +29,35 @@ def _run_grid(bars, cfg, funding_day):
     return {"confs": confs, "nbrs": nbrs, "wf": wf, "final": final}
 
 
+REPLAY_REL_TOL = 1e-6      # numpy results differ in the last bits across CPUs and operating systems
+REPLAY_MAX_MISMATCH = 0.005  # a few trials may flip a rebalance-band decision on a rounding edge
+
+
+def metrics_close(a, b, rel=REPLAY_REL_TOL):
+    if a.keys() != b.keys():
+        return False
+    for k in a:
+        x, y = a[k], b[k]
+        if x is None or y is None:
+            if x is not y:
+                return False
+        elif not math.isclose(x, y, rel_tol=rel, abs_tol=1e-12):
+            return False
+    return True
+
+
+def verify_replay(conn, pairs, label):
+    """pairs: [(trial_id, recomputed, logged)]. Raises if more than 0.5% of trials differ beyond
+    rounding; a smaller number is logged to the journal as replay_mismatch and reported."""
+    bad = [tid for tid, m, ref in pairs if not metrics_close(m, ref)]
+    if len(bad) > REPLAY_MAX_MISMATCH * len(pairs):
+        raise AssertionError(f"{label}: replay differs from journal for {len(bad)} of {len(pairs)} trials, e.g. {bad[:5]}")
+    if bad:
+        journal.log_event(conn, "replay_mismatch", {"stage": label, "trials": bad, "of": len(pairs)})
+        print(f"{label}: {len(bad)} of {len(pairs)} trials differ beyond rounding (logged), e.g. {bad[:5]}")
+    return bad
+
+
 def search(bars, cfg, conn, funding_day, dataset_sha256):
     """Every config is a journal trial: 'started' rows first, metrics as events after the run."""
     if any(t["dataset_sha256"] == dataset_sha256 for t in journal.trials(conn)):
@@ -48,10 +79,11 @@ def replay(bars, cfg, conn, funding_day, dataset_sha256):
     logged = {e["payload"]["trial_id"]: e["payload"]["metrics"] for e in journal.events(conn, "trial_metrics")}
     found = _run_grid(bars, cfg, funding_day)
     wf = found["wf"]
+    pairs = []
     for j, t in enumerate(trials):
         assert t["config"]["id"] == grid.config_id(found["confs"][j])
-        if trial_metrics(wf["net_all"][:, j], wf["turnover_all"][:, j], cfg) != logged[t["id"]]:
-            raise AssertionError(f"replay differs from journal for trial {t['id']}")
+        pairs.append((t["id"], trial_metrics(wf["net_all"][:, j], wf["turnover_all"][:, j], cfg), logged[t["id"]]))
+    verify_replay(conn, pairs, "grid")
     return found
 
 

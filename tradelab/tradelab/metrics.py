@@ -9,7 +9,8 @@ EULER_GAMMA = 0.5772
 
 def sharpe(net, ann=365):
     net = np.asarray(net, dtype=float)
-    return net.mean() / net.std(ddof=1) * np.sqrt(ann)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return net.mean() / net.std(ddof=1) * np.sqrt(ann)
 
 
 def equity(net):

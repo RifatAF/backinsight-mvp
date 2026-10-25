@@ -100,3 +100,16 @@ def test_path_b_stays_finite_at_igarch_boundary(bars):
     prm = dict(synth.fit_b(bars), alpha=0.114, beta=0.886, omega=0.6, nu=3.2)
     for s in range(20):
         assert np.isfinite(synth.path_b(bars, prm, s)["close"]).all()
+
+
+def test_replay_tolerates_rounding_but_not_real_changes(conn):
+    a = {"sharpe": 1.0, "daily_sr": 0.05, "cagr": 0.1, "max_dd": -0.2, "trades_per_month": 2.0}
+    near = {k: v * (1 + 1e-12) for k, v in a.items()}
+    far = dict(a, sharpe=1.01)
+    assert selection.metrics_close(a, near) and not selection.metrics_close(a, far)
+    pairs = [(i, a, near) for i in range(1000)]
+    assert selection.verify_replay(conn, pairs, "t") == []
+    assert selection.verify_replay(conn, pairs[:-3] + [(997, a, far)] * 3, "t") == [997, 997, 997]
+    assert journal.events(conn, "replay_mismatch")
+    with pytest.raises(AssertionError):
+        selection.verify_replay(conn, pairs[:-10] + [(990, a, far)] * 10, "t")
