@@ -5,6 +5,7 @@
   python run_pipeline.py select      real-data search (once; later runs replay it from the journal
                                      without new trials), final candidate and checks -> out/selection.*
   python run_pipeline.py report      full report -> out/report.md and png figures
+  python run_pipeline.py final       step 6: holdout only if checks passed, verdict -> out/verdict.md
 """
 import json
 import sys
@@ -12,7 +13,7 @@ import time
 
 import pandas as pd
 
-from tradelab import config, costs, data, journal, parallel, report, selection, synth
+from tradelab import config, costs, data, holdout, journal, parallel, report, selection, synth
 
 
 def main(cmd="benchmarks"):
@@ -29,6 +30,8 @@ def main(cmd="benchmarks"):
         return calibrate(cfg, conn)
     if cmd == "select":
         return select(cfg, conn)
+    if cmd == "final":
+        return final(cfg, conn)
     if cmd == "report":
         md = report.build(cfg, conn, data.ROOT / "out")
         return print(md)
@@ -127,6 +130,50 @@ def selection_md(r, facts, cfg):
             + "\n## Проверки\n\n" + report.md_table(checks)
             + "\n## Стилизованные факты: реальные против синтетики B\n\n"
             + report.md_table(facts.round(3).reset_index().rename(columns={"index": "fact"})))
+
+
+DEVIATIONS = [
+    "Запрет 1 (только ccxt): фандинг взят из публичного архива Binance data.binance.vision, не через ccxt; "
+    "fapi.binance.com отвечает 451. Одобрено пользователем. Спот загружен через ccxt, но с зеркала data-api.binance.vision.",
+    "Структура проекта: добавлен модуль tradelab/parallel.py (пул joblib, сиды через SeedSequence); "
+    "в config.yaml число воркеров не пишется.",
+    "Запрет 5 (журнал только дописывается): до официального поиска пробный прогон по ошибке записал в journal.sqlite "
+    "синтетические пробы; файл возвращён к закоммиченному состоянию через git, ошибка исправлена, добавлен тест.",
+    "Веха 4: после официального поиска исправлена ошибка синтетики B (стартовая дисперсия GARCH); проверки повторены "
+    "командой replay без новых проб, вердикт не изменился. В журнале оба события: selection и selection_replay.",
+    "Калибровка останавливается и при нулевой мощности при phi = 0.20 (строже раздела 11.2).",
+    "Стресс считается пройденным, только если пройдены все пять частей (раздел 13 требует только долю путей).",
+    "MaxDD и сделки в месяц проверяются и на склеенном OOS, и на полной истории кандидата.",
+    "Хэш config фиксируется при первом запуске run_pipeline.py, раньше старта поиска.",
+    "Holdout не прочитан: пункт 5 конвейера не пройден, поэтому пункт 6 не выполнялся (так требует раздел 11.6).",
+]
+
+
+def final(cfg, conn):
+    sel_ev = journal.events(conn, "selection_replay") or journal.events(conn, "selection")
+    if not sel_ev:
+        raise SystemExit("отбор не запускался")
+    sel = sel_ev[-1]["payload"]
+    sym = cfg["data"]["symbols_main"][0]
+    out = holdout.final(cfg, conn, sel, data.load_raw(sym), data.load_funding(sym), sym)
+    th = cfg["thresholds"]
+    rows = [{"критерий раздела 13": k, "итог": "да" if v else "нет"} for k, v in sel["checks"].items()]
+    if out["holdout_read"]:
+        h = out["holdout"]
+        for b in ("bh", "vt"):
+            for m in ("sharpe", "calmar"):
+                rows.append({"критерий раздела 13": f"holdout_{m}_not_below_{b}",
+                             "итог": "да" if h["candidate"][m] >= h[b][m] else "нет"})
+    else:
+        rows.append({"критерий раздела 13": "holdout: Шарп и Кальмар не ниже bh и vt", "итог": "не проверялся"})
+    md = "\n".join([
+        "# tradelab: итог", "", f"**Вердикт: {out['verdict']}.**", "",
+        f"Holdout прочитан: {'да' if out['holdout_read'] else 'нет'}. " + out.get("reason", ""), "",
+        "## Допуск по разделу 13", "", report.md_table(pd.DataFrame(rows)),
+        "## Отклонения от CLAUDE.md", "", *[f"{i}. {d}" for i, d in enumerate(DEVIATIONS, 1)], "",
+        f"Подробности: report.md, selection.md, calibration.md, DECISIONS.md. Пороги: {th}.", ""])
+    (data.ROOT / "out" / "verdict.md").write_text(md)
+    print(md)
 
 
 if __name__ == "__main__":
