@@ -20,8 +20,10 @@ def load(allow=False, *, conn, path=DEFAULT_DIR):
         journal.log_event(conn, "holdout_violation", {"reason": "second read", "path": str(path)})
         raise HoldoutViolation("holdout already read once")
     journal.log_event(conn, "holdout_read", {"path": str(path)})
-    path = Path(path)
-    files = [path] if path.is_file() else sorted(path.glob("*.parquet"))
+    files = []
+    for p in (path if isinstance(path, (list, tuple)) else [path]):
+        p = Path(p)
+        files += [p] if p.is_file() else sorted(p.glob("*.parquet"))
     return {f.stem: pd.read_parquet(f) for f in files}
 
 

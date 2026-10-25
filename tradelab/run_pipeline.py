@@ -28,6 +28,14 @@ Stage 4, macro / calendar / statistics:
                                        yields, VIX, MOVE (Yahoo Finance) -> data/raw/macro.parquet
   python run_pipeline.py seasonality   weekday / month / hour effects with multiple-testing correction
                                        -> out/seasonality.md (descriptive, no trials)
+
+Stage 5, funding / crowd strategies on low-liquidity perpetuals (settings in perps.yaml):
+  python run_pipeline.py perps-data        Binance USDT-M archive, all symbols incl. delisted, 1h -> data/perps/
+  python run_pipeline.py perps-calibrate   signal-shift null: FDR of the whole procedure
+  python run_pipeline.py perps-search      all configs journaled, walk-forward, checks -> out/perps.md
+  python run_pipeline.py perps-holdout     one-time holdout run, only if the checks passed
+  python run_pipeline.py paper [CONFIG]    paper trading on live public data, fills on Hyperliquid's book
+  python run_pipeline.py paper-report      -> out/paper.md
 """
 import hashlib
 import json
@@ -69,6 +77,13 @@ def main(cmd="benchmarks", name=None, *_):
         return print(json.dumps(info["first_valid"], indent=1))
     if cmd == "seasonality":
         return print(season(cfg, conn))
+    if cmd.startswith("perps-"):
+        return perps_cmd(cmd, cfg, conn)
+    if cmd == "paper":
+        return paper(cfg, conn, name)
+    if cmd == "paper-report":
+        from tradelab import paperbot
+        return print(paperbot.report(out=data.ROOT / "out" / "paper.md"))
     if cmd.startswith("exp-"):
         return exp(cmd, name, cfg, conn)
     if cmd.startswith("gen-"):
@@ -420,6 +435,158 @@ def exp(cmd, name, cfg, conn):
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
 
+
+def perps_cmd(cmd, cfg, conn):
+    import os
+
+    import yaml
+
+    from tradelab import perpdata, perps, perpsearch
+
+    out = data.ROOT / "out"
+    raw = (data.ROOT / "perps.yaml").read_bytes()
+    pcfg, psha = yaml.safe_load(raw), hashlib.sha256(raw).hexdigest()
+    if cmd == "perps-data":
+        res = perpdata.download(cfg, pcfg, conn)
+        return print(json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in res.items()}, indent=1))
+    lock = journal.events(conn, "perps_config_sha256")
+    if not lock:
+        journal.log_event(conn, "perps_config_sha256", {"sha256": psha})
+    elif lock[0]["payload"]["sha256"] != psha:
+        raise SystemExit("perps.yaml изменён после первого запуска: верните файл или ведите новый журнал")
+    ds = journal.events(conn, "dataset_perps")
+    if not ds:
+        raise SystemExit("сначала: python run_pipeline.py perps-data")
+    t0 = time.time()
+    a = perps.prepare(perpdata.load_panels(), pcfg)
+    print(f"монет в выборке: {len(a['symbols'])}, часов: {len(a['index'])}, подготовка {time.time() - t0:.0f} с", flush=True)
+    jobs = int(os.environ.get("TRADELAB_PERPS_JOBS", min(parallel.n_jobs(), 6)))
+    if cmd == "perps-calibrate":
+        res = perpsearch.calibrate(a, cfg, pcfg, jobs)
+        res.to_parquet(out / "perps_calibration.parquet")
+        fdr = float(res["finding"].mean())
+        payload = {"fdr": fdr, "paths": len(res), "status": "stop_fdr" if fdr > cfg["thresholds"]["fdr_max"] else "ok",
+                   "best_null_sharpe_oos": float(res["sharpe_oos"].max()), "seconds": round(time.time() - t0, 1)}
+        journal.log_event(conn, "perps_calibration", payload)
+        return print(json.dumps(payload, ensure_ascii=False))
+    if cmd == "perps-search":
+        cal = journal.events(conn, "perps_calibration")
+        if not cal or cal[-1]["payload"]["status"] != "ok":
+            raise SystemExit("сначала perps-calibrate; поиск запрещён, пока FDR выше порога")
+        confs, net, trades = perpsearch.search(a, cfg, pcfg, conn, ds[-1]["payload"]["perps_sha256"], jobs)
+        r = perpsearch.check(a, cfg, pcfg, conn, confs, net, cal[-1]["payload"]["fdr"])
+        wf = r.pop("wf")
+        r["seconds"] = round(time.time() - t0, 1)
+        journal.log_event(conn, "perps_selection", r)
+        lb = perpsearch.leaderboard(confs, net, trades, cfg)
+        lb.to_csv(out / "perps_leaderboard.csv", index=False)
+        report.plot_equity({"procedure": wf["proc"], "bh": wf["bh"], "vt": wf["vt"]}, wf["days"], out / "perps_equity.png")
+        md = perps_md(r, lb, cfg)
+        (out / "perps.md").write_text(md)
+        return print(md)
+    if cmd == "perps-holdout":
+        sel = journal.events(conn, "perps_selection")
+        if not sel:
+            raise SystemExit("сначала perps-search")
+        r = sel[-1]["payload"]
+        if not r["passed"]:
+            raise SystemExit("проверки до holdout не пройдены (" + ", ".join(k for k, v in r["checks"].items() if not v)
+                             + "); holdout не читается")
+        res = perps_holdout(cfg, pcfg, conn, r["candidate"]["config"])
+        journal.log_event(conn, "perps_final_verdict", res)
+        md = (f"# Этап 5: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
+              + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
+                                               for k, x in res["holdout"].items()])))
+        (out / "perps_holdout.md").write_text(md)
+        return print(md)
+    raise SystemExit(f"неизвестная команда {cmd}")
+
+
+def perps_holdout(cfg, pcfg, conn, conf):
+    from tradelab import perpdata, perps, perpsearch, selection
+
+    info = data.dataset_info(conn)
+    start = pd.Timestamp(info["holdout_start"])
+    hold = holdout.load(allow=True, conn=conn, path=[perpdata.HOLD, holdout.DEFAULT_DIR])
+    frames = {}
+    for p in sorted(perpdata.RAW.glob("*.parquet")):
+        h = hold.get(p.stem)
+        frames[p.stem] = pd.concat([pd.read_parquet(p), h]) if h is not None else pd.read_parquet(p)
+    for stem, h in hold.items():
+        if stem.endswith("USDT") and stem not in frames:
+            frames[stem] = h
+    a = perps.prepare(perpdata.load_panels(frames=frames), pcfg)
+    di = perps.days(a)
+    net = perps.run_config(conf, a, pcfg)[0]
+    eth = pd.concat([data.load_raw("ETH/USDT"), hold["ETH_USDT_1d"]])
+    fund = data.load_funding("ETH/USDT")
+    if fund is not None and "ETH_USDT_funding" in hold:
+        fund = pd.concat([fund, hold["ETH_USDT_funding"]["funding_rate"]])
+    bench = perpsearch.eth_benchmarks(cfg, di, eth, fund)
+    m = di >= start
+    cur = {"candidate": selection._curve(net[m]), "bh": selection._curve(bench["bh"][m]),
+           "vt": selection._curve(bench["vt"][m])}
+    ok = all(cur["candidate"][k] >= cur[b][k] for b in ("bh", "vt") for k in ("sharpe", "calmar"))
+    return {"verdict": holdout.FOUND if ok else holdout.NOT_FOUND, "holdout_read": True, "candidate": conf,
+            "days": int(m.sum()), "holdout": cur}
+
+
+def perps_md(r, lb, cfg):
+    f = lambda x: f"{x:.3f}"
+    th = cfg["thresholds"]
+    rows = [{"curve": k, **{m: f(v) for m, v in r[k].items()}} for k in ("procedure", "bh", "vt")]
+    checks = pd.DataFrame([{"check": k, "ok": "да" if v else "нет"} for k, v in r["checks"].items()])
+    c = r["candidate"]
+    cand = "нет" if c is None else (
+        f"`{c['id']}`; полная история: Шарп {f(c['full_sample']['sharpe'])}, CAGR {c['full_sample']['cagr']:.1%}, "
+        f"MaxDD {c['full_sample']['max_dd']:.1%}; плато {f(c['plateau'])}; стресс "
+        f"{'пройден' if c['stress']['passed'] else 'не пройден'} (двойные издержки {f(c['stress']['double_costs_sharpe'])}, "
+        f"задержка 1ч {f(c['stress']['delay1h_sharpe'])}, 8ч {f(c['stress']['delay8h_sharpe'])}, "
+        f"соседи {c['stress']['neighbor_positive_share']:.0%})")
+    top = lb.head(15).copy()
+    for col in ("sharpe_is", "cagr_is", "max_dd_is", "active_days_per_month"):
+        top[col] = top[col].map(f)
+    best = lb.groupby("family")["sharpe_is"].max().map(f).reset_index()
+    return (f"# Этап 5: фандинг и толпа на низколиквидных фьючерсах\n\nВердикт до holdout: **{r['verdict']}**\n\n"
+            f"Монет в выборке (хоть раз прошли фильтр оборота): {r['coins']}. Конфигураций {r['n_configs']}, всего проб "
+            f"в журнале {r['n_trials_total']} (DSR учитывает все). Склеенный OOS {r['oos_days']} дней с {r['oos_start']}: "
+            f"DSR {f(r['dsr'])} (порог {th['dsr_min']}), PBO {f(r['pbo'])}, FDR {f(r['fdr'])}. ДИ разницы Шарпов: против bh "
+            f"[{f(r['ci_vs_bh']['lo'])}, {f(r['ci_vs_bh']['hi'])}], против vt [{f(r['ci_vs_vt']['lo'])}, "
+            f"{f(r['ci_vs_vt']['hi'])}]. Эталоны: удержание ETH и ETH с таргетом волатильности.\n\n"
+            f"Кандидат: {cand}.\n\n" + report.md_table(pd.DataFrame(rows))
+            + "\n![капитал](perps_equity.png)\n\n## Проверки\n\n" + report.md_table(checks)
+            + "\n## Лучший Шарп по семействам (вся история, in-sample)\n\n" + report.md_table(best)
+            + "\n## Топ-15 (in-sample, только для обзора)\n\n" + report.md_table(top)
+            + "\nПолная таблица: perps_leaderboard.csv.\n")
+
+
+def perps_grids():
+    from tradelab import perps
+    return perps.GRIDS
+
+
+def paper(cfg, conn, conf_json):
+    import yaml
+
+    from tradelab import paperbot
+
+    pcfg = yaml.safe_load((data.ROOT / "perps.yaml").read_text())
+    if conf_json:  # JSON, or the short form: carry n=9 thr=0.0005 k=10
+        conf = json.loads(conf_json) if conf_json.lstrip().startswith("{") else {
+            "family": sys.argv[2], **{k: yaml.safe_load(v) for k, v in (x.split("=", 1) for x in sys.argv[3:])}}
+        if conf["family"] not in perps_grids() or set(conf) - {"family"} != set(perps_grids()[conf["family"]]):
+            raise SystemExit(f"неизвестная стратегия {conf}; параметры семейств: {perps_grids()}")
+    else:
+        sel = journal.events(conn, "perps_selection")
+        if not sel or not sel[-1]["payload"]["candidate"]:
+            raise SystemExit("нет кандидата из perps-search; укажите стратегию JSON-строкой (пример в README)")
+        conf = sel[-1]["payload"]["candidate"]["config"]
+        if not sel[-1]["payload"]["passed"]:
+            print("внимание: кандидат не прошёл проверки до holdout; бумажная торговля идёт как наблюдение", flush=True)
+    bot = paperbot.Bot(pcfg, conf, pcfg["venue"]["capital_usd"])
+    print(f"бумажная торговля: {json.dumps(conf)}; лог paper.sqlite; остановка Ctrl+C", flush=True)
+    print(f"первый шаг (загрузка истории ~10 мин): капитал {bot.step():,.2f}", flush=True)
+    bot.run()
 
 def season(cfg, conn):
     info = data.dataset_info(conn)
