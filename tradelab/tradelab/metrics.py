@@ -72,7 +72,9 @@ def pbo(returns, n_blocks=16):
         k = (m @ cnt)[:, None]
         mu = (m @ s1) / k
         var = ((m @ s2) - k * mu**2) / (k - 1)
-        return mu / np.sqrt(var)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sr = mu / np.sqrt(var)
+        return np.where(np.isfinite(sr), sr, -np.inf)
 
     sr_is = half_sr(mask)
     sr_oos = half_sr(1.0 - mask)

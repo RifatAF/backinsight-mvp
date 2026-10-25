@@ -38,8 +38,8 @@ def _dumps(obj):
     return json.dumps(obj, sort_keys=True, default=str)
 
 
-def connect(path=DEFAULT_PATH):
-    conn = sqlite3.connect(str(path))
+def connect(path=None):
+    conn = sqlite3.connect(str(DEFAULT_PATH if path is None else path))
     conn.executescript(_SCHEMA + _GUARDS)
     return conn
 

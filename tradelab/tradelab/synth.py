@@ -91,3 +91,72 @@ def verdict(res, cfg):
     else:
         status = "ok"
     return {"fdr": fdr, "power": power, "status": status}
+
+
+# ---------- B: GARCH(1,1) Student-t + Poisson jumps (stress only) ----------
+
+def fit_b(bars):
+    from arch import arch_model
+
+    lr = np.log(bars["close"]).diff().dropna().to_numpy()
+    res = arch_model(lr * 100, mean="Constant", vol="GARCH", p=1, q=1, dist="t").fit(disp="off")
+    prm = res.params
+    dev = lr - lr.mean()
+    jumps = lr[np.abs(dev) > 4 * lr.std(ddof=1)]
+    return {"mu": prm["mu"], "omega": prm["omega"], "alpha": prm["alpha[1]"], "beta": prm["beta[1]"],
+            "nu": prm["nu"], "h0": float(np.var(lr * 100)), "lam": len(jumps) / len(lr), "jumps": jumps}
+
+
+def path_b(bars, prm, seed):
+    """Log returns from the fitted GARCH plus Bernoulli(lam) jumps resampled from real >4 sigma days.
+    Bar widths and quote volume are resampled from real bars; bar 0 and dates are real."""
+    rng = np.random.default_rng(seed)
+    n = len(bars) - 1
+    nu = prm["nu"]
+    z = rng.standard_t(nu, n) * np.sqrt((nu - 2) / nu)
+    eps = np.empty(n)
+    h = prm["h0"]  # sample variance: alpha + beta can sit at 1 for ETH, so omega / (1 - a - b) is unusable
+    for t in range(n):
+        eps[t] = np.sqrt(h) * z[t]
+        h = prm["omega"] + prm["alpha"] * eps[t] ** 2 + prm["beta"] * h
+    r = (prm["mu"] + eps) / 100
+    jump = rng.random(n) < prm["lam"]
+    r[jump] += rng.choice(prm["jumps"], jump.sum())
+    o, h_, l, c = (bars[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close"))
+    k = rng.integers(1, len(bars), n)
+    up = h_[k] / np.maximum(o[k], c[k]) - 1.0
+    dn = 1.0 - l[k] / np.minimum(o[k], c[k])
+    close = c[0] * np.exp(np.concatenate([[0.0], np.cumsum(r)]))
+    open_ = np.concatenate([[o[0]], close[:-1]])
+    return pd.DataFrame({"open": open_,
+                         "high": np.concatenate([[h_[0]], np.maximum(open_[1:], close[1:]) * (1 + up)]),
+                         "low": np.concatenate([[l[0]], np.minimum(open_[1:], close[1:]) * (1 - dn)]),
+                         "close": close,
+                         "quote_volume": np.concatenate([[bars["quote_volume"].iloc[0]],
+                                                         bars["quote_volume"].to_numpy()[k]])},
+                        index=bars.index)
+
+
+def _acf(x, lag):
+    return float(np.corrcoef(x[:-lag], x[lag:])[0, 1])
+
+
+def stylized_facts(lr):
+    """Kurtosis (non-excess), Hill index of the top 5% |r|, ACF of |r| and r, leverage corr(r[t], |r[t+1]|)."""
+    from scipy import stats
+
+    lr = np.asarray(lr, dtype=float)
+    a = np.sort(np.abs(lr))[::-1]
+    k = int(0.05 * len(a))
+    return {"kurtosis": float(stats.kurtosis(lr, fisher=False)),
+            "hill_top5": float(1.0 / np.mean(np.log(a[:k] / a[k]))),
+            "acf_abs_1": _acf(np.abs(lr), 1), "acf_abs_10": _acf(np.abs(lr), 10),
+            "acf_abs_50": _acf(np.abs(lr), 50), "acf_r_1": _acf(lr, 1),
+            "corr_r_absnext": float(np.corrcoef(lr[:-1], np.abs(lr[1:]))[0, 1])}
+
+
+def facts_table(bars, paths):
+    real = stylized_facts(np.log(bars["close"]).diff().dropna())
+    syn = pd.DataFrame([stylized_facts(np.log(p["close"]).diff().dropna()) for p in paths])
+    return pd.DataFrame({"real": real, "synth_B_mean": syn.mean(), "synth_B_p05": syn.quantile(0.05),
+                         "synth_B_p95": syn.quantile(0.95)})

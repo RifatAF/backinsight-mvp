@@ -41,3 +41,9 @@ def test_config_lock(conn, tmp_path):
     p.write_text(p.read_text().replace("seed: 42", "seed: 43"))
     with pytest.raises(config.ConfigChanged):
         config.lock(conn, p)
+
+
+def test_connect_reads_default_path_at_call_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(journal, "DEFAULT_PATH", tmp_path / "j.sqlite")
+    journal.connect().close()
+    assert (tmp_path / "j.sqlite").exists()
