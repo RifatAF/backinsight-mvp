@@ -1,0 +1,26 @@
+# Stage 6: three-layer top-down strategy (regime 1M/1W, setup 1D/4H, trigger 1H/15m/5m) on liquid
+# perpetuals. Locked by hash in the journal at the first mtf-calibrate / mtf-search run.
+seed: 31
+coins: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, BNBUSDT, ADAUSDT, LINKUSDT, AVAXUSDT, LTCUSDT, DOTUSDT, TRXUSDT]
+data:
+  klines_start: 2020-01-01   # 5m candles, warm-up for the monthly and weekly regime
+  start: 2021-12-01          # 5m open interest / long-short / taker metrics exist from here: returns counted from here
+venue:                       # Hyperliquid base tier; liquid coins, so a smaller half spread than stage 5
+  name: hyperliquid
+  taker_fee: 0.00045
+  spot_taker_fee: 0.0010
+  slippage_base: 0.0002
+  slippage_size_coef: 0.1
+  capital_usd: 10000
+rules:
+  vol_target: 0.20           # each coin sized to 20% annual vol, 1/N of capital, at most 2x
+  max_leverage: 2.0
+  stop_atr: 2.0              # stop at 2 x ATR(14, 1h) from entry
+  time_stop_days: 3          # setups that are not pure trend close after 3 days
+  liq_leverage: [10, 25, 50]
+  liq_weights: [0.5, 0.3, 0.2]
+  liq_band: 0.05             # liquidation clusters counted within +-5% of price
+search:
+  n_null_paths: 20
+  min_shift_days: 30
+  n_boot_paths: 1000

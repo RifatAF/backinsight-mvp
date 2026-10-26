@@ -1,0 +1,12 @@
+# Strategy generator (stage 2). Locked by hash in the journal at the first gen-* run.
+seed: 7
+n_strategies: 2000          # random distinct specs; every one is a journal trial
+combo_share: 0.30           # share of specs with a second confirming signal (AND)
+trend_filter_share: 0.30    # share with close > SMA(100 or 200) filter
+screen:                     # "does not lose" filter, applied on each training window only
+  min_sharpe: 0.0
+  min_cagr: 0.0
+  max_drawdown: 0.60
+  min_trades: 6
+plateau_top_k: 10           # per fold: check plateau for the K best screened specs
+n_null_paths: 40            # generator calibration on bootstrap paths A (FDR of the whole procedure)

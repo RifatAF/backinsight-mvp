@@ -1,0 +1,26 @@
+# Stage 4, one pre-registered hypothesis (no search): weekly MACD 12/26/9 on ETH, long only.
+# Long while the MACD line of closed weekly candles is above its signal line, otherwise cash.
+# Weekly candles are built from daily bars (Monday to Sunday UTC); a week's signal is known only
+# after it closes and is executed at the next daily open. Full position, no volatility target.
+universe: ETH/USDT
+timeframe: 1d
+direction: long
+families: price
+htf: 1w
+htf_share: 0.0
+specs:
+  - family: hold
+    params: {}
+    htf: {family: macd, params: {fast: 12, slow: 26, signal: 9}}
+seed: 11
+n_strategies: 1
+combo_share: 0.0
+trend_filter_share: 0.0
+screen:
+  min_sharpe: 0.0
+  min_cagr: 0.0
+  max_drawdown: 0.60
+  min_trades: 6
+plateau_top_k: 10
+n_null_paths: 30
+n_synth_b: 30

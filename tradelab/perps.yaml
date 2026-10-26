@@ -1,0 +1,23 @@
+# Stage 5: crowd / funding strategies on low-liquidity perpetuals. Locked by hash in the journal
+# at the first perps-calibrate / perps-search run; change only before that, otherwise make a new file.
+seed: 21
+data:
+  start: 2020-01-01          # Binance USDT-M archive, every symbol including delisted ones
+  bar: 1h
+universe:                    # point in time: decided every hour from data known by then
+  min_daily_volume_usd: 2000000
+  max_daily_volume_usd: 100000000
+  volume_window_days: 30     # trailing median of daily quote volume on Binance futures
+  min_history_days: 60       # coin listed at least this long
+  exclude: [BTCUSDT, ETHUSDT]
+venue:                       # costs of the venue we would trade on (base tier, check before trading)
+  name: hyperliquid
+  taker_fee: 0.00045
+  spot_taker_fee: 0.0010     # spot leg of the delta-neutral carry
+  slippage_base: 0.0010      # half spread of a thin book, per side
+  slippage_size_coef: 0.1    # extra slippage = coef * notional traded / hourly quote volume
+  capital_usd: 10000
+search:
+  n_null_paths: 30           # signal-shift null for the FDR
+  min_shift_days: 30
+  n_boot_paths: 1000

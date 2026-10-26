@@ -1,0 +1,48 @@
+seed: 42
+annualization: 365
+data:
+  exchange: binance
+  symbols_main: [ETH/USDT, BTC/USDT]
+  basket_size: 15            # самые ликвидные USDT пары со спота с историей >= 3 лет
+  timeframe_main: 1d
+  timeframe_extra: 6h
+  holdout_days: 365
+costs:
+  fee_per_side: 0.0010
+  slippage_base: 0.0005
+  slippage_size_coef: 0.1    # добавка = coef * (notional_traded / quote_volume_bar)
+  notional_usd: 10000
+  funding_fallback_per_8h: 0.0001
+  rebalance_band: 0.10       # позиция меняется, только если |цель - текущая| > band
+risk:
+  max_leverage: 2.0
+  hard_leverage_cap: 4.0
+walkforward:
+  min_train_days: 730
+  test_days: 91
+  embargo_days: 250          # = самое длинное окно в сетке
+synth:
+  n_null_paths: 200
+  bootstrap_mean_block: 20
+  ar_phi_grid: [0.05, 0.10, 0.20]
+stress:
+  n_boot_paths: 1000
+thresholds:                  # все «предложения», меняются только до старта поиска
+  dsr_min: 0.95
+  pbo_max: 0.5
+  fdr_max: 0.05
+  plateau_min_ratio: 0.70
+  basket_profitable_share: 0.60
+  stress_positive_share: 0.70
+  max_drawdown: 0.25
+  max_trades_per_month: 30
+  monthly_return_flag: 0.20
+  ci_level: 0.90
+benchmarks:
+  voltarget_annual: 0.20
+  vol_ewma_span: 30
+regimes:                     # для разбивки отчёта
+  bear_2018: [2018-01-01, 2018-12-31]
+  bull_2020_21: [2020-03-15, 2021-11-10]
+  bear_2022: [2021-11-11, 2022-12-31]
+  recovery: [2023-01-01, holdout_start]

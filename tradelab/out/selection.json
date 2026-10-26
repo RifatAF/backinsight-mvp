@@ -1,0 +1,157 @@
+{
+ "n_trials": 300,
+ "oos_days": 2010,
+ "oos_start": "2020-04-23",
+ "procedure": {
+  "sharpe": 1.0345160916603355,
+  "calmar": 0.6188798568314064,
+  "max_dd": -0.27829685381849323,
+  "cagr": 0.17223231704781994
+ },
+ "bh": {
+  "sharpe": 1.0944971150877856,
+  "calmar": 0.9329678914823039,
+  "max_dd": -0.7930274252388736,
+  "cagr": 0.7398691248127522
+ },
+ "vt": {
+  "sharpe": 1.0715219729752812,
+  "calmar": 0.7271777273420021,
+  "max_dd": -0.3144990870836424,
+  "cagr": 0.2286967313966175
+ },
+ "ci_vs_bh": {
+  "diff": -0.05998102342745004,
+  "lo": -0.6408322668034623,
+  "hi": 0.4296607719185922
+ },
+ "ci_vs_vt": {
+  "diff": -0.03700588131494564,
+  "lo": -0.5627914076038376,
+  "hi": 0.4193715112496497
+ },
+ "dsr": 0.8964251079933752,
+ "pbo": 0.8376845376845377,
+ "fdr": 0.0,
+ "fold_choices": [
+  "tsmom_60|v=0.2|p=None|q=None",
+  "tsmom_60|v=0.2|p=None|q=None",
+  "tsmom_60|v=0.2|p=None|q=None",
+  "tsmom_20|v=0.15|p=None|q=None",
+  "tsmom_20|v=0.15|p=None|q=None",
+  "tsmom_20|v=0.15|p=None|q=None",
+  "tsmom_20|v=0.15|p=None|q=None",
+  "tsmom_20|v=0.15|p=None|q=None",
+  "tsmom_60|v=0.2|p=0.8|q=0.9",
+  "tsmom_60|v=0.2|p=0.8|q=0.9",
+  "don_no160|v=0.2|p=None|q=None",
+  "don_no160|v=0.2|p=None|q=None",
+  "don_no160|v=0.25|p=None|q=None",
+  "don_no160|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "ma_10_50|v=0.25|p=None|q=None",
+  "tsmom_60|v=0.2|p=0.8|q=0.9",
+  "tsmom_60|v=0.2|p=0.8|q=0.9"
+ ],
+ "procedure_trades_per_month": 1.8915837479270317,
+ "monthly_flags": [],
+ "candidate": {
+  "selected": "tsmom_60|v=0.2|p=0.8|q=0.9",
+  "after_ablation": "tsmom_60|v=None|p=0.8|q=0.9",
+  "ablation": [
+   {
+    "layer": "v",
+    "with": 1.290719695170779,
+    "without": 1.364266723761715,
+    "kept": false
+   },
+   {
+    "layer": "p",
+    "with": 1.364266723761715,
+    "without": 1.1488286388154276,
+    "kept": true
+   },
+   {
+    "layer": "q",
+    "with": 1.364266723761715,
+    "without": 1.2549349762432656,
+    "kept": true
+   }
+  ],
+  "full_sample": {
+   "sharpe": 1.1236607224570172,
+   "calmar": 0.7880456967831467,
+   "max_dd": -0.7323331223222667,
+   "cagr": 0.5771119656578281
+  },
+  "trades_per_month": 1.383500557413601,
+  "plateau": 0.662119330156423,
+  "transfer": {
+   "BTC/USDT": 12.567708324752887,
+   "SOL/USDT": 50.276416180484766,
+   "XRP/USDT": 0.46887284341563173,
+   "DOGE/USDT": -0.7223244266906044,
+   "BNB/USDT": 5.4171862634001675,
+   "ADA/USDT": 0.3979483455093171,
+   "TRX/USDT": 4.536706667059649,
+   "LINK/USDT": 8.930381026755866,
+   "AVAX/USDT": 61.714191673632875,
+   "LTC/USDT": 0.152555209801996,
+   "HBAR/USDT": 2.4916274917409216,
+   "XLM/USDT": -0.9142548080485877,
+   "UNI/USDT": 3.3821828663710782,
+   "AAVE/USDT": 0.5162346016729162,
+   "NEAR/USDT": 5.649536149315212
+  },
+  "transfer_share": 0.8666666666666667,
+  "stress": {
+   "sharpe": 1.1236607224570172,
+   "boot_positive_share": 0.999,
+   "double_costs_sharpe": 1.0757766834368518,
+   "delay2_sharpe": 0.8608407609666388,
+   "neighbor_sharpes": [
+    0.4642894455692399,
+    0.7556877508555765,
+    1.0120152582041901
+   ],
+   "neighbor_positive_share": 1.0,
+   "synth_b_positive_share": 0.82,
+   "garch_params": {
+    "mu": 0.09582450989237166,
+    "omega": 0.5963574688137909,
+    "alpha": 0.11420814481482192,
+    "beta": 0.8857918551851782,
+    "nu": 3.227431857893254,
+    "h0": 22.037549423743062,
+    "lam": 0.0046822742474916385
+   },
+   "passed": true
+  }
+ },
+ "checks": {
+  "oos_sharpe_above_bh_vt": false,
+  "oos_calmar_above_bh_vt": false,
+  "ci_low_above_0_vs_bh": false,
+  "ci_low_above_0_vs_vt": false,
+  "dsr": false,
+  "pbo": false,
+  "fdr": true,
+  "oos_max_dd": false,
+  "oos_trades_per_month": true,
+  "candidate_exists": true,
+  "plateau": false,
+  "transfer": true,
+  "stress": true,
+  "candidate_max_dd": false,
+  "candidate_trades_per_month": true
+ },
+ "passed": false,
+ "verdict": "не найдена",
+ "seconds": 8.7,
+ "replay": true
+}
