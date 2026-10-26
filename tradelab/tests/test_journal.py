@@ -38,7 +38,7 @@ def test_config_lock(conn, tmp_path):
     p.write_bytes(config.DEFAULT_PATH.read_bytes())
     h = config.lock(conn, p)
     assert config.lock(conn, p) == h
-    p.write_text(p.read_text().replace("seed: 42", "seed: 43"))
+    p.write_text(p.read_text(encoding="utf-8").replace("seed: 42", "seed: 43"), encoding="utf-8")
     with pytest.raises(config.ConfigChanged):
         config.lock(conn, p)
 

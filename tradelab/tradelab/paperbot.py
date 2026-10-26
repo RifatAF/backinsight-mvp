@@ -328,5 +328,5 @@ def report(db=PAPER_DB, out=None):
           f"{len(journal.events(conn, 'error'))}.\n\nМеньше 3 месяцев бумажной торговли статистически почти ничего не "
           "доказывают; сравнивайте с бэктестом этой же стратегии в out/perps.md.\n")
     if out:
-        Path(out).write_text(md)
+        Path(out).write_text(md, encoding="utf-8")
     return md

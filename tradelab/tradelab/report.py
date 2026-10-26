@@ -265,5 +265,5 @@ def build(cfg, conn, out_dir):
         idx = lines.index("## Стилизованные факты: реальные против синтетики B")
         lines[idx:idx] = ["## Абляция", "", md_table(ab), "## Переносимость на корзину", "", md_table(tr)]
     md = "\n".join(lines)
-    (out_dir / "report.md").write_text(md)
+    (out_dir / "report.md").write_text(md, encoding="utf-8")
     return md

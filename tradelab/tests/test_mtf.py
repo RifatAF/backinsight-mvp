@@ -7,7 +7,7 @@ import yaml
 
 from tradelab import data, mtf
 
-MCFG = yaml.safe_load((data.ROOT / "mtf.yaml").read_text())
+MCFG = yaml.safe_load((data.ROOT / "mtf.yaml").read_text(encoding="utf-8"))
 
 
 def _frames(days=420, coins=("AAAUSDT", "BBBUSDT"), seed=0, start="2021-01-01"):

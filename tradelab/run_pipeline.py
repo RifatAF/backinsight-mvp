@@ -113,7 +113,7 @@ def main(cmd="benchmarks", name=None, *_):
     bars = data.load_raw(sym)
     table = report.benchmark_table(bars, cfg, start, data.load_funding(sym))
     md = report.benchmarks_md(table, sym, bars.index[0], bars.index[-1])
-    (data.ROOT / "out" / "benchmarks.md").write_text(md)
+    (data.ROOT / "out" / "benchmarks.md").write_text(md, encoding="utf-8")
     print(md)
 
 
@@ -146,7 +146,7 @@ def calibrate(cfg, conn):
           f"мощность: {', '.join(f'phi={k}: {p:.3f}' for k, p in v['power'].items())}.\n"
           f"Путей: {len(res)}, время {secs:.0f} с на {parallel.n_jobs()} воркерах.\n\n"
           + report.md_table(table.round(3).reset_index()) + "\n")
-    (out / "calibration.md").write_text(md)
+    (out / "calibration.md").write_text(md, encoding="utf-8")
     print(md)
     if v["status"] == "stop_fdr":
         print("СТОП: FDR выше порога. Нужно решение пользователя об ужесточении (например dsr_min или plateau).")
@@ -176,9 +176,9 @@ def select(cfg, conn):
     journal.log_event(conn, "selection_replay" if replayed else "selection", r)
     save_oos("grid", bars.index[found["wf"]["oos"]], found["wf"]["net_oos"])
     out = data.ROOT / "out"
-    (out / "selection.json").write_text(json.dumps(r, indent=1, ensure_ascii=False, default=float))
+    (out / "selection.json").write_text(json.dumps(r, indent=1, ensure_ascii=False, default=float), encoding="utf-8")
     md = selection_md(r, facts, cfg)
-    (out / "selection.md").write_text(md)
+    (out / "selection.md").write_text(md, encoding="utf-8")
     print(md)
 
 
@@ -246,7 +246,7 @@ def final(cfg, conn):
         "## Допуск по разделу 13", "", report.md_table(pd.DataFrame(rows)),
         "## Отклонения от CLAUDE.md", "", *[f"{i}. {d}" for i, d in enumerate(DEVIATIONS, 1)], "",
         f"Подробности: report.md, selection.md, calibration.md, DECISIONS.md. Пороги: {th}.", ""])
-    (data.ROOT / "out" / "verdict.md").write_text(md)
+    (data.ROOT / "out" / "verdict.md").write_text(md, encoding="utf-8")
     print(md)
 
 
@@ -277,7 +277,7 @@ def gen(cmd, cfg, conn):
         md = (f"# Калибровка генератора\n\nСтатус: **{status}**. На {payload['paths']} нулевых путях A генератор "
               f"из {len(specs)} стратегий «находит» стратегию в {fdr:.1%} случаев (порог {th['fdr_max']:.0%}). "
               f"Мощность на путях C (AR phi=0.20): {power:.1%}. Время {payload['seconds']:.0f} с на {parallel.n_jobs()} воркерах.\n")
-        (out / "gen_calibration.md").write_text(md)
+        (out / "gen_calibration.md").write_text(md, encoding="utf-8")
         return print(md)
     cal = journal.events(conn, "generator_calibration")
     if cmd == "gen-search":
@@ -302,7 +302,7 @@ def gen(cmd, cfg, conn):
             nets[name] = backtest_net(bars, cfg, fday, fn)[oos]
         report.plot_equity(nets, bars.index[oos], out / "gen_equity.png")
         md = gen_md(r, lb, gcfg, cfg)
-        (out / "generator.md").write_text(md)
+        (out / "generator.md").write_text(md, encoding="utf-8")
         return print(md)
     if cmd == "gen-holdout":
         ev = journal.events(conn, "generator_selection_replay") or journal.events(conn, "generator_selection")
@@ -323,7 +323,7 @@ def gen(cmd, cfg, conn):
         md += (f"\nНе пройдены проверки: {res['reason']}.\n" if not res["holdout_read"] else
                "\n" + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
                                                      for k, x in res["holdout"].items()])))
-        (out / "gen_verdict.md").write_text(md)
+        (out / "gen_verdict.md").write_text(md, encoding="utf-8")
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
 
@@ -442,7 +442,7 @@ def exp(cmd, name, cfg, conn):
             .replace("gen_equity.png", f"exp_{name}_equity.png").replace("generator_leaderboard.csv", f"exp_{name}_leaderboard.csv")
         md = md.replace("Вердикт до holdout", f"Монеты: {', '.join(r['coins'])}; свечи {r['timeframe']}; "
                         f"направление {r['direction']}. Эталоны bh и vt считаются по тому же портфелю.\n\nВердикт до holdout", 1)
-        (out / f"exp_{name}.md").write_text(md)
+        (out / f"exp_{name}.md").write_text(md, encoding="utf-8")
         print(md)
         return print(exp_summary(conn, out))
     if cmd == "exp-holdout":
@@ -458,7 +458,7 @@ def exp(cmd, name, cfg, conn):
         md = (f"# {name}: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
               + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
                                                for k, x in res["holdout"].items()])))
-        (out / f"exp_{name}_holdout.md").write_text(md)
+        (out / f"exp_{name}_holdout.md").write_text(md, encoding="utf-8")
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
 
@@ -510,7 +510,7 @@ def perps_cmd(cmd, cfg, conn):
         lb.to_csv(out / "perps_leaderboard.csv", index=False)
         report.plot_equity({"procedure": wf["proc"], "bh": wf["bh"], "vt": wf["vt"]}, wf["days"], out / "perps_equity.png")
         md = perps_md(r, lb, cfg)
-        (out / "perps.md").write_text(md)
+        (out / "perps.md").write_text(md, encoding="utf-8")
         return print(md)
     if cmd == "perps-holdout":
         sel = journal.events(conn, "perps_selection")
@@ -525,7 +525,7 @@ def perps_cmd(cmd, cfg, conn):
         md = (f"# Этап 5: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
               + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
                                                for k, x in res["holdout"].items()])))
-        (out / "perps_holdout.md").write_text(md)
+        (out / "perps_holdout.md").write_text(md, encoding="utf-8")
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
 
@@ -598,7 +598,7 @@ def paper(cfg, conn, conf_json):
 
     from tradelab import paperbot
 
-    pcfg = yaml.safe_load((data.ROOT / "perps.yaml").read_text())
+    pcfg = yaml.safe_load((data.ROOT / "perps.yaml").read_text(encoding="utf-8"))
     if conf_json:  # JSON, or the short form: carry n=9 thr=0.0005 k=10
         conf = json.loads(conf_json) if conf_json.lstrip().startswith("{") else {
             "family": sys.argv[2], **{k: yaml.safe_load(v) for k, v in (x.split("=", 1) for x in sys.argv[3:])}}
@@ -631,7 +631,7 @@ def multi_cmd(cfg, conn):
     report.plot_equity({"procedure": curves["rule_B"].to_numpy(), "bh": curves["bh"].to_numpy(), "vt": curves["vt"].to_numpy()},
                        curves.index, out / "multi_equity.png")
     md = multi_md(r)
-    (out / "multi.md").write_text(md)
+    (out / "multi.md").write_text(md, encoding="utf-8")
     return print(md)
 
 
@@ -701,7 +701,7 @@ def mtf_cmd(cmd, cfg, conn):
         lb.to_csv(out / "mtf_leaderboard.csv", index=False)
         report.plot_equity({"procedure": wf["proc"], "bh": wf["bh"], "vt": wf["vt"]}, wf["days"], out / "mtf_equity.png")
         md = mtf_md(r, lb, cfg)
-        (out / "mtf.md").write_text(md)
+        (out / "mtf.md").write_text(md, encoding="utf-8")
         return print(md)
     if cmd == "mtf-holdout":
         sel = journal.events(conn, "mtf_selection")
@@ -716,7 +716,7 @@ def mtf_cmd(cmd, cfg, conn):
         md = (f"# Этап 6: holdout\n\n**Вердикт: {res['verdict']}.**\n\n"
               + report.md_table(pd.DataFrame([{"curve": k, **{m: f'{v:.3f}' for m, v in x.items()}}
                                                for k, x in res["holdout"].items()])))
-        (out / "mtf_holdout.md").write_text(md)
+        (out / "mtf_holdout.md").write_text(md, encoding="utf-8")
         return print(md)
     raise SystemExit(f"неизвестная команда {cmd}")
 
@@ -784,7 +784,7 @@ def season(cfg, conn):
     md = seasonality.report(df, c["fee_per_side"] + c["slippage_base"])
     journal.log_event(conn, "research_seasonality", {"groups": len(df), "significant_q05": int((df["q"] < 0.05).sum()),
                                                      "holdout_start": info["holdout_start"]})
-    (data.ROOT / "out" / "seasonality.md").write_text(md)
+    (data.ROOT / "out" / "seasonality.md").write_text(md, encoding="utf-8")
     return md
 
 
@@ -802,7 +802,7 @@ def exp_summary(conn, out):
     df = pd.DataFrame(rows).drop_duplicates("эксперимент", keep="last") if rows else pd.DataFrame()
     md = "# Эксперименты этапа 3\n\n" + (report.md_table(df) if len(df) else "пока нет\n")
     md += f"\nВсего проб в журнале: {len(journal.trials(conn))}. DSR каждого эксперимента учитывает их все.\n"
-    (out / "experiments.md").write_text(md)
+    (out / "experiments.md").write_text(md, encoding="utf-8")
     return md
 
 

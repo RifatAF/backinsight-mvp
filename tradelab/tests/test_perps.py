@@ -7,7 +7,7 @@ import yaml
 
 from tradelab import data, journal, paperbot, perpdata, perps
 
-PCFG = yaml.safe_load((data.ROOT / "perps.yaml").read_text())
+PCFG = yaml.safe_load((data.ROOT / "perps.yaml").read_text(encoding="utf-8"))
 
 
 def _frames(n_coins=12, days=150, seed=0, start="2022-01-01"):
