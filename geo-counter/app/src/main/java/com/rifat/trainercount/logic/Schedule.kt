@@ -46,8 +46,12 @@ private fun timedVisits(d: AppData) = d.visits.filter { it.kind == VisitKind.AUT
 
 /**
  * Пересобирает выученные занятия по визитам последних недель. Ручные занятия и убранные руками не трогает.
- * Время прихода округляется до получаса. Если клиент приходит в это время только по чётным или только по
- * нечётным неделям, занятие считается «через неделю».
+ *
+ * Сначала решается день: клиент занимается в этот день недели, если был в нём хотя бы в половине недель,
+ * когда вообще занимался. Если был только по чётным или только по нечётным неделям, а в другие недели
+ * занимался в другие дни, занятие «через неделю». Потом время: самое частое из трёх последних приходов
+ * (при равенстве последнее), округлённое до получаса. У клиента одно занятие в день.
+ * Визиты в перенесённое или разовое время ничему не учат.
  */
 fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): AppData {
     val today = dayOf(now, zone)
@@ -57,55 +61,62 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
     val learned = mutableListOf<Rule>()
 
     for (c in d.clients.filter { !it.archived }) {
-        // Визиты по переносу или разовые не учат постоянное расписание.
         val planned = d.changes.filter { it.clientId == c.id && (it.kind == ChangeKind.MOVE || it.kind == ChangeKind.EXTRA) }
-        fun byChange(date: LocalDate, min: Int) = planned.any { ch ->
-            val day = if (ch.kind == ChangeKind.MOVE) ch.toDate else ch.date
-            val at = if (ch.kind == ChangeKind.MOVE) ch.toMin else ch.min
-            day == date.toEpochDay() && at != null && kotlin.math.abs(at - min) <= MATCH_MIN
+        fun byChange(date: LocalDate) = planned.any { ch -> (if (ch.kind == ChangeKind.MOVE) ch.toDate else ch.date) == date.toEpochDay() }
+        val visits = d.visits.filter { it.clientId == c.id && it.kind != VisitKind.BURNED }
+            .filter { dayOf(it.start, zone) in fromDay..today }
+        if (visits.isEmpty()) continue
+        val firstDay = visits.minOf { dayOf(it.start, zone) }
+        // Недели, когда клиент занимался: по ним видно, в какие дни занятий не было.
+        val active = visits.map { weekIndex(dayOf(it.start, zone)) }.toSet()
+        // День → (неделя → время прихода). Ручной визит даёт только факт занятия: его время вписано позже.
+        val hits = mutableMapOf<Int, MutableMap<Long, Int?>>()
+        for (v in visits.sortedBy { it.start }) {
+            val date = dayOf(v.start, zone)
+            if (byChange(date)) continue
+            val byWeek = hits.getOrPut(date.dayOfWeek.value) { mutableMapOf() }
+            val w = weekIndex(date)
+            val min = if (v.kind == VisitKind.AUTO) slotOf(v.start, zone).second else null
+            if (byWeek[w] == null) byWeek[w] = min
         }
-        val all = d.visits.filter { it.clientId == c.id && it.kind != VisitKind.BURNED }
-        val firstDay = all.minOfOrNull { dayOf(it.start, zone) } ?: continue
-        // Недели, когда клиент вообще занимался: по ним видно, где занятия не было.
-        val active = all.map { weekIndex(dayOf(it.start, zone)) }.toSet()
-        // (день недели, время) → недели, когда было занятие
-        val seen = mutableMapOf<Pair<Int, Int>, MutableSet<Long>>()
-        for (v in timedVisits(d).filter { it.clientId == c.id }) {
-            val (date, min) = slotOf(v.start, zone)
-            if (date < fromDay || date > today || byChange(date, min)) continue
-            seen.getOrPut(date.dayOfWeek.value to min) { mutableSetOf() } += weekIndex(date)
+        fun par(w: Long) = Math.floorMod(w, 2).toInt()
+        fun timeOf(byWeek: Map<Long, Int?>, day: Int): Int? {
+            val last = byWeek.entries.filter { it.value != null }.sortedByDescending { it.key }.take(3)
+            if (last.isEmpty()) return d.rules.firstOrNull { it.clientId == c.id && it.day == day && !it.manual }?.min
+            val counts = last.groupingBy { it.value!! }.eachCount()
+            val top = counts.values.max()
+            return last.first { counts[it.value!!] == top }.value
         }
-        // Соседние получасы в один день недели склеиваем: приход то в 15:50, то в 16:20.
-        val keys = seen.keys.sortedWith(compareBy({ it.first }, { -seen.getValue(it).size }, { it.second }))
-        val used = mutableSetOf<Pair<Int, Int>>()
-        data class Cand(val day: Int, val min: Int, val weeks: java.util.SortedSet<Long>, val parity: Int?)
-        val cands = mutableListOf<Cand>()
-        for (k in keys) {
-            if (k in used) continue
-            val group = keys.filter { it !in used && it.first == k.first && kotlin.math.abs(it.second - k.second) <= 30 }
-            used += group
-            val weeks = group.flatMap { seen.getValue(it) }.toSortedSet()
-            if (curWeek - weeks.last() > STALE_WEEKS) continue
-            // Недели, где этот день уже прошёл и клиент занимался: было ли занятие в это время.
+        for ((day, byWeek) in hits) {
+            if (curWeek - byWeek.keys.max() > STALE_WEEKS) continue
             val observed = active.filter { w ->
-                val date = LocalDate.ofEpochDay(w * 7 - 3 + (k.first - 1))
-                date in firstDay..today && date >= fromDay
-            }.toSet() + weeks
-            val pars = weeks.map { Math.floorMod(it, 2).toInt() }.toSet()
-            val parity = pars.singleOrNull()?.takeIf { p -> observed.any { Math.floorMod(it, 2).toInt() != p } }
-            // Было меньше чем в половине подходящих недель: перенос или случайность, не расписание.
-            val base = observed.count { parity == null || Math.floorMod(it, 2).toInt() == parity }
-            if (weeks.size * 2 < base) continue
-            cands += Cand(k.first, k.second, weeks, parity)
+                val date = LocalDate.ofEpochDay(w * 7 - 3 + (day - 1))
+                date >= firstDay && date < today
+            }.toSet() + byWeek.keys
+            fun often(weeks: Collection<Long>, base: Collection<Long>) = weeks.size * 2 >= base.size
+            val pars = byWeek.keys.map(::par).toSet()
+            val out = mutableListOf<Pair<Int?, Int?>>() // чётность → время
+            if (pars.size == 2) {
+                val split = pars.associateWith { p -> byWeek.filterKeys { par(it) == p } }
+                val t = split.mapValues { (_, m) -> timeOf(m, day) }
+                val apart = t.values.filterNotNull().let { it.size == 2 && kotlin.math.abs(it[0] - it[1]) > 60 }
+                // Каждая неделя стабильно в своё время, минимум по два раза: иначе это переносы.
+                val steady = split.all { (p, m) -> m.size >= 2 && m.values.filterNotNull().all { kotlin.math.abs(it - (t[p] ?: it)) <= 30 } }
+                if (apart && steady) {
+                    // Чередуется время: чётная неделя в одно, нечётная в другое.
+                    for (p in pars) if (often(split.getValue(p).keys, observed.filter { par(it) == p })) out += p to t[p]
+                } else if (often(byWeek.keys, observed)) out += null to timeOf(byWeek, day)
+            } else {
+                val p = pars.single()
+                val parity = p.takeIf { observed.any { par(it) != p } }
+                if (often(byWeek.keys, observed.filter { parity == null || par(it) == parity })) out += parity to timeOf(byWeek, day)
+            }
+            for ((parity, min) in out) {
+                if (min == null) continue
+                if (manual.any { it.clientId == c.id && it.day == day && (it.parity == null || parity == null || it.parity == parity) }) continue
+                learned += Rule("auto-${c.id}-$day-$min", c.id, day, min, parity)
+            }
         }
-        // Одно занятие клиента в день (в своей неделе, если через неделю): остаётся последнее, при равенстве частое.
-        val picked = mutableListOf<Rule>()
-        for (cd in cands.sortedWith(compareByDescending<Cand> { it.weeks.last() }.thenByDescending { it.weeks.size })) {
-            fun clash(r: Rule) = r.day == cd.day && (r.parity == null || cd.parity == null || r.parity == cd.parity)
-            if (picked.any(::clash) || manual.any { it.clientId == c.id && clash(it) }) continue
-            picked += Rule("auto-${c.id}-${cd.day}-${cd.min}", c.id, cd.day, cd.min, cd.parity)
-        }
-        learned += picked
     }
     val keep = d.rules.filter { it.manual }
     val next = keep + learned
@@ -141,9 +152,9 @@ fun occurrences(d: AppData, date: LocalDate): List<Occ> {
     for (r in d.rules) {
         val c = active[r.clientId] ?: continue
         if (r.off || r.day != dow || (r.parity != null && r.parity != par)) continue
+        // Одно занятие клиента в день: отмена или перенос этого дня снимает его, даже если время переучилось.
         val removed = d.changes.any {
-            it.clientId == r.clientId && it.date == day && it.min == r.min &&
-                (it.kind == ChangeKind.CANCEL || it.kind == ChangeKind.MOVE)
+            it.clientId == r.clientId && it.date == day && (it.kind == ChangeKind.CANCEL || it.kind == ChangeKind.MOVE)
         }
         if (!removed) out += Occ(c.id, r.min, lessonMin(d, c), rule = r)
     }
@@ -163,9 +174,10 @@ enum class Status { PLANNED, DONE, MISSED }
 sealed class PlanItem {
     abstract val from: Int
     abstract val to: Int
-    data class Lesson(val occ: Occ, val status: Status, val visit: Visit?) : PlanItem() {
-        override val from get() = occ.min
-        override val to get() = occ.min + occ.duration
+    /** at: когда занятие было на самом деле (по приходу), иначе по расписанию. */
+    data class Lesson(val occ: Occ, val status: Status, val visit: Visit?, val at: Int = occ.min) : PlanItem() {
+        override val from get() = at
+        override val to get() = at + occ.duration
     }
     /** Визит без занятия в расписании. */
     data class Unplanned(val visit: Visit, override val from: Int, override val to: Int) : PlanItem()
@@ -180,10 +192,12 @@ fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.system
     val nowMin = Instant.ofEpochMilli(now).atZone(zone).let { it.hour * 60 + it.minute }
     val items = mutableListOf<PlanItem>()
     for (o in occs) {
+        // Обычно у клиента одно занятие в день, и любой его визит в этот день относится к нему.
+        val single = occs.count { it.clientId == o.clientId } == 1
         val v = dayVisits
             .filter { it.clientId == o.clientId && it.id !in usedVisits }
             .minByOrNull { kotlin.math.abs(slotOf(it.start, zone).second - o.min) }
-            ?.takeIf { it.kind == VisitKind.MANUAL || kotlin.math.abs(slotOf(it.start, zone).second - o.min) <= MATCH_MIN }
+            ?.takeIf { single || it.kind == VisitKind.MANUAL || kotlin.math.abs(slotOf(it.start, zone).second - o.min) <= MATCH_MIN }
         if (v != null) usedVisits += v.id
         val past = date < nowDate || (date == nowDate && o.min + o.duration < nowMin)
         val status = when {
@@ -191,14 +205,12 @@ fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.system
             past -> Status.MISSED
             else -> Status.PLANNED
         }
-        items += PlanItem.Lesson(o, status, v)
+        val at = if (v?.kind == VisitKind.AUTO) slotOf(v.start, zone).second else o.min
+        items += PlanItem.Lesson(o, status, v, at)
     }
-    // Кусок того же занятия (телефон на минуту «вышел» из зоны) не считаем отдельным визитом.
-    for (l in items.filterIsInstance<PlanItem.Lesson>().filter { it.visit != null }) {
-        dayVisits.filter { it.clientId == l.occ.clientId && it.id !in usedVisits }
-            .filter { minuteOf(it.start, zone) < l.to && minuteOf(it.end, zone) > l.from - 15 }
-            .forEach { usedVisits += it.id }
-    }
+    // Остальные визиты клиента в день его занятия (куски, повторный вход) отдельно не показываем.
+    val withLesson = items.filterIsInstance<PlanItem.Lesson>().filter { it.visit != null }.map { it.occ.clientId }.toSet()
+    dayVisits.filter { it.clientId in withLesson }.forEach { usedVisits += it.id }
     for (v in dayVisits.filter { it.id !in usedVisits && it.kind == VisitKind.AUTO }) {
         val from = slotOf(v.start, zone).second
         val c = d.client(v.clientId) ?: continue
