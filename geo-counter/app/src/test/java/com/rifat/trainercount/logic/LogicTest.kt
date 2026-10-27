@@ -432,6 +432,18 @@ class LogicTest {
         assertEquals(17 * 60, later.single().earliest)
     }
 
+    @Test fun splitVisitDoesNotShiftWindow() {
+        val s = home.copy(startMin = 9 * 60, endMin = 20 * 60)
+        // Занятие 16:00–17:00, телефон на минуту «вышел» из зоны: два куска визита.
+        val v1 = Visit("v1", "s", t(16, 5, day = 7), t(16, 40, day = 7), 1)
+        val v2 = Visit("v2", "s", t(16, 45, day = 7), t(17, 5, day = 7), 0)
+        var d = base.copy(settings = s, visits = listOf(v1, v2))
+        d = addRule(d, "s", 3, 16 * 60, null)
+        assertTrue(dayPlan(d, date(7), t(18, day = 7)).none { it is PlanItem.Unplanned })
+        val ws = findWindows(d, date(7), 1, 60, 30, t(7, day = 7))
+        assertEquals(17 * 60 + 30, ws.last().earliest)
+    }
+
     @Test fun soonReminderSkipsAlarmedLesson() {
         var d = base.copy(visits = listOf(auto("v", "s", 1, 9, 0)))
         d = addRule(d, "s", 4, 9 * 60, null)   // чт 9:00: будильник

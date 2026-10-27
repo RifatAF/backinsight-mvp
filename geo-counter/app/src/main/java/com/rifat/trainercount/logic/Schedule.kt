@@ -19,6 +19,9 @@ const val READY_DAYS = 7
 /** Округление до получаса: 16:05 → 16:00, 11:25 → 11:30. */
 fun roundSlot(min: Int): Int = ((min + 15) / 30 * 30).coerceAtMost(23 * 60 + 30)
 
+fun minuteOf(t: Long, zone: ZoneId = ZoneId.systemDefault()): Int =
+    Instant.ofEpochMilli(t).atZone(zone).let { it.hour * 60 + it.minute }
+
 fun slotOf(t: Long, zone: ZoneId = ZoneId.systemDefault()): Pair<LocalDate, Int> {
     val z = Instant.ofEpochMilli(t).atZone(zone)
     return z.toLocalDate() to roundSlot(z.hour * 60 + z.minute)
@@ -161,6 +164,12 @@ fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.system
             else -> Status.PLANNED
         }
         items += PlanItem.Lesson(o, status, v)
+    }
+    // Кусок того же занятия (телефон на минуту «вышел» из зоны) не считаем отдельным визитом.
+    for (l in items.filterIsInstance<PlanItem.Lesson>().filter { it.visit != null }) {
+        dayVisits.filter { it.clientId == l.occ.clientId && it.id !in usedVisits }
+            .filter { minuteOf(it.start, zone) < l.to && minuteOf(it.end, zone) > l.from - 15 }
+            .forEach { usedVisits += it.id }
     }
     for (v in dayVisits.filter { it.id !in usedVisits && it.kind == VisitKind.AUTO }) {
         val from = slotOf(v.start, zone).second
