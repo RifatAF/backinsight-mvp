@@ -423,6 +423,27 @@ class LogicTest {
         assertEquals(listOf(3 to 10 * 60), d.rules.map { it.day to it.min })
     }
 
+    @Test fun longStayAsksAboutLesson() {
+        // Вне дома и зон клиентов (точка 0.1, 0.1), опрос каждые 15 минут.
+        val d0 = onHomeLeave(base, t(13, 45)).data
+        var d = d0
+        val asks = mutableListOf<Effect>()
+        for (m in listOf(0, 15, 30, 45, 60, 75)) {
+            val st = onPoll(d, 0.1, 0.1, 20f, t(14, 0) + m * 60_000L)
+            d = st.data; asks += st.effects.filterIsInstance<Effect.StayAsk>()
+        }
+        assertEquals(1, asks.size)  // спросили один раз, через час
+        val withVisit = stayVisit(d, "e")
+        val v = withVisit.visits.single()
+        assertEquals("e", v.clientId)
+        assertEquals(1, v.count)
+        assertTrue(withVisit.stay!!.done)
+        // «Не спрашивать здесь»: на следующий день в этом месте вопроса нет.
+        var n = stayNo(d, ignore = true).copy(stay = null)
+        val again = (0..5).flatMap { m -> onPoll(n, 0.1, 0.1, 20f, t(14, 0, day = 8) + m * 15 * 60_000L).also { n = it.data }.effects }
+        assertTrue(again.none { it is Effect.StayAsk })
+    }
+
     @Test fun oldFamilyDurationMigrated() {
         val old = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), sessionMin = 120, minMin = 90)
         val m = perPersonMigrate(old)

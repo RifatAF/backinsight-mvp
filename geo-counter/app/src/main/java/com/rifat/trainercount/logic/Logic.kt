@@ -110,6 +110,8 @@ sealed class Effect {
     data class PlaceAuto(val place: Place, val visits: List<Visit>) : Effect()
     /** Занятия в общем месте, нужно отметить с кем. */
     data class PendingAdded(val pending: Pending) : Effect()
+    /** Больше часа на одном месте вне зон: спросить, было ли занятие. */
+    data class StayAsk(val stay: Stay) : Effect()
 }
 
 data class Step(val data: AppData, val effects: List<Effect> = emptyList())
@@ -333,7 +335,47 @@ fun onPoll(d: AppData, lat: Double, lng: Double, acc: Float, t: Long): Step {
         if (atHome && here == null && cur.data.openTrip != null) apply(onHomeArrive(cur.data, est, byGeofence = true))
         else if (outside(home) && cur.data.openTrip == null) apply(onHomeLeave(cur.data, est))
     }
-    return cur
+    // 4. Долго стоим там, где зоны нет.
+    val free = here == null && !atHome && cur.data.open.isEmpty() && acc <= 150
+    val (nd, ask) = trackStay(cur.data, lat, lng, est, t, free)
+    return Step(nd, cur.effects + listOfNotNull(ask))
+}
+
+const val STAY_MIN = 60
+const val STAY_RADIUS_M = 120
+/** Перерыв в наблюдениях дольше этого: стоянка новая. */
+const val STAY_GAP_MIN = 45
+
+fun trackStay(d: AppData, lat: Double, lng: Double, est: Long, t: Long, free: Boolean): Pair<AppData, Effect?> {
+    if (!free) return (if (d.stay == null) d else d.copy(stay = null)) to null
+    val s = d.stay
+    if (s == null || distanceM(s.lat, s.lng, lat, lng) > STAY_RADIUS_M || t - s.last > STAY_GAP_MIN * MIN)
+        return d.copy(stay = Stay(lat, lng, est, t)) to null
+    val ns = s.copy(last = t)
+    val ignored = d.ignored.any { distanceM(it.lat, it.lng, s.lat, s.lng) <= it.radius }
+    if (!s.asked && !s.done && !ignored && t - s.start >= STAY_MIN * MIN) return d.copy(stay = ns.copy(asked = true)) to Effect.StayAsk(ns)
+    return d.copy(stay = ns) to null
+}
+
+/** Ответ «было занятие у этого клиента»: визит на время стоянки; клиенту без адреса ставим это место. */
+fun stayVisit(d: AppData, clientId: String): AppData {
+    val s = d.stay ?: return d
+    val c0 = d.client(clientId) ?: return d
+    val c = if (c0.hasPlace || c0.placeId != null) c0 else c0.copy(lat = s.lat, lng = s.lng)
+    val people = sessionsFor((s.last - s.start) / MIN, c).coerceAtLeast(1)
+    val who = if (c.countsEach) c.members.take(people.coerceAtMost(c.members.size)) else c.members
+    val v = withMembers(Visit(newId(), c.id, s.start, s.last, 1, VisitKind.AUTO), c, who, 1)
+    return d.copy(
+        visits = d.visits + v,
+        clients = d.clients.map { if (it.id == c.id) c else it },
+        stay = s.copy(done = true),
+    )
+}
+
+/** Ответ «занятия не было»; ignore: и не спрашивать в этом месте. */
+fun stayNo(d: AppData, ignore: Boolean): AppData {
+    val s = d.stay ?: return d
+    return d.copy(stay = s.copy(done = true), ignored = if (ignore) d.ignored + Spot(s.lat, s.lng) else d.ignored)
 }
 
 // ---------- Статистика ----------

@@ -24,7 +24,7 @@ sealed interface Screen {
     data object Stats : Screen
     data object Settings : Screen
     data class ClientView(val id: String) : Screen
-    data class Edit(val id: String?) : Screen
+    data class Edit(val id: String?, val fromStay: Boolean = false) : Screen
     data class EditPlace(val id: String?) : Screen
     data object Log : Screen
     data object Schedule : Screen
@@ -37,6 +37,8 @@ class Nav(private val stack: SnapshotStateList<Screen>) {
     var openPending by mutableStateOf<String?>(null)
     /** Открыть расписание на этом дне. */
     var scheduleDate by mutableStateOf<java.time.LocalDate?>(null)
+    /** Открыть вопрос «было ли занятие» после долгой стоянки. */
+    var openStay by mutableStateOf(false)
     fun go(s: Screen) = stack.add(s)
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex)
@@ -67,7 +69,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Stats -> StatsScreen(data, nav)
                     Screen.Settings -> SettingsScreen(data, nav)
                     is Screen.ClientView -> ClientScreen(data, s.id, nav)
-                    is Screen.Edit -> EditClientScreen(data, s.id, nav)
+                    is Screen.Edit -> EditClientScreen(data, s.id, nav, s.fromStay)
                     is Screen.EditPlace -> EditPlaceScreen(data, s.id, nav)
                     Screen.Log -> LogScreen(nav)
                     Screen.Schedule -> ScheduleScreen(data, nav)
@@ -88,6 +90,12 @@ class MainActivity : ComponentActivity() {
             i.removeExtra(Planner.EXTRA_SCHEDULE)
             nav.reset(Screen.Home)
             nav.go(Screen.Schedule)
+            return
+        }
+        if (i.getStringExtra(Notifier.EXTRA_STAY) != null) {
+            i.removeExtra(Notifier.EXTRA_STAY)
+            nav.reset(Screen.Home)
+            nav.openStay = true
             return
         }
         i.getStringExtra(Notifier.EXTRA_PENDING)?.let { pid ->

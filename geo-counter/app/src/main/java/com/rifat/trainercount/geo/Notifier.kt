@@ -11,6 +11,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.rifat.trainercount.R
 import com.rifat.trainercount.data.Store
+import com.rifat.trainercount.logic.stayNo
+import com.rifat.trainercount.logic.Stay
 import com.rifat.trainercount.logic.Effect
 import com.rifat.trainercount.logic.MAX_PER_VISIT
 import com.rifat.trainercount.logic.Pending
@@ -30,6 +32,8 @@ object Notifier {
     private const val CH_ASK = "ask"
     const val EXTRA_CLIENT = "clientId"
     const val EXTRA_PENDING = "pendingId"
+    const val EXTRA_STAY = "stay"
+    const val STAY_NID = 4401
 
     fun channels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
@@ -51,6 +55,7 @@ object Notifier {
             is Effect.VisitAdded -> show(ctx, e.visit)
             is Effect.PlaceAuto -> showAuto(ctx, e.place, e.visits)
             is Effect.PendingAdded -> showPending(ctx, e.pending)
+            is Effect.StayAsk -> showStay(ctx, e.stay)
         }
     }
 
@@ -109,6 +114,24 @@ object Notifier {
                 ),
             )
         NotificationManagerCompat.from(ctx).notify(id, n.build())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showStay(ctx: Context, s: Stay) {
+        if (!Perms.notifications(ctx)) return
+        fun act(a: String, req: Int) = PendingIntent.getBroadcast(
+            ctx, req, Intent(ctx, ActionReceiver::class.java).setAction(a),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("Больше часа на одном месте. Было занятие?")
+            .setContentText("С ${fTime(s.start)} · нажмите, чтобы отметить клиента или добавить нового")
+            .setContentIntent(openApp(ctx, STAY_NID, EXTRA_STAY to "1"))
+            .setAutoCancel(true)
+            .addAction(0, "Не было", act(ActionReceiver.STAY_NO, 4402))
+            .addAction(0, "Не спрашивать здесь", act(ActionReceiver.STAY_IGNORE, 4403))
+        NotificationManagerCompat.from(ctx).notify(STAY_NID, n.build())
     }
 
     fun cancelId(ctx: Context, id: Int) = NotificationManagerCompat.from(ctx).cancel(id)
@@ -173,10 +196,17 @@ class ActionReceiver : BroadcastReceiver() {
         const val PLUS = "com.rifat.trainercount.PLUS"
         const val DISMISS = "com.rifat.trainercount.DISMISS"
         const val ONLY = "com.rifat.trainercount.ONLY"
+        const val STAY_NO = "com.rifat.trainercount.STAY_NO"
+        const val STAY_IGNORE = "com.rifat.trainercount.STAY_IGNORE"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
         Store.init(ctx)
+        if (intent.action == STAY_NO || intent.action == STAY_IGNORE) {
+            Store.update { stayNo(it, ignore = intent.action == STAY_IGNORE) }
+            Notifier.cancelId(ctx, Notifier.STAY_NID)
+            return
+        }
         if (intent.action == DISMISS) {
             val pid = intent.getStringExtra("pendingId") ?: return
             Store.update { dismissPending(it, pid) }

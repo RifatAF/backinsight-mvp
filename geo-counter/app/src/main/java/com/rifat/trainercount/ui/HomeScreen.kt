@@ -116,6 +116,11 @@ fun HomeScreen(data: AppData, nav: Nav) {
             if (!data.settings.hasHome) item {
                 WarnCard("Дом не задан: рабочее время не считается.") { nav.go(Screen.Settings) }
             }
+            data.stay?.takeIf { it.asked && !it.done }?.let { s ->
+                item(key = "stay") {
+                    WarnCard("С ${fTime(s.start)} вы на одном месте без зоны клиента. Было занятие? Нажмите, чтобы отметить.") { nav.openStay = true }
+                }
+            }
             items(data.pending.sortedByDescending { it.start }, key = { "pending" + it.id }) { p ->
                 PendingCard(data, p) { nav.openPending = p.id }
             }
@@ -146,6 +151,7 @@ fun HomeScreen(data: AppData, nav: Nav) {
 
     val pending = nav.openPending?.let { id -> data.pending.firstOrNull { it.id == id } }
     if (pending != null) PendingDialog(data, pending) { nav.openPending = null }
+    if (nav.openStay) StayDialog(data, nav) { nav.openStay = false }
 }
 
 @Composable

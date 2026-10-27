@@ -27,6 +27,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.android.gms.tasks.Tasks
+import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.Effect
 import com.rifat.trainercount.logic.HOME_KEY
 import com.rifat.trainercount.logic.fDur
@@ -97,6 +98,7 @@ object Tracker {
             )
             is Effect.PlaceAuto -> Diag.add(ctx, "✓ ${e.place.name}: по расписанию ${trainings(e.visits.size)}")
             is Effect.PendingAdded -> Diag.add(ctx, "? ${d.place(e.pending.placeId)?.name}: ${trainings(e.pending.count)}, спрошу с кем")
+            is Effect.StayAsk -> Diag.add(ctx, "? Больше часа на одном месте вне зон (с ${fTime(e.stay.start)}): спрошу, было ли занятие")
         }
     }
 

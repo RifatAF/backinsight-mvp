@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.geo.GeoSync
+import com.rifat.trainercount.logic.stayVisit
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.Client
 import com.rifat.trainercount.logic.fDur
@@ -59,10 +60,13 @@ import com.rifat.trainercount.logic.newId
 import com.rifat.trainercount.logic.thresholdFor
 
 @Composable
-fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
+fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = false) {
     val ctx = LocalContext.current
     val orig = id?.let { data.client(it) }
-    val c0 = remember { orig ?: Client(newId(), "", createdAt = System.currentTimeMillis()) }
+    val stay = data.stay.takeIf { fromStay }
+    val c0 = remember {
+        orig ?: Client(newId(), "", createdAt = System.currentTimeMillis(), lat = stay?.lat, lng = stay?.lng)
+    }
 
     var name by remember { mutableStateOf(c0.name) }
     var members by remember { mutableStateOf(c0.members.joinToString(", ")) }
@@ -96,6 +100,11 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
         Store.update { d ->
             if (d.clients.any { it.id == c.id }) d.copy(clients = d.clients.map { if (it.id == c.id) c else it })
             else d.copy(clients = d.clients + c)
+        }
+        // Новый клиент с места долгой стоянки: сразу засчитать это занятие.
+        if (stay != null && orig == null) {
+            Store.update { stayVisit(it, c.id) }
+            com.rifat.trainercount.geo.Notifier.cancelId(ctx, com.rifat.trainercount.geo.Notifier.STAY_NID)
         }
         GeoSync.sync(ctx)
         nav.back()

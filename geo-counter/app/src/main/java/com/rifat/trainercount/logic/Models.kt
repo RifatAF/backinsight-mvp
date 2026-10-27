@@ -134,6 +134,10 @@ data class AppData(
     val rules: List<Rule> = emptyList(),
     /** Разовые изменения расписания: отмены, переносы, дополнительные занятия. */
     val changes: List<Change> = emptyList(),
+    /** Где стоим сейчас вне дома и зон клиентов: после часа спросим, было ли занятие. */
+    val stay: Stay? = null,
+    /** Места, где не спрашивать (магазины, торговые центры). */
+    val ignored: List<Spot> = emptyList(),
 ) {
     fun client(id: String) = clients.firstOrNull { it.id == id }
     fun place(id: String) = places.firstOrNull { it.id == id }
@@ -170,3 +174,15 @@ data class Change(
     val toDate: Long? = null,
     val toMin: Int? = null,
 )
+
+data class Stay(
+    val lat: Double,
+    val lng: Double,
+    val start: Long,
+    val last: Long,
+    val asked: Boolean = false,
+    /** Ответили на вопрос: больше не спрашивать, пока не уйдём. */
+    val done: Boolean = false,
+)
+
+data class Spot(val lat: Double, val lng: Double, val radius: Int = 150)

@@ -11,6 +11,8 @@ import com.rifat.trainercount.logic.Pack
 import com.rifat.trainercount.logic.Pending
 import com.rifat.trainercount.logic.Place
 import com.rifat.trainercount.logic.Slot
+import com.rifat.trainercount.logic.Spot
+import com.rifat.trainercount.logic.Stay
 import com.rifat.trainercount.logic.Settings
 import com.rifat.trainercount.logic.Trip
 import com.rifat.trainercount.logic.Visit
@@ -156,6 +158,15 @@ object Store {
                 })
             }
         })
+        d.stay?.let { s ->
+            put("stay", JSONObject().apply {
+                put("lat", s.lat); put("lng", s.lng); put("start", s.start); put("last", s.last)
+                put("asked", s.asked); put("done", s.done)
+            })
+        }
+        put("ignored", JSONArray().apply {
+            d.ignored.forEach { p -> put(JSONObject().apply { put("lat", p.lat); put("lng", p.lng); put("radius", p.radius) }) }
+        })
     }
 
     fun fromJson(o: JSONObject): AppData {
@@ -234,6 +245,10 @@ object Store {
                     if (c.has("toMin") && !c.isNull("toMin")) c.getInt("toMin") else null,
                 )
             },
+            stay = o.optJSONObject("stay")?.let { s ->
+                Stay(s.getDouble("lat"), s.getDouble("lng"), s.getLong("start"), s.getLong("last"), s.optBoolean("asked"), s.optBoolean("done"))
+            },
+            ignored = o.optJSONArray("ignored").list { p -> Spot(p.getDouble("lat"), p.getDouble("lng"), p.optInt("radius", 150)) },
         )
     }
 }
