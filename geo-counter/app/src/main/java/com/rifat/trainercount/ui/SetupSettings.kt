@@ -614,7 +614,7 @@ fun TelegramBlock(data: AppData) {
                         "и где вы сейчас. Без ключа бот отвечает по шаблону.\n" +
                         "1. Откройте в браузере aistudio.google.com и войдите своим Google-аккаунтом.\n" +
                         "2. Нажмите «Get API key», затем «Create API key».\n" +
-                        "3. Скопируйте ключ (начинается с AIza…), вставьте ниже и нажмите «Проверить».",
+                        "3. Скопируйте ключ (длинная строка, начинается с AIza… или AQ.…), вставьте ниже и нажмите «Проверить».",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -625,7 +625,15 @@ fun TelegramBlock(data: AppData) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
                     OutlinedButton(enabled = !busy && aiKey.isNotBlank(), onClick = {
                         io {
-                            val r = withContext(Dispatchers.IO) { runCatching { com.rifat.trainercount.geo.Gemini.pickModel(aiKey) } }
+                            // Проверяем по-настоящему: подбираем модель и задаём ей вопрос.
+                            val r = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val m = com.rifat.trainercount.geo.Gemini.pickModel(aiKey)
+                                    val answer = com.rifat.trainercount.geo.Gemini.ask(aiKey, m, "Ответь JSON {\"ok\": true}")
+                                    if (answer.isBlank()) error("модель $m не ответила")
+                                    m
+                                }
+                            }
                             aiStatus = r.fold(
                                 { m -> save { it.copy(aiKey = aiKey, aiModel = m) }; "✓ Работает (модель $m)" },
                                 { e -> "✗ Ключ не подошёл или нет интернета: ${e.message}" },
