@@ -134,6 +134,25 @@ object Notifier {
         NotificationManagerCompat.from(ctx).notify(STAY_NID, n.build())
     }
 
+    /** Кто-то написал боту, а его чат не разрешён: спросить Рифата. */
+    @SuppressLint("MissingPermission")
+    fun askAllow(ctx: Context, chat: Telegram.Chat) {
+        if (!Perms.notifications(ctx)) return
+        val id = ("tg" + chat.id).hashCode()
+        val allow = PendingIntent.getBroadcast(
+            ctx, id, Intent(ctx, ActionReceiver::class.java).setAction(ActionReceiver.TG_ALLOW)
+                .putExtra("chatId", chat.id).putExtra("notifId", id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("${chat.name.ifBlank { "Кто-то" }} пишет вашему боту")
+            .setContentText("Разрешить отвечать в этот чат: расписание, дела, где вы?")
+            .setAutoCancel(true)
+            .addAction(0, "Разрешить", allow)
+        NotificationManagerCompat.from(ctx).notify(id, n.build())
+    }
+
     fun cancelId(ctx: Context, id: Int) = NotificationManagerCompat.from(ctx).cancel(id)
 
     private fun nid(v: Visit) = v.id.hashCode()
@@ -198,10 +217,17 @@ class ActionReceiver : BroadcastReceiver() {
         const val ONLY = "com.rifat.trainercount.ONLY"
         const val STAY_NO = "com.rifat.trainercount.STAY_NO"
         const val STAY_IGNORE = "com.rifat.trainercount.STAY_IGNORE"
+        const val TG_ALLOW = "com.rifat.trainercount.TG_ALLOW"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
         Store.init(ctx)
+        if (intent.action == TG_ALLOW) {
+            val chat = intent.getStringExtra("chatId") ?: return
+            Store.update { d -> d.copy(settings = d.settings.copy(tgAllowed = (d.settings.tgAllowed + chat).distinct())) }
+            Notifier.cancelId(ctx, intent.getIntExtra("notifId", 0))
+            return
+        }
         if (intent.action == STAY_NO || intent.action == STAY_IGNORE) {
             Store.update { stayNo(it, ignore = intent.action == STAY_IGNORE) }
             Notifier.cancelId(ctx, Notifier.STAY_NID)

@@ -118,6 +118,10 @@ data class Settings(
     val tgBotOn: Boolean = false,
     /** Чаты, которым бот отвечает, кроме tgChatId. */
     val tgAllowed: List<String> = emptyList(),
+    /** Ключ Gemini (бесплатный, из Google AI Studio): помогает боту понять свободные фразы. */
+    val aiKey: String = "",
+    /** Модель Gemini, выбранная при проверке ключа. */
+    val aiModel: String = "",
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }

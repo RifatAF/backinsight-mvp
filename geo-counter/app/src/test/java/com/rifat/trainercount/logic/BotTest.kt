@@ -54,4 +54,14 @@ class BotTest {
         val (rd, rt) = botAnswer(nd, parseBot("удали 30.10 стоматолог", today), now, { "" })
         assertTrue(rd.events.isEmpty(), rt)
     }
+
+    @Test fun aiAnswerToCommand() {
+        val add = parseAi("""{"cmd": "add", "date": "2026-10-29", "time": "14:00", "minutes": null, "title": "стоматолог Лера"}""", today)
+        assertEquals(BotCmd.Add(d(29), 14 * 60, 60, "Стоматолог Лера"), add)
+        assertEquals(BotCmd.Plan(d(30)), parseAi("""{"cmd":"plan","date":"2026-10-30","time":null}""", today))
+        assertEquals(BotCmd.Where, parseAi("""{"cmd":"where"}""", today))
+        assertEquals(null, parseAi("""{"cmd":"add","date":"2026-10-29","time":null,"title":"врач"}""", today))
+        assertEquals(null, parseAi("не JSON", today))
+        assertTrue("2026-10-27, вторник" in aiPrompt("привет", today))
+    }
 }

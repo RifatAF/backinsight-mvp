@@ -21,6 +21,8 @@ import com.rifat.trainercount.R
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.BotCmd
+import com.rifat.trainercount.logic.aiPrompt
+import com.rifat.trainercount.logic.parseAi
 import com.rifat.trainercount.logic.PlanItem
 import com.rifat.trainercount.logic.Status
 import com.rifat.trainercount.logic.botAnswer
@@ -129,11 +131,13 @@ class BotService : Service() {
         val d0 = Store.data.value
         if (!allowed(d0, m.chat.id)) {
             Diag.add(this, "Бот: сообщение от ${m.chat.name} (нет доступа)")
-            Telegram.send(token, m.chat.id, "Нет доступа. Попросите разрешить этот чат в приложении: Настройки → Telegram.")
+            Notifier.askAllow(this, m.chat)
+            Telegram.send(token, m.chat.id, "Этот чат пока не подключён. На телефоне Рифата появилось уведомление «Разрешить». После нажатия напишите ещё раз.")
             return
         }
         val now = System.currentTimeMillis()
-        val cmd = parseBot(m.text, dayOf(now))
+        var cmd = parseBot(m.text, dayOf(now))
+        if (cmd is BotCmd.Unknown && d0.settings.aiKey.isNotBlank()) ai(m.text, now)?.let { cmd = it }
         // Место ищем до записи в данные: это может занять до 20 секунд.
         val where = if (cmd is BotCmd.Where) whereText() else ""
         var reply = ""
@@ -141,6 +145,22 @@ class BotService : Service() {
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
         Telegram.send(token, m.chat.id, reply)
+    }
+
+    /** Фразу не понял сам: спросить Gemini. В ИИ уходит только текст сообщения и дата. */
+    private fun ai(text: String, now: Long): BotCmd? {
+        val s = Store.data.value.settings
+        fun run(model: String) = parseAi(Gemini.ask(s.aiKey, model, aiPrompt(text, dayOf(now))), dayOf(now))
+        return try {
+            run(s.aiModel.ifBlank { Gemini.pickModel(s.aiKey).also { m -> Store.update { it.copy(settings = it.settings.copy(aiModel = m)) } } })
+        } catch (e: Exception) {
+            // Модель могли переименовать: подобрать заново и повторить один раз.
+            runCatching {
+                val m = Gemini.pickModel(s.aiKey)
+                Store.update { it.copy(settings = it.settings.copy(aiModel = m)) }
+                run(m)
+            }.onFailure { Diag.add(this, "✗ Gemini: ${it.message}") }.getOrNull()
+        }
     }
 
     /** Где сейчас: у кого, с какого времени, что дальше, точка на карте. */

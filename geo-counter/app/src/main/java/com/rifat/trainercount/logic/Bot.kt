@@ -234,3 +234,45 @@ fun botAnswer(d: AppData, cmd: BotCmd, now: Long, where: () -> String, zone: Zon
         is BotCmd.Unknown -> d to cmd.reason
     }
 }
+
+// ---------- Помощь ИИ (Gemini) для фраз, которые бот не понял сам ----------
+
+/** Запрос к ИИ: в него уходит только текст сообщения и сегодняшняя дата. */
+fun aiPrompt(text: String, today: LocalDate): String {
+    val dow = listOf("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")[today.dayOfWeek.value - 1]
+    return """Ты разбираешь сообщения для бота расписания персонального тренера Рифата. Сегодня $today, $dow.
+Сообщение: «$text»
+Ответь только JSON без пояснений:
+{"cmd": "plan" | "week" | "free" | "add" | "remove" | "where" | "help" | "unknown",
+ "date": "ГГГГ-ММ-ДД" или null, "time": "ЧЧ:ММ" или null, "minutes": число или null, "title": "что за дело" или null}
+plan: спрашивают, что запланировано в день. week: расписание на неделю. free: когда свободен.
+add: просят записать дело (врач, встреча) на дату и время; title коротко, с именем человека, если есть.
+remove: просят удалить дело. where: спрашивают, где Рифат сейчас. Если дата не названа, а речь о сегодня, ставь сегодняшнюю."""
+}
+
+private fun jsonField(json: String, key: String): String? =
+    Regex("\"$key\"\\s*:\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|-?\\d+|null)").find(json)?.let { m ->
+        if (m.groupValues[1] == "null") null else m.groupValues[2].ifEmpty { m.groupValues[1].trim('"') }
+    }
+
+/** Ответ ИИ → команда бота; null, если ответ не разобрать. */
+fun parseAi(json: String, today: LocalDate): BotCmd? {
+    val cmd = jsonField(json, "cmd") ?: return null
+    val date = jsonField(json, "date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+    val time = jsonField(json, "time")?.let { t ->
+        Regex("^(\\d{1,2}):(\\d{2})$").find(t)?.let { it.groupValues[1].toInt() * 60 + it.groupValues[2].toInt() }
+    }?.takeIf { it in 0 until 24 * 60 }
+    val minutes = jsonField(json, "minutes")?.toIntOrNull()
+    val title = jsonField(json, "title")?.trim()?.takeIf { it.isNotEmpty() }
+    return when (cmd) {
+        "plan" -> BotCmd.Plan(date ?: today)
+        "week" -> BotCmd.Week(date ?: today)
+        "free" -> BotCmd.Free(date)
+        "where" -> BotCmd.Where
+        "help" -> BotCmd.Help
+        "add" -> if (date != null && time != null && title != null)
+            BotCmd.Add(date, time, (minutes ?: 60).coerceIn(15, 12 * 60), title.replaceFirstChar { it.uppercase() }) else null
+        "remove" -> date?.let { BotCmd.Remove(it, title.orEmpty()) }
+        else -> null
+    }
+}

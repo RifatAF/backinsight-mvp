@@ -110,6 +110,8 @@ fun HomeBlock(data: AppData) {
     val ctx = LocalContext.current
     val s = data.settings
     var busy by remember { mutableStateOf(false) }
+    var aiKey by remember(s.aiKey) { mutableStateOf(s.aiKey) }
+    var aiStatus by remember { mutableStateOf("") }
     var ssid by remember(s.homeSsid) { mutableStateOf(s.homeSsid) }
     Column {
         Text(
@@ -605,6 +607,35 @@ fun TelegramBlock(data: AppData) {
                         )
                     }
                 }
+                Text("Помощь ИИ (бесплатно, по желанию)", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    "Бот сам понимает простые фразы. С ключом Gemini он поймёт и свободные: «Лера в четверг после обеда к зубному». " +
+                        "В Google уходит только текст такого сообщения, без расписания и места.\n" +
+                        "1. Откройте в браузере aistudio.google.com и войдите своим Google-аккаунтом.\n" +
+                        "2. Нажмите «Get API key», затем «Create API key».\n" +
+                        "3. Скопируйте ключ (начинается с AIza…), вставьте ниже и нажмите «Проверить».",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = aiKey, onValueChange = { aiKey = it.trim() }, label = { Text("Ключ Gemini") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                    OutlinedButton(enabled = !busy && aiKey.isNotBlank(), onClick = {
+                        io {
+                            val r = withContext(Dispatchers.IO) { runCatching { com.rifat.trainercount.geo.Gemini.pickModel(aiKey) } }
+                            aiStatus = r.fold(
+                                { m -> save { it.copy(aiKey = aiKey, aiModel = m) }; "✓ Работает (модель $m)" },
+                                { e -> "✗ Ключ не подошёл или нет интернета: ${e.message}" },
+                            )
+                        }
+                    }) { Text("Проверить") }
+                    if (s.aiKey.isNotBlank()) OutlinedButton(onClick = {
+                        aiKey = ""; aiStatus = ""; save { it.copy(aiKey = "", aiModel = "") }
+                    }) { Text("Убрать") }
+                }
+                if (aiStatus.isNotBlank()) Text(aiStatus, style = MaterialTheme.typography.bodySmall)
             }
             Text("Так будет выглядеть:", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
             Text(
