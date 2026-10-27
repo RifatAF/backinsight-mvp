@@ -2,6 +2,7 @@ package com.rifat.trainercount.logic
 
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.YearMonth
 import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -104,5 +105,40 @@ class BotTest {
         assertTrue("Стас" !in clientAiPrompt(busy, ira, now, st, emptyList(), "где он?"))
         assertTrue("16:00–17:00" in clientLessonsText(data, ira, now))
         assertEquals("Перенесите" to true, parseClientAi("""{"reply": "Перенесите", "forward": true}"""))
+    }
+
+    @Test fun moneyAndStats() {
+        assertTrue(parseBot("Сколько осталось в пакете", today) is BotCmd.Balances)
+        assertTrue(parseBot("сколько осталось у Анны", today) is BotCmd.Balances)
+        assertTrue(parseBot("кто должен?", today) is BotCmd.Balances)
+        assertEquals(BotCmd.Summary(YearMonth.of(2026, 10)), parseBot("сводка", today))
+        assertEquals(BotCmd.Summary(YearMonth.of(2026, 9)), parseBot("итоги за прошлый месяц", today))
+        assertEquals(BotCmd.Summary(YearMonth.of(2026, 8)), parseBot("сколько заработал в августе", today))
+        assertTrue(parseBot("отчёт Анна", today) is BotCmd.Report)
+        // Со временем это запись дела, а не вопрос про оплату.
+        assertTrue(parseBot("30.10 17:00 оплатить интернет", today) is BotCmd.Add)
+
+        val z = ZoneId.systemDefault()
+        fun t(day: Int, h: Int) = LocalDateTime.of(2026, 10, day, h, 0).atZone(z).toInstant().toEpochMilli()
+        val now = t(27, 20)
+        val data = AppData(
+            clients = listOf(Client("a", "Анна", price = 30), Client("i", "Игорь", price = 40, perVisit = true)),
+            packs = listOf(Pack("p", "a", t(1, 9), 10, 300)),
+            visits = (1..8).map { Visit("va$it", "a", t(it + 2, 10), t(it + 2, 11), 1) } +
+                (1..2).map { Visit("vi$it", "i", t(it + 20, 12), t(it + 20, 13), 1) },
+        )
+        val all = botAnswer(data, parseBot("сколько осталось в пакете", today), now, { "" }).second
+        assertTrue("Анна: осталось 2 из 10" in all, all)
+        assertTrue("Игорь: не оплачено 2 занятия ($80)" in all, all)
+        assertTrue("Скоро закончится пакет: Анна (2)" in all, all)
+        val anna = botAnswer(data, parseBot("сколько осталось у Анны", today), now, { "" }).second
+        assertTrue(anna.startsWith("Анна: осталось 2 из 10"), anna)
+        assertTrue("Игорь" !in anna, anna)
+        val debt = botAnswer(data, parseBot("кто должен", today), now, { "" }).second
+        assertTrue("Игорь" in debt && "Баланс клиентов" !in debt, debt)
+        val sum = botAnswer(data, parseBot("сводка", today), now, { "" }).second
+        assertTrue("Занятий: 10" in sum && "Получено оплат: $300" in sum, sum)
+        val ctx = aiContext(data, now, "дома")
+        assertTrue("Анна: пакетом, осталось 2 из 10" in ctx && "Игорь: платит за каждое занятие" in ctx, ctx)
     }
 }

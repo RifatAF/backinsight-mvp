@@ -1,7 +1,10 @@
 package com.rifat.trainercount.logic
 
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
+import java.time.format.TextStyle
+import java.util.Locale
 
 /**
  * Бот в Telegram без ИИ: понимает простые фразы по-русски.
@@ -16,6 +19,10 @@ sealed class BotCmd {
     data class Free(val date: LocalDate?) : BotCmd()
     data class Add(val date: LocalDate, val min: Int, val duration: Int, val title: String) : BotCmd()
     data class Remove(val date: LocalDate, val words: String) : BotCmd()
+    /** Сколько осталось, кто должен; words: текст, в нём ищем имя клиента. */
+    data class Balances(val words: String) : BotCmd()
+    data class Summary(val month: YearMonth) : BotCmd()
+    data class Report(val words: String) : BotCmd()
     data class Unknown(val reason: String) : BotCmd()
 }
 
@@ -155,6 +162,20 @@ fun parseBot(text: String, today: LocalDate): BotCmd {
     val sc = Scan(text)
     if (sc.has(Regex("^\\s*/?(start|help|помощь|команды|что умеешь)"))) return BotCmd.Help
     if (sc.has(Regex("\\s(где|/where)(?=\\s)"))) return BotCmd.Where
+    // Деньги и статистика; фраза со временем это запись дела («17:00 оплатить интернет»).
+    if (!sc.has(Regex("\\d{1,2}[:.]\\d{2}|\\sв\\s+\\d{1,2}\\s"))) {
+        if (sc.has(Regex("\\sотчет"))) return BotCmd.Report(text)
+        if (sc.has(Regex("\\s(сводк|итог|статистик|заработ|доход|выручк|сколько\\s+(?:я\\s+)?(?:провел|отработал|получил)|сколько\\s+(?:было\\s+)?(?:занятий|тренировок)\\s+(?:за|в)\\s)"))) {
+            val ym = YearMonth.from(today)
+            val month = when {
+                sc.has(Regex("\\sпрошл")) -> ym.minusMonths(1)
+                else -> Regex("[а-я]+").findAll(sc.s).firstNotNullOfOrNull { m -> monthOf(m.value)?.takeIf { m.value.length >= 4 } }
+                    ?.let { mon -> YearMonth.of(today.year, mon).let { if (it > ym) it.minusYears(1) else it } } ?: ym
+            }
+            return BotCmd.Summary(month)
+        }
+        if (sc.has(Regex("\\s(баланс|остат|пакет|долг|должен|должн|задолж|не\\s*оплач|неоплач|оплат|осталось\\s+(?:у|занят|трен))"))) return BotCmd.Balances(text)
+    }
     val remove = sc.take(Regex("\\s(удали|удалить|отмени|отменить|убери|убрать)(?=\\s)")) != null
     val week = sc.take(Regex("\\s(?:на\\s+)?(?:эту\\s+|всю\\s+)?неделю(?=\\s)")) != null
     val free = sc.take(Regex("\\s(свобод[а-я]*|окн[а-я]*)(?=\\s)")) != null
@@ -186,7 +207,11 @@ const val BOT_HELP = """Я помощник по расписанию. Прим�
 • 30.10 17:00 стоматолог Лера
 • тридцатого десятого в 17 стоматолог на 2 часа
 • удали 30.10 стоматолог
-• где Рифат"""
+• где Рифат
+• сколько осталось / сколько осталось у Анны
+• кто должен
+• сводка / итоги за прошлый месяц
+• отчёт Анна"""
 
 /** Ответ бота. where: где сейчас (считается на телефоне), только для команды «где». */
 fun botAnswer(d: AppData, cmd: BotCmd, now: Long, where: () -> String, zone: ZoneId = ZoneId.systemDefault()): Pair<AppData, String> {
@@ -231,8 +256,122 @@ fun botAnswer(d: AppData, cmd: BotCmd, now: Long, where: () -> String, zone: Zon
                 else -> d.copy(events = d.events - hit.toSet()) to "Удалил: " + hit.joinToString(", ") { "${hhmm(it.min)} ${it.title}" }
             }
         }
+        is BotCmd.Balances -> d to balancesText(d, cmd.words, now, zone)
+        is BotCmd.Summary -> d to summaryText(d, cmd.month, now, zone)
+        is BotCmd.Report -> d to findClients(d, cmd.words).let { cs ->
+            if (cs.isEmpty()) "Чей отчёт? Например: отчёт Анна" else cs.joinToString("\n\n") { reportText(d, it) }
+        }
         is BotCmd.Unknown -> d to cmd.reason
     }
+}
+
+// ---------- Деньги и статистика ----------
+
+/** Клиенты, чьё имя есть во фразе: «у Анны», «Ерлана». */
+fun findClients(d: AppData, text: String): List<Client> {
+    val words = Regex("[а-яa-z]{3,}").findAll(text.lowercase().replace('ё', 'е')).map { it.value }.toList()
+    fun hit(name: String) = Regex("[а-яa-z]{3,}").findAll(name.lowercase().replace('ё', 'е')).map { it.value }.any { n ->
+        // Падежи: «Анна» → «Анны», «Игорь» → «Игоря», «Стас» → «Стаса».
+        val stem = if (n.last() in "аяьйоеиы") n.dropLast(1) else n
+        words.any { w -> w.startsWith(stem) && w.length <= n.length + 2 }
+    }
+    return d.clients.filter { !it.archived && (hit(it.name) || it.members.any(::hit)) }
+}
+
+/** Баланс одной строкой: «осталось 3 из 10», «не оплачено 2 занятия ($60)». */
+fun balanceLine(d: AppData, c: Client): String {
+    if (c.perVisit) {
+        val n = unpaid(d, c)
+        val price = pricePerSession(d, c)
+        return if (n == 0) "платит за занятие, всё оплачено ✓" else "не оплачено ${lessons(n)}" + if (price > 0) " (${fMoney(n * price)})" else ""
+    }
+    val b = balance(d, c.id)
+    return when {
+        b.paid == 0 -> "оплата не внесена в приложение, проведено ${lessons(b.used)}"
+        b.left < 0 -> "пакет закончился, сверх оплаты ${lessons(-b.left)}"
+        b.current != null -> "осталось ${b.left} из ${b.activeTotal}"
+        else -> "пакет закончился"
+    }
+}
+
+private fun needsPay(d: AppData, c: Client): Boolean =
+    if (c.perVisit) unpaid(d, c) > 0 else balance(d, c.id).let { it.paid > 0 && it.left <= 0 }
+
+/** Ближайшие занятия клиента на 8 дней строками «вт 28.10, 13:30–14:30». */
+fun nextLessons(d: AppData, c: Client, now: Long, zone: ZoneId = ZoneId.systemDefault()): List<String> {
+    val today = dayOf(now, zone)
+    val nowMin = minuteOf(now, zone)
+    return (0 until 8).flatMap { i ->
+        val date = today.plusDays(i.toLong())
+        dayPlan(d, date, now, zone).filterIsInstance<PlanItem.Lesson>()
+            .filter { it.occ.clientId == c.id && it.status == Status.PLANNED && (i > 0 || it.from > nowMin) }
+            .map { l -> val t = epochMs(date, 12 * 60, zone); "${fDow(t)} ${fDate(t)}, ${hhmm(l.from)}–${hhmm(l.to)}" + if (l.occ.movedFrom != null) " (перенос)" else "" }
+    }
+}
+
+fun balancesText(d: AppData, words: String, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val found = findClients(d, words)
+    if (found.isNotEmpty()) return found.joinToString("\n\n") { c ->
+        val visits = d.visits.filter { it.clientId == c.id }.sortedBy { it.start }
+        val month = visits.filter { YearMonth.from(dayOf(it.start, zone)) == YearMonth.from(dayOf(now, zone)) }.sumOf { it.count }
+        val price = pricePerSession(d, c)
+        buildString {
+            append("${c.name}: ${balanceLine(d, c)}\n")
+            append(if (c.perVisit) "Платит за каждое занятие" else "Платит пакетом")
+            if (price > 0) append(", ${fMoney(price)} за занятие")
+            append("\nВ этом месяце: ${lessons(month)}")
+            visits.lastOrNull()?.let { append("\nПоследнее: ${visitLine(it)}") }
+            nextLessons(d, c, now, zone).firstOrNull()?.let { append("\nСледующее: $it") }
+        }
+    }
+    val active = d.clients.filter { !it.archived }
+    if (active.isEmpty()) return "Клиентов пока нет"
+    val debt = active.filter { needsPay(d, it) }.sortedBy { it.name }
+    val noPay = active.filter { !it.perVisit && balance(d, it.id).paid == 0 }.sortedBy { it.name }
+    val soon = active.filter { !it.perVisit && balance(d, it.id).let { b -> b.current != null && b.left <= 2 } }
+    val onlyDebt = Regex("должен|должн|долг|задолж|не\\s*оплач|неоплач").containsMatchIn(words.lowercase())
+    return buildString {
+        if (!onlyDebt) {
+            append("Баланс клиентов:\n")
+            active.sortedBy { it.name }.forEach { append("• ${it.name}: ${balanceLine(d, it)}\n") }
+            append('\n')
+        }
+        if (debt.isEmpty()) { if (noPay.size < active.size) append("Должников нет ✓") } else {
+            append("Нужна оплата:\n")
+            debt.forEach { append("• ${it.name}: ${balanceLine(d, it)}\n") }
+            val sum = debt.filter { it.perVisit }.sumOf { unpaid(d, it) * pricePerSession(d, it) } +
+                debt.filter { !it.perVisit }.sumOf { (-balance(d, it.id).left).coerceAtLeast(0) * pricePerSession(d, it) }
+            if (sum > 0) append("Долг за проведённые занятия: ${fMoney(sum)}")
+        }
+        if (soon.isNotEmpty()) append("\n\nСкоро закончится пакет: " + soon.joinToString(", ") { "${it.name} (${balance(d, it.id).left})" })
+        if (noPay.isNotEmpty()) append("\n\nОплаты не внесены: " + noPay.joinToString(", ") { it.name } +
+            ". Внести: клиент → «Оплата» (сколько занятий и сумма), тогда бот посчитает остаток.")
+    }.trim()
+}
+
+private fun monthName(ym: YearMonth) =
+    ym.month.getDisplayName(TextStyle.FULL_STANDALONE, Locale("ru")).replaceFirstChar { it.uppercase() } + " ${ym.year}"
+
+fun summaryText(d: AppData, ym: YearMonth, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val m = monthStats(d, ym, now, zone)
+    val cur = ym == YearMonth.from(dayOf(now, zone))
+    return buildString {
+        append("${monthName(ym)}" + if (cur) " (пока)\n" else "\n")
+        append("Занятий: ${m.sessions}" + if (m.burned > 0) " (из них списано за отмены: ${m.burned})\n" else "\n")
+        append("Заработано: ${fMoney(m.earned)}\n")
+        append("Получено оплат: ${fMoney(m.received)}\n")
+        if (m.workMin > 0) append("Работа: ${fDur(m.workMin)}, у клиентов ${fDur(m.atClientsMin)}, дорога ${fDur(m.roadMin)}, ${fMoney(m.perHour)} в час\n")
+        if (cur) {
+            val today = dayOf(now, zone)
+            val monday = today.minusDays(today.dayOfWeek.value - 1L)
+            val week = d.visits.filter { !dayOf(it.start, zone).isBefore(monday) }.sumOf { it.count }
+            append("На этой неделе: ${lessons(week)}\n")
+        }
+        if (m.perClient.isNotEmpty()) {
+            append("\nПо клиентам:\n")
+            m.perClient.forEach { append("• ${it.client.name}: ${it.sessions}" + (if (it.earned > 0) ", ${fMoney(it.earned)}" else "") + "\n") }
+        }
+    }.trim()
 }
 
 // ---------- Помощь ИИ (Gemini) для фраз, которые бот не понял сам ----------
@@ -243,11 +382,12 @@ fun aiPrompt(text: String, today: LocalDate): String {
     return """Ты разбираешь сообщения для бота расписания персонального тренера Рифата. Сегодня $today, $dow.
 Сообщение: «$text»
 Ответь только JSON без пояснений:
-{"cmd": "plan" | "week" | "free" | "add" | "remove" | "where" | "help" | "unknown",
+{"cmd": "plan" | "week" | "free" | "add" | "remove" | "where" | "balance" | "summary" | "help" | "unknown",
  "date": "ГГГГ-ММ-ДД" или null, "time": "ЧЧ:ММ" или null, "minutes": число или null, "title": "что за дело" или null}
 plan: спрашивают, что запланировано в день. week: расписание на неделю. free: когда свободен.
 add: просят записать дело (врач, встреча) на дату и время; title коротко, с именем человека, если есть.
-remove: просят удалить дело. where: спрашивают, где Рифат сейчас. Если дата не названа, а речь о сегодня, ставь сегодняшнюю."""
+remove: просят удалить дело. where: спрашивают, где Рифат сейчас.
+balance: сколько осталось занятий, кто должен, оплаты (title: имя клиента, если названо). summary: статистика, итоги, заработок за месяц. Если дата не названа, а речь о сегодня, ставь сегодняшнюю."""
 }
 
 private fun jsonField(json: String, key: String): String? =
@@ -269,6 +409,8 @@ fun parseAi(json: String, today: LocalDate): BotCmd? {
         "week" -> BotCmd.Week(date ?: today)
         "free" -> BotCmd.Free(date)
         "where" -> BotCmd.Where
+        "balance" -> BotCmd.Balances(title.orEmpty())
+        "summary" -> BotCmd.Summary(YearMonth.from(date ?: today))
         "help" -> BotCmd.Help
         "add" -> if (date != null && time != null && title != null)
             BotCmd.Add(date, time, (minutes ?: 60).coerceIn(15, 12 * 60), title.replaceFirstChar { it.uppercase() }) else null
@@ -301,7 +443,24 @@ fun aiContext(d: AppData, now: Long, status: String, zone: ZoneId = ZoneId.syste
             append(dayText(d, date, now, true, "${fDow(et)} ${fDate(et)}" + if (i == 0) " (сегодня)" else if (i == 1) " (завтра)" else "", zone))
             append("\n")
         }
-        append("Рабочее время по настройкам: ${hhmm(d.settings.startMin)}–${hhmm(d.settings.endMin)}. На дорогу между клиентами около ${d.settings.travelMin} минут.")
+        append("Рабочее время по настройкам: ${hhmm(d.settings.startMin)}–${hhmm(d.settings.endMin)}. На дорогу между клиентами около ${d.settings.travelMin} минут.\n")
+        append("\nКлиенты (оплата и баланс):\n")
+        d.clients.filter { !it.archived }.sortedBy { it.name }.forEach { c ->
+            val price = pricePerSession(d, c)
+            val last = d.visits.filter { it.clientId == c.id }.maxByOrNull { it.start }
+            append("• ${c.name}" + (if (c.isFamily) " (${c.members.joinToString(", ")})" else "") +
+                ": ${if (c.perVisit) "платит за каждое занятие" else "пакетом"}, ${balanceLine(d, c)}" +
+                (if (price > 0) ", цена ${fMoney(price)}" else "") +
+                (last?.let { ", последнее занятие ${fDate(it.start)}" } ?: "") +
+                (where(c)?.let { ", адрес: $it" } ?: "") + "\n")
+        }
+        val ym = YearMonth.from(today)
+        append("\nСтатистика:\n${summaryText(d, ym, now, zone)}\n\n${summaryText(d, ym.minusMonths(1), now, zone)}\n")
+        append("\nПроведённые занятия за 3 недели:\n")
+        val from = epochMs(today.minusDays(21), 0, zone)
+        d.visits.filter { it.start >= from }.sortedBy { it.start }.forEach { v ->
+            append("${d.client(v.clientId)?.name}: ${visitLine(v)}\n")
+        }
     }
 }
 
@@ -311,6 +470,8 @@ fun aiChatPrompt(context: String, history: List<Pair<String, String>>, text: Str
         """Ты помощник Рифата, персонального тренера. Тебе пишет его жена (или сам Рифат) в Telegram.
 Отвечай по-русски, коротко и по делу, по-человечески, как заботливый секретарь: 1–4 предложения.
 Опирайся только на сведения ниже, ничего не выдумывай. Если данных нет, так и скажи.
+В сведениях есть расписание, балансы и долги клиентов, статистика за этот и прошлый месяц и история занятий за 3 недели: отвечай по ним.
+Если клиент не назван, а спрашивают «сколько осталось» или «кто должен», перечисли всех коротко.
 Если спрашивают, где встретить или куда приехать, назови адрес и время окончания последнего занятия дня.
 Ссылку на карту давай, только если спрашивают, где он сейчас.
 Если просят записать дело (врач, встреча), заполни add. Если просят удалить дело, заполни remove.
@@ -413,14 +574,7 @@ fun clientBalanceText(d: AppData, c: Client): String {
 
 /** Ближайшие занятия этого клиента на неделю (без чужих). */
 fun clientLessonsText(d: AppData, c: Client, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
-    val today = dayOf(now, zone)
-    val nowMin = minuteOf(now, zone)
-    val list = (0 until 8).flatMap { i ->
-        val date = today.plusDays(i.toLong())
-        dayPlan(d, date, now, zone).filterIsInstance<PlanItem.Lesson>()
-            .filter { it.occ.clientId == c.id && it.status == Status.PLANNED && (i > 0 || it.from > nowMin) }
-            .map { l -> val t = epochMs(date, 12 * 60, zone); "${fDow(t)} ${fDate(t)}, ${hhmm(l.from)}–${hhmm(l.to)}" + if (l.occ.movedFrom != null) " (перенос)" else "" }
-    }
+    val list = nextLessons(d, c, now, zone)
     return if (list.isEmpty()) "На ближайшую неделю занятий в расписании нет. Напишите, если хотите записаться." else "Ваши занятия:\n" + list.joinToString("\n")
 }
 

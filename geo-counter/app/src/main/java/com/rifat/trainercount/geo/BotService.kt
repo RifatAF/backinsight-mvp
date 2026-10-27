@@ -169,8 +169,10 @@ class BotService : Service() {
         }
         val now = System.currentTimeMillis()
         var cmd = parseBot(m.text, dayOf(now))
-        // С ключом Gemini на вопросы отвечает ИИ по расписанию; точные записи и удаления приложение делает само.
-        if (d0.settings.aiKey.isNotBlank() && cmd !is BotCmd.Add && cmd !is BotCmd.Remove && cmd !is BotCmd.Help) {
+        // С ключом Gemini на вопросы отвечает ИИ; записи, удаления, балансы и сводки приложение считает само, точно.
+        val exact = cmd is BotCmd.Add || cmd is BotCmd.Remove || cmd is BotCmd.Help ||
+            cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances
+        if (d0.settings.aiKey.isNotBlank() && !exact) {
             val smart = smartReply(m.chat.id, m.text, now)
             if (smart != null) {
                 Diag.add(this, "Бот (ИИ): «${m.text.take(40)}» от ${m.chat.name}")
