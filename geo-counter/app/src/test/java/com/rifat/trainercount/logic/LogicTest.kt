@@ -357,7 +357,8 @@ class LogicTest {
         assertEquals(Status.DONE, lessons.first { it.occ.clientId == "s" }.status)
         assertEquals(Status.MISSED, lessons.first { it.occ.clientId == "e" }.status)
         val w = plan.filterIsInstance<PlanItem.Window>().map { hhmm(it.from) + "-" + hhmm(it.to) }
-        assertEquals(listOf("9:00-10:00", "11:00-16:00", "17:00-20:00"), w)
+        // До 10:00 только 30 минут на дорогу: окна нет. После занятий +30 минут, перед занятием −30.
+        assertEquals(listOf("11:30-15:30", "17:30-20:00"), w)
     }
 
     @Test fun moveCancelExtra() {
@@ -402,7 +403,7 @@ class LogicTest {
         assertEquals("s", occ.clientId)
         val (title, body) = tomorrowText(d, t(21, day = 7))!!
         assertTrue("2 тренировки" in title, title)
-        assertTrue("9:00 Светлана" in body && "14:00 Егор" in body, body)
+        assertTrue("9:00–10:00 Светлана" in body && "14:00–15:00 Егор" in body, body)
         // Первое занятие после 12:00: будильник не нужен.
         val late = removeRule(d, d.rules.single { it.clientId == "s" })
         assertNull(nextAlarm(late, t(20, day = 7)))
@@ -464,7 +465,7 @@ class LogicTest {
         assertTrue("10:00–11:00 Светлана (Beruti, 3393)" in txt, txt)
         assertTrue("14:00–15:00 Егор\n" in txt, txt)
         assertTrue("Начало 10:00, конец 15:00" in txt, txt)
-        assertTrue("Перерывы: 11:00–14:00" in txt, txt)
+        assertTrue("Перерывы: 11:30–13:30" in txt, txt)
         assertEquals("План на завтра, пт 09.10:\nЗанятий нет", familyText(d, t(21, day = 8), true))
     }
 }

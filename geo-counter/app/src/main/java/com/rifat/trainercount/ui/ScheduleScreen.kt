@@ -80,6 +80,7 @@ import com.rifat.trainercount.logic.fDur
 import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.freeSlots
 import com.rifat.trainercount.logic.hhmm
+import com.rifat.trainercount.logic.minuteOf
 import com.rifat.trainercount.logic.lessonMin
 import com.rifat.trainercount.logic.moveOnce
 import com.rifat.trainercount.logic.occurrences
@@ -275,7 +276,10 @@ private fun TimelineRow(data: AppData, item: PlanItem, onClick: () -> Unit) {
             ) {
                 Column {
                     Text("Окно ${hhmm(item.from)}–${hhmm(item.to)}", color = WINDOW, fontWeight = FontWeight.SemiBold)
-                    Text("свободно ${fDur(dur.toLong())} · нажмите, чтобы поставить занятие", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "свободно ${fDur(dur.toLong())}, дорога ${data.settings.travelMin} мин учтена · нажмите, чтобы поставить занятие",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
             is PlanItem.Lesson -> {
@@ -543,21 +547,32 @@ private fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date: LocalDa
 @Composable
 fun NextLessonsCard(data: AppData, now: Long, onClick: () -> Unit) {
     val today = LocalDate.now()
-    val todayLeft = dayPlan(data, today, now).filterIsInstance<PlanItem.Lesson>().filter { it.status == Status.PLANNED }
-    val (label, list) = if (todayLeft.isNotEmpty()) "Сегодня" to todayLeft
-    else "Завтра" to dayPlan(data, today.plusDays(1), now).filterIsInstance<PlanItem.Lesson>()
+    val nowMin = minuteOf(now)
+    val todayPlan = dayPlan(data, today, now)
+    val todayLeft = todayPlan.filter { it is PlanItem.Lesson && it.status == Status.PLANNED }
+    // Тот же план, что в расписании: занятия «с–до» и окна с учётом дороги.
+    val (label, list) = if (todayLeft.isNotEmpty()) "Сегодня" to todayPlan.filter {
+        (it is PlanItem.Lesson && it.status == Status.PLANNED) || (it is PlanItem.Window && it.to > nowMin)
+    } else "Завтра" to dayPlan(data, today.plusDays(1), now).filter { it !is PlanItem.Unplanned }
+    val shown = list.dropWhile { it is PlanItem.Window }.dropLastWhile { it is PlanItem.Window }
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text("Расписание · $label", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            if (list.isEmpty()) {
+            if (shown.isEmpty()) {
                 Text("Занятий нет", style = MaterialTheme.typography.bodyMedium)
-            } else list.take(5).forEach { l ->
+            } else shown.take(8).forEach { item ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-                    Box(Modifier.size(10.dp).clip(CircleShape).background(clientColor(l.occ.clientId)))
-                    Text("  ${hhmm(l.occ.min)}  ${data.client(l.occ.clientId)?.name}", style = MaterialTheme.typography.bodyMedium)
+                    val time = "${hhmm(item.from)}–${hhmm(item.to)}"
+                    if (item is PlanItem.Lesson) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(clientColor(item.occ.clientId)))
+                        Text("  $time  ${data.client(item.occ.clientId)?.name}", style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        Box(Modifier.size(10.dp).clip(CircleShape).border(1.dp, WINDOW, CircleShape))
+                        Text("  $time  окно", style = MaterialTheme.typography.bodyMedium, color = WINDOW)
+                    }
                 }
             }
-            if (list.size > 5) Text("ещё ${list.size - 5}", style = MaterialTheme.typography.bodySmall)
+            if (shown.size > 8) Text("ещё ${shown.size - 8}", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

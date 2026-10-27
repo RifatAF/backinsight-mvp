@@ -11,7 +11,7 @@ const val STALE_WEEKS = 3
 /** Визит относится к занятию по расписанию, если начался в пределах этого отклонения. */
 const val MATCH_MIN = 90
 /** Окно: свободный промежуток не короче. */
-const val WINDOW_MIN = 60
+const val WINDOW_MIN = 45
 const val READY_DAYS = 7
 
 // ---------- Время ----------
@@ -181,40 +181,32 @@ fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.system
     return items.sortedWith(compareBy({ it.from }, { if (it is PlanItem.Window) 1 else 0 }))
 }
 
-/** Свободные промежутки рабочего дня не короче часа. */
-fun windows(s: Settings, busy: List<Pair<Int, Int>>): List<PlanItem.Window> {
+/**
+ * Свободные окна рабочего дня: единый расчёт для расписания, главного экрана, сводок и поиска окна.
+ * После занятия окно начинается через travel минут (дорога), перед занятием заканчивается за travel минут.
+ * Начало и конец рабочего дня дорогой не ограничиваются. Начало окна округляется вверх до получаса.
+ */
+fun windows(s: Settings, busy: List<Pair<Int, Int>>, travel: Int = s.travelMin): List<PlanItem.Window> {
     val out = mutableListOf<PlanItem.Window>()
-    var cur = roundSlot(s.startMin)
-    for ((a, b) in busy.sortedBy { it.first }) {
-        if (a - cur >= WINDOW_MIN) out += PlanItem.Window(cur, a)
+    var cur = s.startMin
+    var first = true
+    for ((a, b) in busy.sortedBy { it.first } + listOf(s.endMin to s.endMin)) {
+        val isEnd = a == s.endMin && b == s.endMin
+        val from = ceil30(if (first) cur else cur + travel)
+        val to = minOf(if (isEnd) a else a - travel, s.endMin)
+        if (to - from >= WINDOW_MIN) out += PlanItem.Window(from, to)
         cur = maxOf(cur, b)
+        first = false
+        if (isEnd) break
     }
-    val end = s.endMin
-    if (end - cur >= WINDOW_MIN) out += PlanItem.Window(cur, end)
     return out
 }
 
+private fun ceil30(min: Int) = (min + 29) / 30 * 30
+
 /** Свободные окна на ближайшие дни, куда можно перенести занятие длиной duration. */
-fun freeSlots(d: AppData, from: LocalDate, days: Int, duration: Int, now: Long, zone: ZoneId = ZoneId.systemDefault()): List<Pair<LocalDate, Int>> {
-    val nowDate = dayOf(now, zone)
-    val nowMin = Instant.ofEpochMilli(now).atZone(zone).let { it.hour * 60 + it.minute }
-    val out = mutableListOf<Pair<LocalDate, Int>>()
-    for (i in 0 until days) {
-        val date = from.plusDays(i.toLong())
-        if (date.dayOfWeek.value !in d.settings.days) continue
-        for (w in dayPlan(d, date, now, zone).filterIsInstance<PlanItem.Window>()) {
-            var m = w.from
-            while (m + duration <= w.to) {
-                if (date > nowDate || m > nowMin) {
-                    out += date to m
-                    break
-                }
-                m += 30
-            }
-        }
-    }
-    return out
-}
+fun freeSlots(d: AppData, from: LocalDate, days: Int, duration: Int, now: Long, zone: ZoneId = ZoneId.systemDefault()): List<Pair<LocalDate, Int>> =
+    findWindows(d, from, days, duration, d.settings.travelMin, now, zone).map { it.date to it.earliest }
 
 // ---------- Изменения ----------
 
@@ -306,7 +298,7 @@ fun tomorrowText(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): 
     val title = "Завтра ${fDow(epochMs(date, 12 * 60, zone))} ${fDate(epochMs(date, 12 * 60, zone))}: ${trainings(lessons.size)}"
     val body = buildString {
         lessons.forEach { l ->
-            append("${hhmm(l.occ.min)} ${d.client(l.occ.clientId)?.name}")
+            append("${hhmm(l.from)}–${hhmm(l.to)} ${d.client(l.occ.clientId)?.name}")
             if (l.occ.movedFrom != null) append(" (перенос)")
             if (l.occ.extra) append(" (разово)")
             append('\n')
@@ -331,29 +323,18 @@ data class FreeWindow(val date: LocalDate, val earliest: Int, val latest: Int)
 fun findWindows(
     d: AppData, from: LocalDate, days: Int, duration: Int, travel: Int, now: Long, zone: ZoneId = ZoneId.systemDefault(),
 ): List<FreeWindow> {
-    val s = d.settings
     val nowDate = dayOf(now, zone)
-    val nowMin = Instant.ofEpochMilli(now).atZone(zone).let { it.hour * 60 + it.minute }
+    val nowMin = minuteOf(now, zone)
     val out = mutableListOf<FreeWindow>()
     for (i in 0 until days) {
         val date = from.plusDays(i.toLong())
-        if (date.dayOfWeek.value !in s.days || date < nowDate) continue
-        val busy = dayPlan(d, date, now, zone)
-            .filter { it !is PlanItem.Window && !(it is PlanItem.Lesson && it.status == Status.MISSED) }
-            .map { it.from to it.to }.sortedBy { it.first }
-        var gapStart = s.startMin
-        var first = true
-        for (slot in busy + listOf(s.endMin to s.endMin)) {
-            val isEnd = slot.first == s.endMin && slot.second == s.endMin
-            val lo = if (first) gapStart else gapStart + travel
-            val hi = (if (isEnd) slot.first else slot.first - travel) - duration
-            var a = ((lo + 29) / 30) * 30
-            if (date == nowDate) a = maxOf(a, ((nowMin + travel + 29) / 30) * 30)
-            val b = (hi / 30) * 30
+        if (date.dayOfWeek.value !in d.settings.days || date < nowDate) continue
+        val busy = dayPlan(d, date, now, zone).filter { it !is PlanItem.Window }.map { it.from to it.to }
+        for (w in windows(d.settings, busy, travel)) {
+            var a = w.from
+            if (date == nowDate) a = maxOf(a, ceil30(nowMin + travel))
+            val b = (w.to - duration) / 30 * 30
             if (a <= b) out += FreeWindow(date, a, b)
-            gapStart = maxOf(gapStart, slot.second)
-            first = false
-            if (isEnd) break
         }
     }
     return out
