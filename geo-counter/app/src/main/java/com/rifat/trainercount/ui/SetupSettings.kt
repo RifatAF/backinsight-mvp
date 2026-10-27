@@ -110,8 +110,6 @@ fun HomeBlock(data: AppData) {
     val ctx = LocalContext.current
     val s = data.settings
     var busy by remember { mutableStateOf(false) }
-    var aiKey by remember(s.aiKey) { mutableStateOf(s.aiKey) }
-    var aiStatus by remember { mutableStateOf("") }
     var ssid by remember(s.homeSsid) { mutableStateOf(s.homeSsid) }
     Column {
         Text(
@@ -499,6 +497,8 @@ fun TelegramBlock(data: AppData) {
     var status by remember { mutableStateOf("") }
     var chats by remember { mutableStateOf<List<com.rifat.trainercount.geo.Telegram.Chat>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
+    var aiKey by remember(s.aiKey) { mutableStateOf(s.aiKey) }
+    var aiStatus by remember { mutableStateOf("") }
 
     fun io(block: suspend () -> Unit) {
         busy = true
