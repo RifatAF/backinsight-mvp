@@ -385,3 +385,30 @@ private fun alarmed(d: AppData, date: LocalDate, min: Int): Boolean {
     if (!s.alarmOn || min >= s.alarmBefore) return false
     return occurrences(d, date).firstOrNull()?.min == min
 }
+
+// ---------- Сообщение в Telegram ----------
+
+/** План на завтра для близких: кто, во сколько и где, когда свободен. */
+fun familyText(d: AppData, now: Long, withAddress: Boolean, zone: ZoneId = ZoneId.systemDefault()): String {
+    val date = dayOf(now, zone).plusDays(1)
+    val t = epochMs(date, 12 * 60, zone)
+    val head = "План на завтра, ${fDow(t)} ${fDate(t)}"
+    val plan = dayPlan(d, date, now, zone)
+    val lessons = plan.filterIsInstance<PlanItem.Lesson>()
+    if (date.dayOfWeek.value !in d.settings.days || lessons.isEmpty()) return "$head:\nЗанятий нет"
+    return buildString {
+        append("$head:\n")
+        lessons.forEach { l ->
+            val c = d.client(l.occ.clientId)
+            append("${hhmm(l.from)}–${hhmm(l.to)} ${c?.name ?: ""}")
+            if (withAddress) {
+                val where = c?.placeId?.let { d.place(it)?.name } ?: c?.address?.takeIf { it.isNotBlank() }
+                if (where != null) append(" ($where)")
+            }
+            append('\n')
+        }
+        append("Начало ${hhmm(lessons.first().from)}, конец ${hhmm(lessons.maxOf { it.to })}")
+        val w = plan.filterIsInstance<PlanItem.Window>().filter { it.from >= lessons.first().from && it.to <= lessons.maxOf { l -> l.to } }
+        if (w.isNotEmpty()) append("\nПерерывы: " + w.joinToString(", ") { "${hhmm(it.from)}–${hhmm(it.to)}" })
+    }
+}

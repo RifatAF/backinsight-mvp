@@ -131,6 +131,10 @@ object Store {
             put("eveningMin", s.eveningMin); put("eveningOn", s.eveningOn)
             put("alarmOn", s.alarmOn); put("alarmLead", s.alarmLead); put("alarmBefore", s.alarmBefore)
             put("soonOn", s.soonOn); put("soonLead", s.soonLead); put("travelMin", s.travelMin)
+            put("alarmVolume", s.alarmVolume); put("alarmFade", s.alarmFade); put("alarmTone", s.alarmTone)
+            put("alarmVibrate", s.alarmVibrate)
+            put("tgOn", s.tgOn); put("tgToken", s.tgToken); put("tgChatId", s.tgChatId)
+            put("tgChatName", s.tgChatName); put("tgMin", s.tgMin); put("tgAddress", s.tgAddress)
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
         put("lastPoll", d.lastPoll ?: JSONObject.NULL)
@@ -206,6 +210,11 @@ object Store {
                 alarmBefore = s.optInt("alarmBefore", def.alarmBefore),
                 soonOn = s.optBoolean("soonOn", def.soonOn), soonLead = s.optInt("soonLead", def.soonLead),
                 travelMin = s.optInt("travelMin", def.travelMin),
+                alarmVolume = s.optInt("alarmVolume", def.alarmVolume), alarmFade = s.optBoolean("alarmFade", def.alarmFade),
+                alarmTone = s.optString("alarmTone"), alarmVibrate = s.optBoolean("alarmVibrate", def.alarmVibrate),
+                tgOn = s.optBoolean("tgOn"), tgToken = s.optString("tgToken"), tgChatId = s.optString("tgChatId"),
+                tgChatName = s.optString("tgChatName"), tgMin = s.optInt("tgMin", def.tgMin),
+                tgAddress = s.optBoolean("tgAddress", def.tgAddress),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
             lastPoll = o.lOpt("lastPoll"),

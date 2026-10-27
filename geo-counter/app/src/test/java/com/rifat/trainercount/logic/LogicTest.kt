@@ -441,4 +441,18 @@ class LogicTest {
         assertEquals("e", occ.clientId)
         assertNull(nextSoon(d.copy(settings = d.settings.copy(soonOn = false)), t(20, day = 7)))
     }
+
+    @Test fun familyMessage() {
+        val s = home.copy(startMin = 9 * 60, endMin = 20 * 60)
+        var d = base.copy(settings = s, clients = listOf(sveta.copy(address = "Beruti, 3393"), egor))
+        d = addRule(d, "s", 4, 10 * 60, null)
+        d = addRule(d, "e", 4, 14 * 60, null)
+        val txt = familyText(d, t(21, day = 7), withAddress = true)
+        assertTrue(txt.startsWith("План на завтра, чт 08.10:"), txt)
+        assertTrue("10:00–11:00 Светлана (Beruti, 3393)" in txt, txt)
+        assertTrue("14:00–15:00 Егор\n" in txt, txt)
+        assertTrue("Начало 10:00, конец 15:00" in txt, txt)
+        assertTrue("Перерывы: 11:00–14:00" in txt, txt)
+        assertEquals("План на завтра, пт 09.10:\nЗанятий нет", familyText(d, t(21, day = 8), true))
+    }
 }

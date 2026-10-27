@@ -55,6 +55,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.geo.GeoSync
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import com.rifat.trainercount.geo.Planner
 import com.rifat.trainercount.logic.fDow
 import com.rifat.trainercount.logic.fTime
@@ -297,6 +299,8 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { HoursBlock(data) } }
             SectionTitle("Напоминания и будильник")
             Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
+            SectionTitle("Telegram: план на завтра")
+            Card { Column(Modifier.padding(12.dp)) { TelegramBlock(data) } }
             SectionTitle("Общие места")
             Card { Column(Modifier.padding(12.dp)) { PlacesBlock(data, nav) } }
             SectionTitle("Данные")
@@ -368,6 +372,7 @@ fun RemindersBlock(data: AppData) {
             OutlinedButton(onClick = {
                 pickTime(ctx, s.alarmBefore) { m -> save { it.copy(alarmBefore = m) } }
             }) { Text("если тренировка раньше ${hm(s.alarmBefore)}") }
+            AlarmSoundBlock(data)
         }
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -417,5 +422,162 @@ fun RemindersBlock(data: AppData) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
         )
+    }
+}
+
+
+@Composable
+fun AlarmSoundBlock(data: AppData) {
+    val ctx = LocalContext.current
+    val s = data.settings
+    fun save(f: (com.rifat.trainercount.logic.Settings) -> com.rifat.trainercount.logic.Settings) =
+        Store.update { it.copy(settings = f(it.settings)) }
+    var vol by remember(s.alarmVolume) { mutableStateOf(s.alarmVolume.toFloat()) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        @Suppress("DEPRECATION")
+        val uri = r.data?.getParcelableExtra<Uri>(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        if (r.resultCode == android.app.Activity.RESULT_OK && uri != null) save { it.copy(alarmTone = uri.toString()) }
+    }
+    val toneName = remember(s.alarmTone) {
+        runCatching {
+            android.media.RingtoneManager.getRingtone(ctx, com.rifat.trainercount.geo.AlarmService.toneUri(s.alarmTone))?.getTitle(ctx)
+        }.getOrNull() ?: "Стандартная"
+    }
+    Column(Modifier.padding(top = 8.dp)) {
+        Text("Громкость: ${vol.toInt()} %", style = MaterialTheme.typography.bodyMedium)
+        Slider(
+            value = vol, onValueChange = { vol = it }, valueRange = 5f..100f, steps = 18,
+            onValueChangeFinished = { save { it.copy(alarmVolume = vol.toInt()) } },
+        )
+        Text(
+            "От громкости будильников телефона. 50 % примерно вдвое тише.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Плавно нарастает (30 сек)", modifier = Modifier.weight(1f))
+            Switch(checked = s.alarmFade, onCheckedChange = { v -> save { it.copy(alarmFade = v) } })
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Вибрация", modifier = Modifier.weight(1f))
+            Switch(checked = s.alarmVibrate, onCheckedChange = { v -> save { it.copy(alarmVibrate = v) } })
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                picker.launch(
+                    Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER)
+                        .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, android.media.RingtoneManager.TYPE_ALL)
+                        .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                        .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, com.rifat.trainercount.geo.AlarmService.toneUri(s.alarmTone))
+                        .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TITLE, "Мелодия будильника")
+                )
+            }) { Text("Мелодия: $toneName", maxLines = 1) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                save { it.copy(alarmVolume = vol.toInt()) }
+                com.rifat.trainercount.geo.AlarmService.start(ctx, "Так будет звучать будильник", preview = true)
+            }) { Text("Проверить звук") }
+            TextButton(onClick = { com.rifat.trainercount.geo.AlarmService.stop(ctx) }) { Text("Стоп") }
+        }
+    }
+}
+
+@Composable
+fun TelegramBlock(data: AppData) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val s = data.settings
+    fun save(f: (com.rifat.trainercount.logic.Settings) -> com.rifat.trainercount.logic.Settings) {
+        Store.update { it.copy(settings = f(it.settings)) }
+        Planner.reschedule(ctx)
+    }
+    var token by remember(s.tgToken) { mutableStateOf(s.tgToken) }
+    var bot by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf("") }
+    var chats by remember { mutableStateOf<List<com.rifat.trainercount.geo.Telegram.Chat>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+
+    fun io(block: suspend () -> Unit) {
+        busy = true
+        scope.launch {
+            block()
+            busy = false
+        }
+    }
+
+    Column {
+        Text(
+            "Каждый вечер бот сам отправит жене план на завтра: кто, во сколько и где.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "1. В Telegram откройте @BotFather, отправьте /newbot, придумайте имя. Он пришлёт токен вида 123456:ABC-DEF…\n" +
+                "2. Вставьте токен ниже и нажмите «Проверить».\n" +
+                "3. Жена находит вашего бота по имени и нажимает «Старт».\n" +
+                "4. Нажмите «Найти чат» и выберите её.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        OutlinedTextField(
+            value = token, onValueChange = { token = it.trim() }, label = { Text("Токен бота") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+            OutlinedButton(enabled = !busy && token.isNotBlank(), onClick = {
+                io {
+                    val name = withContext(Dispatchers.IO) { com.rifat.trainercount.geo.Telegram.botName(token) }
+                    bot = name
+                    status = if (name != null) "✓ Бот @$name" else "✗ Токен не подошёл или нет интернета"
+                    if (name != null) save { it.copy(tgToken = token) }
+                }
+            }) { Text("Проверить") }
+            OutlinedButton(enabled = !busy && s.tgToken.isNotBlank(), onClick = {
+                io {
+                    chats = withContext(Dispatchers.IO) { com.rifat.trainercount.geo.Telegram.chats(s.tgToken) }
+                    status = if (chats.isEmpty()) "Чатов нет: пусть жена откроет бота${bot?.let { " @$it" } ?: ""} и нажмёт «Старт», затем повторите"
+                    else "Выберите, кому отправлять:"
+                }
+            }) { Text("Найти чат") }
+        }
+        if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            chats.forEach { c ->
+                FilterChip(
+                    selected = s.tgChatId == c.id,
+                    onClick = { save { it.copy(tgChatId = c.id, tgChatName = c.name, tgOn = true) } },
+                    label = { Text(c.name.ifBlank { c.id }) },
+                )
+            }
+        }
+        if (s.tgChatId.isNotBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("Отправлять: ${s.tgChatName.ifBlank { s.tgChatId }}")
+                    Text("каждый вечер в ${hm(s.tgMin)}", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = s.tgOn, onCheckedChange = { v -> save { it.copy(tgOn = v) } })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { pickTime(ctx, s.tgMin) { m -> save { it.copy(tgMin = m) } } }) { Text("Время ${hm(s.tgMin)}") }
+                OutlinedButton(onClick = {
+                    com.rifat.trainercount.geo.Telegram.enqueue(
+                        ctx, com.rifat.trainercount.logic.familyText(data, System.currentTimeMillis(), s.tgAddress),
+                    )
+                    Toast.makeText(ctx, "Отправляю, результат в журнале", Toast.LENGTH_SHORT).show()
+                }) { Text("Отправить сейчас") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Писать адреса", modifier = Modifier.weight(1f))
+                Switch(checked = s.tgAddress, onCheckedChange = { v -> save { it.copy(tgAddress = v) } })
+            }
+            Text("Так будет выглядеть:", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                com.rifat.trainercount.logic.familyText(data, System.currentTimeMillis(), s.tgAddress),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

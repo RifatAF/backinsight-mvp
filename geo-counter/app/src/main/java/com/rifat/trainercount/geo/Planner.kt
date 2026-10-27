@@ -42,6 +42,7 @@ object Planner {
     const val NID_ALARM = 7002
 
     fun channels(ctx: Context) {
+        AlarmService.channel(ctx)
         val nm = ctx.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CH_EVENING, "Расписание на завтра", NotificationManager.IMPORTANCE_DEFAULT)
@@ -106,6 +107,12 @@ object Planner {
         am.cancel(evening)
         if (s.eveningOn) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextEvening(s, now), evening)
 
+        val tg = pi(ctx, ScheduleReceiver.TELEGRAM, 20)
+        am.cancel(tg)
+        if (s.tgOn && s.tgToken.isNotBlank() && s.tgChatId.isNotBlank()) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextEvening(s.copy(eveningMin = s.tgMin), now), tg)
+        }
+
         val soon = pi(ctx, ScheduleReceiver.SOON, 18)
         am.cancel(soon)
         nextSoon(d, now)?.let { (at, _) ->
@@ -169,8 +176,15 @@ object Planner {
         Diag.add(ctx, "Напоминание: ${hhmm(l.occ.min)} ${c?.name}")
     }
 
-    @SuppressLint("MissingPermission")
+    /** Будильник: своя мелодия с настраиваемой громкостью; если система не дала, обычное громкое уведомление. */
     fun ring(ctx: Context, text: String) {
+        if (AlarmService.start(ctx, text)) return
+        Diag.add(ctx, "Будильник: запуск звука не разрешён, звоню уведомлением")
+        ringNotification(ctx, text)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun ringNotification(ctx: Context, text: String) {
         val full = PendingIntent.getActivity(
             ctx, 15, Intent(ctx, AlarmActivity::class.java).putExtra("text", text)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION),
@@ -209,6 +223,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val STOP = "com.rifat.trainercount.ALARM_STOP"
         const val SNOOZE = "com.rifat.trainercount.ALARM_SNOOZE"
         const val SOON = "com.rifat.trainercount.SOON"
+        const val TELEGRAM = "com.rifat.trainercount.TELEGRAM"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
@@ -230,12 +245,25 @@ class ScheduleReceiver : BroadcastReceiver() {
                 Planner.ring(ctx, text)
                 Planner.reschedule(ctx)
             }
+            TELEGRAM -> {
+                Planner.refresh(ctx)
+                val d = Store.data.value
+                if (d.rules.any { !it.off }) {
+                    Telegram.enqueue(ctx, com.rifat.trainercount.logic.familyText(d, System.currentTimeMillis(), d.settings.tgAddress))
+                } else {
+                    Diag.add(ctx, "Telegram: расписание ещё пустое, не отправляю")
+                }
+            }
             SOON -> {
                 Planner.showSoon(ctx)
                 Planner.reschedule(ctx)
             }
-            STOP -> NotificationManagerCompat.from(ctx).cancel(Planner.NID_ALARM)
+            STOP -> {
+                AlarmService.stop(ctx)
+                NotificationManagerCompat.from(ctx).cancel(Planner.NID_ALARM)
+            }
             SNOOZE -> {
+                AlarmService.stop(ctx)
                 NotificationManagerCompat.from(ctx).cancel(Planner.NID_ALARM)
                 Planner.snooze(ctx)
             }

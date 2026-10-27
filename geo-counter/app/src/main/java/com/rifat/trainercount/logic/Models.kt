@@ -102,6 +102,18 @@ data class Settings(
     val soonLead: Int = 30,
     /** Запас на дорогу между занятиями при поиске окна. */
     val travelMin: Int = 30,
+    /** Громкость будильника 5..100 % от громкости будильников телефона, плавное нарастание, мелодия, вибрация. */
+    val alarmVolume: Int = 50,
+    val alarmFade: Boolean = true,
+    val alarmTone: String = "",
+    val alarmVibrate: Boolean = true,
+    /** Telegram: бот отправляет план на завтра в чат tgChatId в tgMin. */
+    val tgOn: Boolean = false,
+    val tgToken: String = "",
+    val tgChatId: String = "",
+    val tgChatName: String = "",
+    val tgMin: Int = 21 * 60 + 30,
+    val tgAddress: Boolean = true,
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }
