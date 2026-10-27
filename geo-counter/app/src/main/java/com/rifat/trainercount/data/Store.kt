@@ -2,7 +2,10 @@ package com.rifat.trainercount.data
 
 import android.content.Context
 import com.rifat.trainercount.logic.AppData
+import com.rifat.trainercount.logic.Change
+import com.rifat.trainercount.logic.ChangeKind
 import com.rifat.trainercount.logic.Client
+import com.rifat.trainercount.logic.Rule
 import com.rifat.trainercount.logic.Pack
 import com.rifat.trainercount.logic.Pending
 import com.rifat.trainercount.logic.Place
@@ -125,8 +128,28 @@ object Store {
             put("startMin", s.startMin); put("endMin", s.endMin)
             put("days", JSONArray().apply { s.days.sorted().forEach { put(it) } })
             put("setupDone", s.setupDone)
+            put("eveningMin", s.eveningMin); put("eveningOn", s.eveningOn)
+            put("alarmOn", s.alarmOn); put("alarmLead", s.alarmLead); put("alarmBefore", s.alarmBefore)
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
+        put("lastPoll", d.lastPoll ?: JSONObject.NULL)
+        put("rules", JSONArray().apply {
+            d.rules.forEach { r ->
+                put(JSONObject().apply {
+                    put("id", r.id); put("clientId", r.clientId); put("day", r.day); put("min", r.min)
+                    put("parity", r.parity ?: JSONObject.NULL); put("manual", r.manual); put("off", r.off)
+                })
+            }
+        })
+        put("changes", JSONArray().apply {
+            d.changes.forEach { c ->
+                put(JSONObject().apply {
+                    put("id", c.id); put("clientId", c.clientId); put("kind", c.kind.name)
+                    put("date", c.date); put("min", c.min)
+                    put("toDate", c.toDate ?: JSONObject.NULL); put("toMin", c.toMin ?: JSONObject.NULL)
+                })
+            }
+        })
     }
 
     fun fromJson(o: JSONObject): AppData {
@@ -177,8 +200,27 @@ object Store {
                 startMin = s.optInt("startMin", def.startMin), endMin = s.optInt("endMin", def.endMin),
                 days = if (days == null) def.days else (0 until days.length()).map { days.getInt(it) }.toSet(),
                 setupDone = s.optBoolean("setupDone"),
+                eveningMin = s.optInt("eveningMin", def.eveningMin), eveningOn = s.optBoolean("eveningOn", def.eveningOn),
+                alarmOn = s.optBoolean("alarmOn", def.alarmOn), alarmLead = s.optInt("alarmLead", def.alarmLead),
+                alarmBefore = s.optInt("alarmBefore", def.alarmBefore),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
+            lastPoll = o.lOpt("lastPoll"),
+            rules = o.optJSONArray("rules").list { r ->
+                Rule(
+                    r.getString("id"), r.getString("clientId"), r.getInt("day"), r.getInt("min"),
+                    if (r.has("parity") && !r.isNull("parity")) r.getInt("parity") else null,
+                    r.optBoolean("manual"), r.optBoolean("off"),
+                )
+            },
+            changes = o.optJSONArray("changes").list { c ->
+                Change(
+                    c.getString("id"), c.getString("clientId"),
+                    runCatching { ChangeKind.valueOf(c.getString("kind")) }.getOrDefault(ChangeKind.CANCEL),
+                    c.getLong("date"), c.getInt("min"), c.lOpt("toDate"),
+                    if (c.has("toMin") && !c.isNull("toMin")) c.getInt("toMin") else null,
+                )
+            },
         )
     }
 }

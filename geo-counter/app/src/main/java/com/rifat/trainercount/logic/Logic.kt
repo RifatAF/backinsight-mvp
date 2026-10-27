@@ -142,9 +142,12 @@ fun matchSlots(d: AppData, place: Place, start: Long, end: Long, zone: ZoneId = 
     val latest = end - place.minMin * MIN
     val out = mutableListOf<Pair<Client, Long>>()
     for (c in d.clients.filter { it.placeId == place.id && !it.archived }) {
-        val at = c.slots.flatMap { s ->
-            dates.filter { it.dayOfWeek.value == s.day }
-                .map { it.atStartOfDay(zone).plusMinutes(s.min.toLong()).toInstant().toEpochMilli() }
+        val at = dates.flatMap { date ->
+            val learned = d.rules.filter { r ->
+                r.clientId == c.id && !r.off && (r.parity == null || r.parity == parityOf(date))
+            }.map { Slot(it.day, it.min) }
+            (c.slots + learned).filter { it.day == date.dayOfWeek.value }
+                .map { date.atStartOfDay(zone).plusMinutes(it.min.toLong()).toInstant().toEpochMilli() }
         }.filter { it in (start - SLOT_EARLY_MIN * MIN)..latest }.minOrNull() ?: continue
         out += c to at
     }

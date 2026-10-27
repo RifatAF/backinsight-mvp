@@ -90,6 +90,13 @@ data class Settings(
     /** ISO: 1 = понедельник … 7 = воскресенье. */
     val days: Set<Int> = (1..7).toSet(),
     val setupDone: Boolean = false,
+    /** Вечерняя сводка на завтра, минуты от полуночи. */
+    val eveningMin: Int = 21 * 60 + 30,
+    val eveningOn: Boolean = true,
+    /** Будильник за alarmLead минут до первой тренировки, если она раньше alarmBefore. */
+    val alarmOn: Boolean = true,
+    val alarmLead: Int = 45,
+    val alarmBefore: Int = 12 * 60,
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }
@@ -106,8 +113,43 @@ data class AppData(
     val open: Map<String, Long> = emptyMap(),
     /** Время последней фоновой проверки места (страховка, если геозона не сработала). */
     val lastPoll: Long? = null,
+    /** Расписание: постоянные занятия (выученные по визитам и заданные вручную). */
+    val rules: List<Rule> = emptyList(),
+    /** Разовые изменения расписания: отмены, переносы, дополнительные занятия. */
+    val changes: List<Change> = emptyList(),
 ) {
     fun client(id: String) = clients.firstOrNull { it.id == id }
     fun place(id: String) = places.firstOrNull { it.id == id }
     val openTrip get() = trips.lastOrNull { it.end == null }
 }
+
+/**
+ * Постоянное занятие: день недели и время начала (кратно 30 минутам).
+ * parity: null каждую неделю, 0 или 1: только чётные или нечётные недели (раз в две недели).
+ * manual: задано вручную, автоматика его не трогает. off: выученное занятие, которое убрали руками.
+ */
+data class Rule(
+    val id: String,
+    val clientId: String,
+    val day: Int,
+    val min: Int,
+    val parity: Int? = null,
+    val manual: Boolean = false,
+    val off: Boolean = false,
+)
+
+enum class ChangeKind { CANCEL, MOVE, EXTRA }
+
+/**
+ * Разовое изменение. CANCEL и MOVE относятся к занятию date/min по расписанию; MOVE ставит его на toDate/toMin.
+ * EXTRA: дополнительное занятие date/min. date и toDate: номер дня (LocalDate.toEpochDay).
+ */
+data class Change(
+    val id: String,
+    val clientId: String,
+    val kind: ChangeKind,
+    val date: Long,
+    val min: Int,
+    val toDate: Long? = null,
+    val toMin: Int? = null,
+)

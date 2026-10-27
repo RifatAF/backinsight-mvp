@@ -15,6 +15,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.geo.GeoSync
 import com.rifat.trainercount.geo.Notifier
+import com.rifat.trainercount.geo.Planner
 import com.rifat.trainercount.geo.Tracker
 
 sealed interface Screen {
@@ -26,6 +27,7 @@ sealed interface Screen {
     data class Edit(val id: String?) : Screen
     data class EditPlace(val id: String?) : Screen
     data object Log : Screen
+    data object Schedule : Screen
 }
 
 class Nav(private val stack: SnapshotStateList<Screen>) {
@@ -65,6 +67,7 @@ class MainActivity : ComponentActivity() {
                     is Screen.Edit -> EditClientScreen(data, s.id, nav)
                     is Screen.EditPlace -> EditPlaceScreen(data, s.id, nav)
                     Screen.Log -> LogScreen(nav)
+                    Screen.Schedule -> ScheduleScreen(data, nav)
                 }
             }
         }
@@ -77,6 +80,12 @@ class MainActivity : ComponentActivity() {
 
     private fun openFrom(i: Intent?) {
         if (i == null || !Store.data.value.settings.setupDone) return
+        if (i.getBooleanExtra(Planner.EXTRA_SCHEDULE, false)) {
+            i.removeExtra(Planner.EXTRA_SCHEDULE)
+            nav.reset(Screen.Home)
+            nav.go(Screen.Schedule)
+            return
+        }
         i.getStringExtra(Notifier.EXTRA_PENDING)?.let { pid ->
             i.removeExtra(Notifier.EXTRA_PENDING)
             nav.reset(Screen.Home)
@@ -92,5 +101,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         GeoSync.sync(this)
         Tracker.checkWifiNow(this)
+        Planner.refresh(this)
     }
 }

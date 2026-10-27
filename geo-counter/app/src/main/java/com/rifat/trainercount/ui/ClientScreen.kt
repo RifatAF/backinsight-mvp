@@ -60,6 +60,8 @@ import com.rifat.trainercount.logic.Pack
 import com.rifat.trainercount.logic.Visit
 import com.rifat.trainercount.logic.VisitKind
 import com.rifat.trainercount.logic.balance
+import com.rifat.trainercount.logic.hhmm
+import com.rifat.trainercount.logic.slotOf
 import com.rifat.trainercount.logic.distanceM
 import com.rifat.trainercount.logic.fDate
 import com.rifat.trainercount.logic.fDateY
@@ -157,11 +159,11 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
             if (visits.isEmpty()) item { Text("Пока пусто", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(visits, key = { it.id }) { v ->
                 ListItem(
-                    headlineContent = { Text("${fDow(v.start)}, ${fDate(v.start)}" + if (v.kind == VisitKind.AUTO) "  ${fTime(v.start)}–${fTime(v.end)}" else "") },
+                    headlineContent = { Text("${fDow(v.start)}, ${fDate(v.start)}" + if (v.kind == VisitKind.AUTO) "  ${hhmm(slotOf(v.start).second)}" else "") },
                     supportingContent = {
                         val tags = buildList {
                             when (v.kind) {
-                                VisitKind.AUTO -> add("авто, ${fDur((v.end - v.start) / 60_000)}")
+                                VisitKind.AUTO -> add("авто: ${fTime(v.start)}–${fTime(v.end)}, ${fDur((v.end - v.start) / 60_000)}")
                                 VisitKind.MANUAL -> add("вручную")
                                 VisitKind.BURNED -> add("отмена, списано")
                             }

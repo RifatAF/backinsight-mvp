@@ -84,6 +84,7 @@ object Tracker {
             logEffect(ctx, it)
             Notifier.onEffect(ctx, it)
         }
+        if (step?.effects?.isNotEmpty() == true) Planner.refresh(ctx)
     }
 
     private fun logEffect(ctx: Context, e: Effect) {
@@ -264,6 +265,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         GeoSync.sync(ctx)
         GeoSync.schedule(ctx)
+        Planner.reschedule(ctx)
     }
 }
 

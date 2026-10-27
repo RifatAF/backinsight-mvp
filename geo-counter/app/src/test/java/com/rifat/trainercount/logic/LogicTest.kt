@@ -300,4 +300,120 @@ class LogicTest {
         assertEquals("s", z.key)
         assertTrue(edge < 0)
     }
+
+    // ---------- Расписание ----------
+
+    private fun date(day: Int) = java.time.LocalDate.of(2026, 10, day)
+
+    /** Визит с геозоны: пришёл в h:m, ушёл через час. */
+    private fun auto(id: String, client: String, day: Int, h: Int, m: Int) =
+        Visit(id, client, t(h, m, day), t(h, m, day) + 3_600_000, 1)
+
+    @Test fun rounding() {
+        assertEquals(16 * 60, roundSlot(16 * 60 + 5))
+        assertEquals(11 * 60 + 30, roundSlot(11 * 60 + 25))
+        assertEquals(11 * 60 + 30, roundSlot(11 * 60 + 44))
+        assertEquals(12 * 60, roundSlot(11 * 60 + 45))
+    }
+
+    @Test fun learnsWeeklyFromOneWeek() {
+        // Ср 07.10 в 16:05 у Светланы → каждую среду в 16:00.
+        val d = learnRules(base.copy(visits = listOf(auto("v", "s", 7, 16, 5))), t(20, day = 8))
+        val r = d.rules.single()
+        assertEquals(3, r.day)
+        assertEquals(16 * 60, r.min)
+        assertNull(r.parity)
+        val next = dayPlan(d, date(14), t(9, day = 13)).filterIsInstance<PlanItem.Lesson>().single()
+        assertEquals(Status.PLANNED, next.status)
+        assertEquals("s", next.occ.clientId)
+    }
+
+    @Test fun learnsBiweekly() {
+        // Егор: пн 05.10 и 19.10 в 10:00, а пн 12.10 в 18:00 → два занятия через неделю.
+        val vs = listOf(auto("a", "e", 5, 10, 0), auto("b", "e", 19, 9, 55), auto("c", "e", 12, 18, 10))
+        val d = learnRules(base.copy(visits = vs), t(20, day = 20))
+        val morning = d.rules.single { it.min == 10 * 60 }
+        assertEquals(parityOf(date(5)), morning.parity)
+        val evening = d.rules.single { it.min == 18 * 60 }
+        assertNull(evening.parity) // одна неделя: пока считается еженедельным
+        // Через неделю после 19.10: 26.10 утра нет, 02.11 утро есть.
+        assertTrue(occurrences(d, date(26)).none { it.min == 10 * 60 })
+        assertTrue(occurrences(d, java.time.LocalDate.of(2026, 11, 2)).any { it.min == 10 * 60 })
+    }
+
+    @Test fun staleRuleDropped() {
+        val d = learnRules(base.copy(visits = listOf(auto("v", "s", 1, 16, 0))), t(12, day = 29))
+        assertTrue(d.rules.isEmpty())
+    }
+
+    @Test fun planDoneMissedAndWindows() {
+        val s = home.copy(startMin = 9 * 60, endMin = 20 * 60)
+        var d = base.copy(settings = s)
+        d = addRule(d, "s", 3, 10 * 60, null)
+        d = addRule(d, "e", 3, 16 * 60, null)
+        d = d.copy(visits = listOf(auto("v", "s", 7, 10, 10)))
+        val plan = dayPlan(d, date(7), t(19, day = 7))
+        val lessons = plan.filterIsInstance<PlanItem.Lesson>()
+        assertEquals(Status.DONE, lessons.first { it.occ.clientId == "s" }.status)
+        assertEquals(Status.MISSED, lessons.first { it.occ.clientId == "e" }.status)
+        val w = plan.filterIsInstance<PlanItem.Window>().map { hhmm(it.from) + "-" + hhmm(it.to) }
+        assertEquals(listOf("9:00-10:00", "11:00-16:00", "17:00-20:00"), w)
+    }
+
+    @Test fun moveCancelExtra() {
+        var d = addRule(base, "s", 3, 10 * 60, null)
+        val occ = occurrences(d, date(7)).single()
+        d = moveOnce(d, occ, date(7), date(8), 15 * 60)
+        assertTrue(occurrences(d, date(7)).isEmpty())
+        val moved = occurrences(d, date(8)).single()
+        assertEquals(15 * 60, moved.min)
+        assertEquals(date(7) to 10 * 60, moved.movedFrom)
+        // Перенос переносим ещё раз, затем отменяем со списанием.
+        d = moveOnce(d, moved, date(8), date(9), 11 * 60)
+        val again = occurrences(d, date(9)).single()
+        d = cancelOnce(d, again, date(9), burn = true)
+        assertTrue(occurrences(d, date(9)).isEmpty())
+        assertEquals(VisitKind.BURNED, d.visits.single().kind)
+        // Следующая неделя по расписанию не тронута.
+        assertEquals(10 * 60, occurrences(d, date(14)).single().min)
+        d = addExtra(d, "e", date(14), 18 * 60)
+        assertTrue(occurrences(d, date(14)).single { it.clientId == "e" }.extra)
+    }
+
+    @Test fun editAndRemoveLearnedRuleStick() {
+        var d = learnRules(base.copy(visits = listOf(auto("v", "s", 7, 16, 0))), t(20, day = 8))
+        val r = d.rules.single()
+        d = editRule(d, r, 3, 17 * 60, null)
+        d = learnRules(d, t(20, day = 9))
+        assertEquals(listOf(17 * 60), d.rules.filter { !it.off }.map { it.min })
+        d = removeRule(d, d.rules.single { !it.off })
+        d = learnRules(d, t(20, day = 9))
+        assertTrue(occurrences(d, date(14)).isEmpty())
+    }
+
+    @Test fun reminders() {
+        var d = base.copy(visits = listOf(auto("v", "s", 1, 9, 0)))
+        assertEquals(0, readyInDays(d, t(20, day = 8)))
+        assertEquals(6, readyInDays(d, t(20, day = 2)))
+        d = addRule(d, "s", 4, 9 * 60, null) // чт 08.10 9:00
+        d = addRule(d, "e", 4, 14 * 60, null)
+        val (at, occ) = nextAlarm(d, t(20, day = 7))!!
+        assertEquals(t(8, 15, day = 8), at)
+        assertEquals("s", occ.clientId)
+        val (title, body) = tomorrowText(d, t(21, day = 7))!!
+        assertTrue("2 тренировки" in title, title)
+        assertTrue("9:00 Светлана" in body && "14:00 Егор" in body, body)
+        // Первое занятие после 12:00: будильник не нужен.
+        val late = removeRule(d, d.rules.single { it.clientId == "s" })
+        assertNull(nextAlarm(late, t(20, day = 7)))
+        assertEquals(t(21, 30, day = 7), nextEvening(home, t(20, day = 7)))
+        assertEquals(t(21, 30, day = 8), nextEvening(home, t(22, day = 7)))
+    }
+
+    @Test fun cafeUsesLearnedSchedule() {
+        val d = withCafe("Аня" to emptyList(), "Борис" to emptyList())
+        val withRules = addRule(addRule(d, "Аня", 3, 18 * 60, null), "Борис", 3, 19 * 60, null)
+        val s = cafeStay(withRules, t(17, 55), t(20, 5))
+        assertEquals(listOf("Аня", "Борис"), s.data.visits.sortedBy { it.start }.map { it.clientId })
+    }
 }

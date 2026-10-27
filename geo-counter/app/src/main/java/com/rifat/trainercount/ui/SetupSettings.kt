@@ -55,6 +55,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.geo.GeoSync
+import com.rifat.trainercount.geo.Planner
+import com.rifat.trainercount.logic.fDow
+import com.rifat.trainercount.logic.fTime
+import com.rifat.trainercount.logic.nextAlarm
+import com.rifat.trainercount.logic.readyInDays
+import androidx.compose.material3.Switch
 import com.rifat.trainercount.geo.Perms
 import com.rifat.trainercount.geo.Wifi
 import com.rifat.trainercount.logic.AppData
@@ -289,6 +295,8 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { HomeBlock(data) } }
             SectionTitle("Рабочие часы")
             Card { Column(Modifier.padding(12.dp)) { HoursBlock(data) } }
+            SectionTitle("Напоминания и будильник")
+            Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
             SectionTitle("Общие места")
             Card { Column(Modifier.padding(12.dp)) { PlacesBlock(data, nav) } }
             SectionTitle("Данные")
@@ -320,5 +328,74 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             )
             Spacer(Modifier.height(32.dp))
         }
+    }
+}
+
+@Composable
+fun RemindersBlock(data: AppData) {
+    val ctx = LocalContext.current
+    val s = data.settings
+    var tick by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
+    fun save(f: (com.rifat.trainercount.logic.Settings) -> com.rifat.trainercount.logic.Settings) {
+        Store.update { it.copy(settings = f(it.settings)) }
+        Planner.reschedule(ctx)
+    }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Вечером: что завтра")
+                Text("Сводка занятий и свободных окон на завтра", style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = s.eveningOn, onCheckedChange = { v -> save { it.copy(eveningOn = v) } })
+        }
+        if (s.eveningOn) OutlinedButton(onClick = {
+            pickTime(ctx, s.eveningMin) { m -> save { it.copy(eveningMin = m) } }
+        }) { Text("в ${hm(s.eveningMin)}") }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Будильник перед тренировкой")
+                Text("Звонит до первой утренней тренировки дня", style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = s.alarmOn, onCheckedChange = { v -> save { it.copy(alarmOn = v) } })
+        }
+        if (s.alarmOn) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("За сколько", modifier = Modifier.weight(1f))
+                Stepper(s.alarmLead, { v -> save { it.copy(alarmLead = v) } }, 15..120, 15) { "$it мин" }
+            }
+            OutlinedButton(onClick = {
+                pickTime(ctx, s.alarmBefore) { m -> save { it.copy(alarmBefore = m) } }
+            }) { Text("если тренировка раньше ${hm(s.alarmBefore)}") }
+        }
+        key(tick) {
+            if (!Planner.canExact(ctx)) CheckRow(false, "Точные будильники", "Нужно, чтобы будильник звонил вовремя", "Открыть") {
+                if (Build.VERSION.SDK_INT >= 31) ctx.startActivity(
+                    Intent(AndroidSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${ctx.packageName}"))
+                )
+            }
+            val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= 34 && !nm.canUseFullScreenIntent()) CheckRow(
+                false, "Будильник на весь экран", "Чтобы будильник открывался поверх блокировки", "Открыть",
+            ) {
+                ctx.startActivity(
+                    Intent(AndroidSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${ctx.packageName}"))
+                )
+            }
+        }
+        val now = System.currentTimeMillis()
+        val ready = readyInDays(data, now)
+        val next = nextAlarm(data, now)
+        Text(
+            when {
+                ready > 0 -> "Напоминания включатся через $ready дн., когда соберётся расписание"
+                next != null -> "Ближайший будильник: ${fDow(next.first)} ${fTime(next.first)}"
+                else -> "Ближайших утренних тренировок нет"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
     }
 }

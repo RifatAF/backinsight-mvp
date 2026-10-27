@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Settings
@@ -75,7 +76,8 @@ fun HomeScreen(data: AppData, nav: Nav) {
             TopAppBar(
                 title = { Text("Тренировки") },
                 actions = {
-                    IconButton(onClick = { nav.go(Screen.Stats) }) { Icon(Icons.Default.DateRange, "Статистика") }
+                    IconButton(onClick = { nav.go(Screen.Schedule) }) { Icon(Icons.Default.DateRange, "Расписание") }
+                    IconButton(onClick = { nav.go(Screen.Stats) }) { Icon(Icons.AutoMirrored.Filled.List, "Статистика") }
                     IconButton(onClick = { nav.go(Screen.Settings) }) { Icon(Icons.Default.Settings, "Настройки") }
                 },
             )
@@ -94,6 +96,7 @@ fun HomeScreen(data: AppData, nav: Nav) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item { StatusCard(data, now) }
+            item { NextLessonsCard(data, now) { nav.go(Screen.Schedule) } }
             val todayIso = java.time.LocalDate.now().dayOfWeek.value
             if (todayIso !in data.settings.days) item {
                 WarnCard("Сегодня учёт выключен: этот день не отмечен как рабочий. Нажмите, чтобы изменить.") { nav.go(Screen.Settings) }
