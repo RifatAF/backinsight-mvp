@@ -64,4 +64,21 @@ class BotTest {
         assertEquals(null, parseAi("не JSON", today))
         assertTrue("2026-10-27, вторник" in aiPrompt("привет", today))
     }
+
+    @Test fun smartContextAndReply() {
+        val z = ZoneId.systemDefault()
+        val now = LocalDateTime.of(2026, 10, 27, 16, 40).atZone(z).toInstant().toEpochMilli()
+        var data = AppData(clients = listOf(Client("er", "Ерлан и Рита", address = "Tamborini 2626", lat = 1.0, lng = 1.0)))
+        data = addRule(data, "er", 2, 16 * 60, null)
+        val ctx = aiContext(data, now, "в дороге")
+        assertTrue("Последнее занятие сегодня: 16:00–17:00 Ерлан и Рита, адрес: Tamborini 2626" in ctx, ctx)
+        assertTrue("Где Рифат: в дороге" in ctx, ctx)
+        val prompt = aiChatPrompt(ctx, listOf("где Рифат?" to "В дороге"), "куда мне приехать?")
+        assertTrue("куда мне приехать?" in prompt && "Недавняя переписка" in prompt)
+        val r = parseAiReply("""{"reply": "Он закончит в 17:00 на Tamborini 2626.\nПодъезжай туда.", "add": null, "remove": null}""", today)!!
+        assertEquals("Он закончит в 17:00 на Tamborini 2626.\nПодъезжай туда.", r.reply)
+        assertEquals(null, r.add)
+        val r2 = parseAiReply("""{"reply":"Записал","add":{"date":"2026-10-29","time":"14:00","minutes":90,"title":"зубной Лера"},"remove":null}""", today)!!
+        assertEquals(BotCmd.Add(d(29), 14 * 60, 90, "Зубной Лера"), r2.add)
+    }
 }

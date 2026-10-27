@@ -444,6 +444,13 @@ class LogicTest {
         assertTrue(again.none { it is Effect.StayAsk })
     }
 
+    @Test fun homeArrivalOnlyByWifiWhenSsidSet() {
+        val d = onHomeLeave(base.copy(settings = home.copy(homeSsid = "Totoli")), t(13, 21)).data
+        // Неточное место «у дома» (кафе рядом): поездка продолжается.
+        assertTrue(onHomeArrive(d, t(16, 40), byGeofence = true).data.openTrip != null)
+        assertNull(onHomeArrive(d, t(19, 0)).data.openTrip)
+    }
+
     @Test fun oldFamilyDurationMigrated() {
         val old = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), sessionMin = 120, minMin = 90)
         val m = perPersonMigrate(old)

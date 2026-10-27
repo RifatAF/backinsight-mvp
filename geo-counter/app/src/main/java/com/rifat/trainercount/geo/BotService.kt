@@ -22,6 +22,9 @@ import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.BotCmd
 import com.rifat.trainercount.logic.aiPrompt
+import com.rifat.trainercount.logic.aiChatPrompt
+import com.rifat.trainercount.logic.aiContext
+import com.rifat.trainercount.logic.parseAiReply
 import com.rifat.trainercount.logic.parseAi
 import com.rifat.trainercount.logic.PlanItem
 import com.rifat.trainercount.logic.Status
@@ -137,6 +140,15 @@ class BotService : Service() {
         }
         val now = System.currentTimeMillis()
         var cmd = parseBot(m.text, dayOf(now))
+        // С ключом Gemini на вопросы отвечает ИИ по расписанию; точные записи и удаления приложение делает само.
+        if (d0.settings.aiKey.isNotBlank() && cmd !is BotCmd.Add && cmd !is BotCmd.Remove && cmd !is BotCmd.Help) {
+            val smart = smartReply(m.chat.id, m.text, now)
+            if (smart != null) {
+                Diag.add(this, "Бот (ИИ): «${m.text.take(40)}» от ${m.chat.name}")
+                Telegram.send(token, m.chat.id, smart)
+                return
+            }
+        }
         if (cmd is BotCmd.Unknown && d0.settings.aiKey.isNotBlank()) ai(m.text, now)?.let { cmd = it }
         // Место ищем до записи в данные: это может занять до 20 секунд.
         val where = if (cmd is BotCmd.Where) whereText() else ""
@@ -145,6 +157,39 @@ class BotService : Service() {
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
         Telegram.send(token, m.chat.id, reply)
+    }
+
+    /** Последние реплики по чатам: чтобы ИИ понимал «а где он закончит?» после предыдущего вопроса. */
+    private val history = mutableMapOf<String, ArrayDeque<Pair<String, String>>>()
+
+    /** Живой ответ ИИ с расписанием и местом. null: ИИ недоступен, ответим по-простому. */
+    private fun smartReply(chatId: String, text: String, now: Long): String? {
+        val d = Store.data.value
+        val context = aiContext(d, now, whereText().replace("\n", "; "))
+        val past = history[chatId]?.toList().orEmpty()
+        val raw = gemini(aiChatPrompt(context, past, text)) ?: return null
+        val ai = parseAiReply(raw, dayOf(now)) ?: return null
+        var extra = ""
+        // Запись и удаление выполняет приложение: так видно, что именно сделано, и есть проверка пересечений.
+        listOfNotNull(ai.add, ai.remove).forEach { c ->
+            Store.update { dd -> botAnswer(dd, c, now, { "" }).also { extra += "\n" + it.second }.first }
+        }
+        if (extra.isNotEmpty()) Planner.refresh(this)
+        val reply = (ai.reply + extra).trim()
+        history.getOrPut(chatId) { ArrayDeque() }.apply { addLast(text to reply); while (size > 4) removeFirst() }
+        return reply
+    }
+
+    /** Запрос к Gemini с подбором модели, если старую переименовали. */
+    private fun gemini(prompt: String): String? {
+        val s = Store.data.value.settings
+        fun save(m: String) = Store.update { it.copy(settings = it.settings.copy(aiModel = m)) }
+        return try {
+            Gemini.ask(s.aiKey, s.aiModel.ifBlank { Gemini.pickModel(s.aiKey).also(::save) }, prompt)
+        } catch (e: Exception) {
+            runCatching { Gemini.ask(s.aiKey, Gemini.pickModel(s.aiKey).also(::save), prompt) }
+                .onFailure { Diag.add(this, "✗ Gemini: ${it.message}") }.getOrNull()
+        }
     }
 
     /** Фразу не понял сам: спросить Gemini. В ИИ уходит только текст сообщения и дата. */

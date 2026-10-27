@@ -275,6 +275,8 @@ fun onHomeLeave(d: AppData, t: Long): Step {
  */
 fun onHomeArrive(d: AppData, t: Long, byGeofence: Boolean = false): Step {
     if (byGeofence && d.open.keys.any { nearHome(d, it) }) return Step(d)
+    // Домашний Wi‑Fi задан: возвращение считаем только по нему. По месту ошибиться легко: кафе рядом с домом.
+    if (byGeofence && d.settings.homeSsid.isNotBlank()) return Step(d)
     val closed = closeAllVisits(d, t)
     return Step(closeTrip(closed.data, t), closed.effects)
 }

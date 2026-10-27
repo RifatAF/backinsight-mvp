@@ -276,3 +276,85 @@ fun parseAi(json: String, today: LocalDate): BotCmd? {
         else -> null
     }
 }
+
+// ---------- Умные ответы: ИИ видит расписание и где Рифат ----------
+
+/** Сведения для ИИ: сейчас, где Рифат, план на неделю с адресами, где и когда заканчивается рабочий день. */
+fun aiContext(d: AppData, now: Long, status: String, zone: ZoneId = ZoneId.systemDefault()): String {
+    val today = dayOf(now, zone)
+    val nowMin = minuteOf(now, zone)
+    fun where(c: Client?) = c?.placeId?.let { d.place(it)?.name } ?: c?.address?.takeIf { it.isNotBlank() }
+    return buildString {
+        val t = epochMs(today, nowMin, zone)
+        append("Сейчас: ${fDow(t)} ${fDate(t)}, ${hhmm(nowMin)}.\n")
+        append("Где Рифат: $status\n")
+        val plan = dayPlan(d, today, now, zone)
+        val lessons = plan.filterIsInstance<PlanItem.Lesson>().filter { it.status != Status.MISSED }
+        lessons.maxByOrNull { it.to }?.let { last ->
+            val c = d.client(last.occ.clientId)
+            append("Последнее занятие сегодня: ${hhmm(last.from)}–${hhmm(last.to)} ${c?.name}" + (where(c)?.let { ", адрес: $it" } ?: "") + "\n")
+        }
+        append("\nРасписание (тренировки и личные дела):\n")
+        for (i in 0 until 7) {
+            val date = today.plusDays(i.toLong())
+            val et = epochMs(date, 12 * 60, zone)
+            append(dayText(d, date, now, true, "${fDow(et)} ${fDate(et)}" + if (i == 0) " (сегодня)" else if (i == 1) " (завтра)" else "", zone))
+            append("\n")
+        }
+        append("Рабочее время по настройкам: ${hhmm(d.settings.startMin)}–${hhmm(d.settings.endMin)}. На дорогу между клиентами около ${d.settings.travelMin} минут.")
+    }
+}
+
+/** Запрос к ИИ для живого ответа. history: последние реплики этого чата. */
+fun aiChatPrompt(context: String, history: List<Pair<String, String>>, text: String): String = buildString {
+    append(
+        """Ты помощник Рифата, персонального тренера. Тебе пишет его жена (или сам Рифат) в Telegram.
+Отвечай по-русски, коротко и по делу, по-человечески, как заботливый секретарь: 1–4 предложения.
+Опирайся только на сведения ниже, ничего не выдумывай. Если данных нет, так и скажи.
+Если спрашивают, где встретить или куда приехать, назови адрес и время окончания последнего занятия дня.
+Ссылку на карту давай, только если спрашивают, где он сейчас.
+Если просят записать дело (врач, встреча), заполни add. Если просят удалить дело, заполни remove.
+Если заполнил add или remove, в reply не повторяй время и название: приложение само подтвердит запись.
+
+Сведения:
+"""
+    )
+    append(context)
+    if (history.isNotEmpty()) {
+        append("\n\nНедавняя переписка:\n")
+        history.forEach { (q, a) -> append("— $q\n— $a\n") }
+    }
+    append(
+        """
+
+Новое сообщение: «$text»
+Ответь только JSON:
+{"reply": "текст ответа",
+ "add": {"date": "ГГГГ-ММ-ДД", "time": "ЧЧ:ММ", "minutes": 60, "title": "что"} или null,
+ "remove": {"date": "ГГГГ-ММ-ДД", "title": "что"} или null}"""
+    )
+}
+
+data class AiReply(val reply: String, val add: BotCmd.Add?, val remove: BotCmd.Remove?)
+
+private fun jsonObject(json: String, key: String): String? {
+    val i = Regex("\"$key\"\\s*:\\s*\\{").find(json) ?: return null
+    var depth = 0
+    for (j in i.range.last until json.length) {
+        when (json[j]) { '{' -> depth++; '}' -> if (--depth == 0) return json.substring(i.range.last, j + 1) }
+    }
+    return null
+}
+
+private fun unescape(s: String) = s.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\")
+
+fun parseAiReply(json: String, today: LocalDate): AiReply? {
+    val reply = Regex("\"reply\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(json)?.groupValues?.get(1)?.let(::unescape) ?: return null
+    val add = jsonObject(json, "add")?.let { o ->
+        parseAi("{\"cmd\":\"add\"," + o.removePrefix("{"), today) as? BotCmd.Add
+    }
+    val remove = jsonObject(json, "remove")?.let { o ->
+        parseAi("{\"cmd\":\"remove\"," + o.removePrefix("{"), today) as? BotCmd.Remove
+    }
+    return AiReply(reply, add, remove)
+}
