@@ -57,37 +57,53 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
     val learned = mutableListOf<Rule>()
 
     for (c in d.clients.filter { !it.archived }) {
+        // Визиты по переносу или разовые не учат постоянное расписание.
+        val planned = d.changes.filter { it.clientId == c.id && (it.kind == ChangeKind.MOVE || it.kind == ChangeKind.EXTRA) }
+        fun byChange(date: LocalDate, min: Int) = planned.any { ch ->
+            val day = if (ch.kind == ChangeKind.MOVE) ch.toDate else ch.date
+            val at = if (ch.kind == ChangeKind.MOVE) ch.toMin else ch.min
+            day == date.toEpochDay() && at != null && kotlin.math.abs(at - min) <= MATCH_MIN
+        }
+        val all = d.visits.filter { it.clientId == c.id && it.kind != VisitKind.BURNED }
+        val firstDay = all.minOfOrNull { dayOf(it.start, zone) } ?: continue
+        // Недели, когда клиент вообще занимался: по ним видно, где занятия не было.
+        val active = all.map { weekIndex(dayOf(it.start, zone)) }.toSet()
         // (день недели, время) → недели, когда было занятие
         val seen = mutableMapOf<Pair<Int, Int>, MutableSet<Long>>()
         for (v in timedVisits(d).filter { it.clientId == c.id }) {
             val (date, min) = slotOf(v.start, zone)
-            if (date < fromDay || date > today) continue
+            if (date < fromDay || date > today || byChange(date, min)) continue
             seen.getOrPut(date.dayOfWeek.value to min) { mutableSetOf() } += weekIndex(date)
         }
         // Соседние получасы в один день недели склеиваем: приход то в 15:50, то в 16:20.
         val keys = seen.keys.sortedWith(compareBy({ it.first }, { -seen.getValue(it).size }, { it.second }))
         val used = mutableSetOf<Pair<Int, Int>>()
-        val cands = mutableListOf<Triple<Int, Int, java.util.SortedSet<Long>>>()
+        data class Cand(val day: Int, val min: Int, val weeks: java.util.SortedSet<Long>, val parity: Int?)
+        val cands = mutableListOf<Cand>()
         for (k in keys) {
             if (k in used) continue
             val group = keys.filter { it !in used && it.first == k.first && kotlin.math.abs(it.second - k.second) <= 30 }
             used += group
             val weeks = group.flatMap { seen.getValue(it) }.toSortedSet()
             if (curWeek - weeks.last() > STALE_WEEKS) continue
-            cands += Triple(k.first, k.second, weeks)
+            // Недели, где этот день уже прошёл и клиент занимался: было ли занятие в это время.
+            val observed = active.filter { w ->
+                val date = LocalDate.ofEpochDay(w * 7 - 3 + (k.first - 1))
+                date in firstDay..today && date >= fromDay
+            }.toSet() + weeks
+            val pars = weeks.map { Math.floorMod(it, 2).toInt() }.toSet()
+            val parity = pars.singleOrNull()?.takeIf { p -> observed.any { Math.floorMod(it, 2).toInt() != p } }
+            // Было меньше чем в половине подходящих недель: перенос или случайность, не расписание.
+            val base = observed.count { parity == null || Math.floorMod(it, 2).toInt() == parity }
+            if (weeks.size * 2 < base) continue
+            cands += Cand(k.first, k.second, weeks, parity)
         }
-        // Разовый перенос (одна неделя) не становится постоянным занятием, если у клиента есть другие.
-        val steady = cands.filter { it.third.size >= 2 }.ifEmpty { cands }
-        // Одно время в день на клиента там, где занятия пересекались бы: остаётся последнее, при равенстве частое.
-        // Чередование «чётная неделя 15:00, нечётная 16:00» пересечением не считается.
-        fun parity(w: Set<Long>) = w.map { Math.floorMod(it, 2).toInt() }.toSet().let { if (w.size >= 2 && it.size == 1) it.first() else null }
-        val len = lessonMin(d, c)
+        // Одно занятие клиента в день (в своей неделе, если через неделю): остаётся последнее, при равенстве частое.
         val picked = mutableListOf<Rule>()
-        for ((day, min, weeks) in steady.sortedWith(compareByDescending<Triple<Int, Int, java.util.SortedSet<Long>>> { it.third.last() }.thenByDescending { it.third.size })) {
-            val par = parity(weeks)
-            fun clash(r: Rule) = r.day == day && kotlin.math.abs(r.min - min) < len && (r.parity == null || par == null || r.parity == par)
+        for (cd in cands.sortedWith(compareByDescending<Cand> { it.weeks.last() }.thenByDescending { it.weeks.size })) {
+            fun clash(r: Rule) = r.day == cd.day && (r.parity == null || cd.parity == null || r.parity == cd.parity)
             if (picked.any(::clash) || manual.any { it.clientId == c.id && clash(it) }) continue
-            picked += Rule("auto-${c.id}-$day-$min", c.id, day, min, par)
+            picked += Rule("auto-${c.id}-${cd.day}-${cd.min}", c.id, cd.day, cd.min, cd.parity)
         }
         learned += picked
     }

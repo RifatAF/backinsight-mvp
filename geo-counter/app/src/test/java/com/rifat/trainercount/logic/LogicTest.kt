@@ -339,8 +339,8 @@ class LogicTest {
         val d = learnRules(base.copy(visits = vs), t(20, day = 20))
         val morning = d.rules.single { it.min == 10 * 60 }
         assertEquals(parityOf(date(5)), morning.parity)
-        // Один раз в 18:00 при постоянном утре: разовый перенос, не занятие.
-        assertTrue(d.rules.none { it.min == 18 * 60 })
+        // 18:00 была только в неделю без утра: чередование, тоже через неделю.
+        assertEquals(parityOf(date(12)), d.rules.single { it.min == 18 * 60 }.parity)
         // Через неделю после 19.10: 26.10 утра нет, 02.11 утро есть.
         assertTrue(occurrences(d, date(26)).none { it.min == 10 * 60 })
         assertTrue(occurrences(d, java.time.LocalDate.of(2026, 11, 2)).any { it.min == 10 * 60 })
@@ -353,6 +353,25 @@ class LogicTest {
         val d = learnRules(base.copy(clients = base.clients + fam, visits = vs), t(20, day = 22))
         assertEquals(listOf(16 * 60), d.rules.filter { it.clientId == "f" }.map { it.min })
         assertEquals(listOf(16 * 60 to 18 * 60), occurrences(d, date(29)).filter { it.clientId == "f" }.map { it.min to it.min + it.duration })
+    }
+
+    @Test fun alternatingWeeksLikeIgor() {
+        // Неделя A: вт, чт 13:30. Неделя B: пн, ср, пт 11:30. Сегодня вт 27.10, неделя A.
+        val a = listOf(13, 15, 27).map { auto("a$it", "e", it, 13, 35) }
+        val b = listOf(5, 7, 9, 19, 21, 23).map { auto("b$it", "e", it, 11, 30) }
+        val d = learnRules(base.copy(visits = a + b), t(20, day = 27))
+        fun plan(day: java.time.LocalDate) = occurrences(d, day).filter { it.clientId == "e" }.map { it.min }
+        assertEquals(listOf(13 * 60 + 30), plan(date(29)))      // чт 29.10
+        assertEquals(emptyList(), plan(date(30)))                  // пт 30.10: недели A без пятницы
+        assertEquals(listOf(11 * 60 + 30), plan(java.time.LocalDate.of(2026, 11, 2)))
+        assertEquals(emptyList(), plan(java.time.LocalDate.of(2026, 11, 3)))
+    }
+
+    @Test fun oneLessonPerDay() {
+        // Стас по пятницам 14:30, один раз пришёл в 17:00 (перенос): в пятницу одно занятие.
+        val vs = listOf(auto("a", "s", 2, 14, 30), auto("b", "s", 9, 14, 30), auto("c", "s", 16, 17, 0), auto("d", "s", 23, 14, 35))
+        val d = learnRules(base.copy(visits = vs), t(20, day = 27))
+        assertEquals(listOf(14 * 60 + 30), occurrences(d, date(30)).map { it.min })
     }
 
     @Test fun oldFamilyDurationMigrated() {
