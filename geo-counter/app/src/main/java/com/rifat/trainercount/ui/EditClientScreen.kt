@@ -171,18 +171,23 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
             Card {
                 Column(Modifier.padding(12.dp)) {
                     if (placeId == null) {
+                        val preview = current()
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Длина тренировки", modifier = Modifier.weight(1f))
+                            Text(if (preview.countsEach) "Тренировка на одного человека" else "Длина тренировки", modifier = Modifier.weight(1f))
                             Stepper(sessionMin, { sessionMin = it }, 30..180, 15) { fDur(it.toLong()) }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Засчитывать от", modifier = Modifier.weight(1f))
                             Stepper(minMin, { minMin = it }, 10..90, 5) { "$it мин" }
                         }
-                        val preview = current()
                         Text(
-                            "1 тренировка от ${fDur(thresholdFor(1, preview).toLong())}, " +
-                                "2 от ${fDur(thresholdFor(2, preview).toLong())}, 3 от ${fDur(thresholdFor(3, preview).toLong())}",
+                            if (preview.countsEach) {
+                                val n = preview.members.size
+                                "1 человек = 1 тренировка. Всей семьёй в расписании ${fDur((preview.sessionMin * n).toLong())}. " +
+                                    "Засчитается 1 тренировка от ${fDur(thresholdFor(1, preview).toLong())}, " +
+                                    (2..n).joinToString(", ") { k -> "$k от ${fDur(thresholdFor(k, preview).toLong())}" } +
+                                    ". Кто именно был, можно поправить в уведомлении."
+                            } else "1 визит = 1 тренировка, засчитается от ${fDur(thresholdFor(1, preview).toLong())}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 4.dp),

@@ -1,6 +1,7 @@
 package com.rifat.trainercount.data
 
 import android.content.Context
+import com.rifat.trainercount.logic.perPersonMigrate
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.Change
 import com.rifat.trainercount.logic.ChangeKind
@@ -71,7 +72,7 @@ object Store {
                 put(JSONObject().apply {
                     put("id", c.id); put("name", c.name); put("members", arr(c.members))
                     put("address", c.address); put("lat", c.lat ?: JSONObject.NULL); put("lng", c.lng ?: JSONObject.NULL)
-                    put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin)
+                    put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin); put("pp", true)
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
                     put("placeId", c.placeId ?: JSONObject.NULL)
                     put("perMember", c.perMember)
@@ -173,7 +174,7 @@ object Store {
                     perMember = c.optBoolean("perMember", true),
                     placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
                     slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
-                )
+                ).let { if (c.has("pp")) it else perPersonMigrate(it) }
             },
             places = o.optJSONArray("places").list { p ->
                 Place(

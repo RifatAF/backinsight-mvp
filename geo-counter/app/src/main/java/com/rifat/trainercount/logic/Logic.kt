@@ -118,12 +118,23 @@ private fun closeVisit(d: AppData, clientId: String, t: Long, forced: Boolean): 
     val start = d.open[clientId] ?: return Step(d)
     val base = d.copy(open = d.open - clientId)
     val c = d.client(clientId) ?: return Step(base)
-    var per = sessionsFor((t - start) / MIN, c)
-    if (per == 0) return Step(base)
-    if (forced) per = 1
-    val v = withMembers(Visit(newId(), clientId, start, t, per, VisitKind.AUTO, check = forced), c, c.members, per)
+    // 1 человек = 1 час: одиночный визит всегда 1 тренировка, в семье по часу на каждого пришедшего.
+    var people = sessionsFor((t - start) / MIN, c)
+    if (people == 0) return Step(base)
+    if (forced) people = 1
+    val who = if (c.countsEach) c.members.take(people.coerceAtMost(c.members.size)) else c.members
+    val v = withMembers(Visit(newId(), clientId, start, t, 1, VisitKind.AUTO, check = forced), c, who, 1)
     return Step(base.copy(visits = base.visits + v), listOf(Effect.VisitAdded(v)))
 }
+
+/**
+ * Раньше длину занятия семьи ставили на всех (2 человека: 120 минут). Теперь она на одного человека,
+ * а засчитывать начинаем как у одного.
+ */
+fun perPersonMigrate(c: Client): Client =
+    if (c.countsEach && c.members.size > 1 && c.sessionMin >= 60 * c.members.size)
+        c.copy(sessionMin = c.sessionMin / c.members.size, minMin = c.minMin.coerceAtMost(c.sessionMin / c.members.size / 2))
+    else c
 
 /** Сколько занятий на одного человека в визите семьи. */
 fun perPerson(v: Visit, c: Client?): Int =

@@ -41,11 +41,12 @@ class LogicTest {
 
     @Test fun doubleSessionAndBalance() {
         val paid = base.copy(packs = listOf(Pack("p", "s", t(8, day = 1), 10, 10000)))
+        // 1 человек = 1 час: долгий визит всё равно одна тренировка.
         val s = visit(paid, "s", t(10), t(11, 45))
-        assertEquals(2, s.data.visits.single().count)
+        assertEquals(1, s.data.visits.single().count)
         val b = balance(s.data, "s")
-        assertEquals(8, b.left)
-        assertEquals(8, b.leftInCurrent)
+        assertEquals(9, b.left)
+        assertEquals(9, b.leftInCurrent)
         assertEquals(1000, pricePerSession(s.data, sveta))
     }
 
@@ -79,7 +80,7 @@ class LogicTest {
         assertEquals(t(15), trip.end)
         assertTrue(isWork(d, trip, t(16)))
         val m = monthStats(d, YearMonth.of(2026, 10), t(16))
-        assertEquals(3, m.sessions)
+        assertEquals(2, m.sessions)
         assertEquals(6 * 60L, m.workMin)
         assertEquals(60L + 110L, m.atClientsMin)
     }
@@ -109,7 +110,8 @@ class LogicTest {
         var d = onClientEnter(base, "s", t(10)).data
         d = onClientEnter(d, "s", t(10, 40)).data
         d = onClientExit(d, "s", t(11, 45)).data
-        assertEquals(2, d.visits.single().count)
+        assertEquals(t(10), d.visits.single().start)
+        assertEquals(1, d.visits.single().count)
     }
 
     @Test fun outsideHoursIgnored() {
@@ -167,8 +169,11 @@ class LogicTest {
     }
 
     @Test fun familyCountsEachMember() {
-        val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0, sessionMin = 120, minMin = 90)
+        val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0)
         val d0 = base.copy(clients = base.clients + fam)
+        // Час: был один человек.
+        assertEquals(1, visit(d0, "f", t(10), t(11)).data.visits.single().count)
+        assertEquals(120, lessonMin(d0, fam))
         val d = visit(d0, "f", t(10), t(12)).data
         val v = d.visits.single()
         assertEquals(2, v.count)
@@ -334,11 +339,28 @@ class LogicTest {
         val d = learnRules(base.copy(visits = vs), t(20, day = 20))
         val morning = d.rules.single { it.min == 10 * 60 }
         assertEquals(parityOf(date(5)), morning.parity)
-        val evening = d.rules.single { it.min == 18 * 60 }
-        assertNull(evening.parity) // одна неделя: пока считается еженедельным
+        // Один раз в 18:00 при постоянном утре: разовый перенос, не занятие.
+        assertTrue(d.rules.none { it.min == 18 * 60 })
         // Через неделю после 19.10: 26.10 утра нет, 02.11 утро есть.
         assertTrue(occurrences(d, date(26)).none { it.min == 10 * 60 })
         assertTrue(occurrences(d, java.time.LocalDate.of(2026, 11, 2)).any { it.min == 10 * 60 })
+    }
+
+    @Test fun familyMovesDoNotDoubleSchedule() {
+        // Ерлан и Рита по четвергам: две недели в 15:00, потом две недели в 16:00 (переносы).
+        val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0)
+        val vs = listOf(auto("a", "f", 1, 15, 0), auto("b", "f", 8, 15, 5), auto("c", "f", 15, 16, 0), auto("d", "f", 22, 15, 55))
+        val d = learnRules(base.copy(clients = base.clients + fam, visits = vs), t(20, day = 22))
+        assertEquals(listOf(16 * 60), d.rules.filter { it.clientId == "f" }.map { it.min })
+        assertEquals(listOf(16 * 60 to 18 * 60), occurrences(d, date(29)).filter { it.clientId == "f" }.map { it.min to it.min + it.duration })
+    }
+
+    @Test fun oldFamilyDurationMigrated() {
+        val old = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), sessionMin = 120, minMin = 90)
+        val m = perPersonMigrate(old)
+        assertEquals(60, m.sessionMin)
+        assertEquals(30, m.minMin)
+        assertEquals(sveta, perPersonMigrate(sveta))
     }
 
     @Test fun staleRuleDropped() {
