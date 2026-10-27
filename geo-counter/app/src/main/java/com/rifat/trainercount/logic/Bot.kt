@@ -358,3 +358,139 @@ fun parseAiReply(json: String, today: LocalDate): AiReply? {
     }
     return AiReply(reply, add, remove)
 }
+
+// ---------- Бот для клиентов ----------
+
+/** Ссылка-приглашение: клиент открывает её, жмёт «Старт», и бот знает, кто это. */
+fun inviteLink(botName: String, c: Client) = "https://t.me/${botName.removePrefix("@")}?start=c_${c.id}"
+
+/** Код из «/start c_…»: id клиента. */
+fun inviteClientId(text: String): String? = Regex("^/start\\s+c_([\\w-]+)").find(text.trim())?.groupValues?.get(1)
+
+sealed class ClientCmd {
+    data object Balance : ClientCmd()
+    data object Lessons : ClientCmd()
+    data object Where : ClientCmd()
+    data object Report : ClientCmd()
+    data object Help : ClientCmd()
+    /** Всё остальное (перенос, вопрос): передать Рифату. */
+    data class Message(val text: String) : ClientCmd()
+}
+
+fun parseClientBot(text: String): ClientCmd {
+    val s = " " + text.lowercase().replace('ё', 'е') + " "
+    return when {
+        Regex("^\\s*/?(start|help|помощь)").containsMatchIn(s) -> ClientCmd.Help
+        Regex("отч[её]т|истори").containsMatchIn(s) -> ClientCmd.Report
+        Regex("сколько|осталось|остаток|баланс|оплат").containsMatchIn(s) -> ClientCmd.Balance
+        Regex("\\sгде\\s|скоро|едешь|опаздыва|приедешь|будешь").containsMatchIn(s) -> ClientCmd.Where
+        Regex("когда|расписани|следующ|занятие\\??\\s*$").containsMatchIn(s) -> ClientCmd.Lessons
+        else -> ClientCmd.Message(text.trim())
+    }
+}
+
+fun clientHelp(c: Client) = """Здравствуйте, ${c.name}! Я помощник Рифата. Можно спросить:
+• сколько занятий осталось
+• когда следующее занятие
+• Рифат скоро будет?
+• отчёт
+Остальное (перенос, вопрос) я передам Рифату."""
+
+fun clientBalanceText(d: AppData, c: Client): String {
+    val b = balance(d, c.id)
+    return when {
+        b.left < 0 -> "Проведено сверх оплаты: ${lessons(-b.left)}. Пора оплатить следующий пакет."
+        b.current != null -> "Осталось ${lessons(b.left)} из ${b.activeTotal}." + if (b.left <= 1) " Скоро понадобится оплата." else ""
+        b.paid > 0 -> "Оплаченные занятия закончились."
+        else -> "Оплат пока нет."
+    }
+}
+
+/** Ближайшие занятия этого клиента на неделю (без чужих). */
+fun clientLessonsText(d: AppData, c: Client, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val today = dayOf(now, zone)
+    val nowMin = minuteOf(now, zone)
+    val list = (0 until 8).flatMap { i ->
+        val date = today.plusDays(i.toLong())
+        dayPlan(d, date, now, zone).filterIsInstance<PlanItem.Lesson>()
+            .filter { it.occ.clientId == c.id && it.status == Status.PLANNED && (i > 0 || it.from > nowMin) }
+            .map { l -> val t = epochMs(date, 12 * 60, zone); "${fDow(t)} ${fDate(t)}, ${hhmm(l.from)}–${hhmm(l.to)}" + if (l.occ.movedFrom != null) " (перенос)" else "" }
+    }
+    return if (list.isEmpty()) "На ближайшую неделю занятий в расписании нет. Напишите, если хотите записаться." else "Ваши занятия:\n" + list.joinToString("\n")
+}
+
+/**
+ * «Где Рифат» для клиента: без карты и без имён других клиентов.
+ * busyUntil: когда закончится текущее занятие (если он на занятии), atClient: у этого ли клиента.
+ */
+fun clientWhereText(d: AppData, c: Client, now: Long, status: RifatStatus, zone: ZoneId = ZoneId.systemDefault()): String {
+    val today = dayOf(now, zone)
+    val nowMin = minuteOf(now, zone)
+    val mine = dayPlan(d, today, now, zone).filterIsInstance<PlanItem.Lesson>()
+        .firstOrNull { it.occ.clientId == c.id && it.to > nowMin }
+    val now1 = when (status) {
+        RifatStatus.WithYou -> "Рифат уже у вас."
+        is RifatStatus.Busy -> "Рифат сейчас на тренировке" + (status.until?.let { ", освободится примерно в ${hhmm(it)}" } ?: "") + "."
+        RifatStatus.OnTheWay -> "Рифат сейчас в дороге."
+        RifatStatus.Home -> "Рифат сейчас не на работе."
+    }
+    val yours = mine?.let { " Ваше занятие сегодня в ${hhmm(it.from)}." } ?: ""
+    return now1 + yours
+}
+
+sealed class RifatStatus {
+    data object WithYou : RifatStatus()
+    data class Busy(val until: Int?) : RifatStatus()
+    data object OnTheWay : RifatStatus()
+    data object Home : RifatStatus()
+}
+
+/** Статус Рифата для клиента по данным приложения (дом определяется на телефоне). */
+fun rifatStatus(d: AppData, c: Client, now: Long, home: Boolean, zone: ZoneId = ZoneId.systemDefault()): RifatStatus {
+    val open = d.open.keys
+    if (c.id in open || (c.placeId != null && "p:${c.placeId}" in open)) return RifatStatus.WithYou
+    if (open.isNotEmpty()) {
+        val nowMin = minuteOf(now, zone)
+        val until = dayPlan(d, dayOf(now, zone), now, zone).filterIsInstance<PlanItem.Lesson>()
+            .firstOrNull { it.occ.clientId in open && it.to > nowMin }?.to
+        return RifatStatus.Busy(until)
+    }
+    return if (home) RifatStatus.Home else if (d.openTrip != null) RifatStatus.OnTheWay else RifatStatus.Home
+}
+
+fun clientAnswer(d: AppData, c: Client, cmd: ClientCmd, now: Long, status: RifatStatus): String = when (cmd) {
+    ClientCmd.Help -> clientHelp(c)
+    ClientCmd.Balance -> clientBalanceText(d, c)
+    ClientCmd.Lessons -> clientLessonsText(d, c, now)
+    ClientCmd.Where -> clientWhereText(d, c, now, status)
+    ClientCmd.Report -> reportText(d, c)
+    is ClientCmd.Message -> "Передал Рифату, он ответит вам сам."
+}
+
+/** Сведения для ИИ в чате клиента: только его данные. */
+fun clientAiPrompt(d: AppData, c: Client, now: Long, status: RifatStatus, history: List<Pair<String, String>>, text: String): String = buildString {
+    append(
+        """Ты помощник персонального тренера Рифата. Тебе пишет его клиент «${c.name}» в Telegram.
+Отвечай по-русски, вежливо, на «вы», коротко: 1–3 предложения. Опирайся только на сведения ниже, ничего не выдумывай.
+Не обещай переносов и не назначай занятия сам: такие просьбы передавай Рифату (forward = true).
+Никогда не упоминай других клиентов и не называй, где именно сейчас Рифат.
+
+Сведения:
+"""
+    )
+    append(clientBalanceText(d, c)).append('\n')
+    append(clientLessonsText(d, c, now)).append('\n')
+    append(clientWhereText(d, c, now, status)).append('\n')
+    if (history.isNotEmpty()) {
+        append("\nНедавняя переписка:\n")
+        history.forEach { (q, a) -> append("— $q\n— $a\n") }
+    }
+    append("\nНовое сообщение: «$text»\nОтветь только JSON: {\"reply\": \"текст\", \"forward\": true или false}")
+}
+
+/** Ответ ИИ клиенту: текст и нужно ли передать сообщение Рифату. */
+fun parseClientAi(json: String): Pair<String, Boolean>? {
+    val reply = Regex("\"reply\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(json)?.groupValues?.get(1)
+        ?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: return null
+    return reply to Regex("\"forward\"\\s*:\\s*true").containsMatchIn(json)
+}

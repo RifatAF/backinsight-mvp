@@ -13,6 +13,7 @@ import com.rifat.trainercount.R
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.logic.stayNo
 import com.rifat.trainercount.logic.Stay
+import com.rifat.trainercount.logic.Client
 import com.rifat.trainercount.logic.Effect
 import com.rifat.trainercount.logic.MAX_PER_VISIT
 import com.rifat.trainercount.logic.Pending
@@ -132,6 +133,21 @@ object Notifier {
             .addAction(0, "Не было", act(ActionReceiver.STAY_NO, 4402))
             .addAction(0, "Не спрашивать здесь", act(ActionReceiver.STAY_IGNORE, 4403))
         NotificationManagerCompat.from(ctx).notify(STAY_NID, n.build())
+    }
+
+    /** Новости от клиента в боте: подключился, просит перенести и т. п. Нажатие открывает карточку клиента. */
+    @SuppressLint("MissingPermission")
+    fun clientInfo(ctx: Context, c: Client, title: String, text: String) {
+        if (!Perms.notifications(ctx)) return
+        val id = ("tgc" + c.id + text).hashCode()
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(ctx, id, EXTRA_CLIENT to c.id))
+            .setAutoCancel(true)
+        NotificationManagerCompat.from(ctx).notify(id, n.build())
     }
 
     /** Кто-то написал боту, а его чат не разрешён: спросить Рифата. */

@@ -138,6 +138,17 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                                     .putExtra(Intent.EXTRA_TEXT, reportText(data, c))
                                 ctx.startActivity(Intent.createChooser(send, "Отправить отчёт"))
                             }) { Text("Отчёт клиенту") }
+                            if (c.tgChatId.isBlank()) OutlinedButton(onClick = { inviteToBot(ctx, data, c) }) { Text("Пригласить в бот") }
+                        }
+                        if (c.tgChatId.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "✓ Подключён к боту: спрашивает баланс и занятия",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = {
+                                Store.update { d -> d.copy(clients = d.clients.map { if (it.id == c.id) it.copy(tgChatId = "") else it }) }
+                            }) { Text("Отключить") }
                         }
                     }
                 }
@@ -353,4 +364,30 @@ private fun PayDialog(data: AppData, c: Client, close: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = close) { Text("Отмена") } },
     )
+}
+
+/** Отправить клиенту его личную ссылку на бот (WhatsApp, Telegram…). */
+private fun inviteToBot(ctx: android.content.Context, data: AppData, c: com.rifat.trainercount.logic.Client) {
+    val s = data.settings
+    if (s.tgToken.isBlank() || !s.tgBotOn) {
+        android.widget.Toast.makeText(ctx, "Сначала включите бота: Настройки → Telegram → Отвечать на сообщения", android.widget.Toast.LENGTH_LONG).show()
+        return
+    }
+    fun share(bot: String) {
+        val text = "Здравствуйте! Это мой помощник по тренировкам: можно узнать, сколько занятий осталось и когда следующее. " +
+            "Откройте ссылку и нажмите «Старт»:\n" + com.rifat.trainercount.logic.inviteLink(bot, c)
+        ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Пригласить ${c.name}"))
+    }
+    if (s.tgBotName.isNotBlank()) return share(s.tgBotName)
+    // Имя бота ещё не сохранено: узнать у Telegram.
+    Thread {
+        val name = com.rifat.trainercount.geo.Telegram.botName(s.tgToken)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (name == null) android.widget.Toast.makeText(ctx, "Нет связи с Telegram, попробуйте ещё раз", android.widget.Toast.LENGTH_SHORT).show()
+            else {
+                Store.update { d -> d.copy(settings = d.settings.copy(tgBotName = name)) }
+                share(name)
+            }
+        }
+    }.start()
 }

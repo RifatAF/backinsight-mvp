@@ -532,7 +532,7 @@ fun TelegramBlock(data: AppData) {
                     val name = withContext(Dispatchers.IO) { com.rifat.trainercount.geo.Telegram.botName(token) }
                     bot = name
                     status = if (name != null) "✓ Бот @$name" else "✗ Токен не подошёл или нет интернета"
-                    if (name != null) save { it.copy(tgToken = token) }
+                    if (name != null) save { it.copy(tgToken = token, tgBotName = name) }
                 }
             }) { Text("Проверить") }
             OutlinedButton(enabled = !busy && s.tgToken.isNotBlank(), onClick = {

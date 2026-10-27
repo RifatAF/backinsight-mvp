@@ -81,4 +81,28 @@ class BotTest {
         val r2 = parseAiReply("""{"reply":"Записал","add":{"date":"2026-10-29","time":"14:00","minutes":90,"title":"зубной Лера"},"remove":null}""", today)!!
         assertEquals(BotCmd.Add(d(29), 14 * 60, 90, "Зубной Лера"), r2.add)
     }
+
+    @Test fun clientBot() {
+        val z = ZoneId.systemDefault()
+        val now = LocalDateTime.of(2026, 10, 27, 14, 0).atZone(z).toInstant().toEpochMilli()
+        val ira = Client("ira", "Ира", lat = 1.0, lng = 1.0)
+        val stas = Client("st", "Стас", lat = 2.0, lng = 2.0)
+        var data = AppData(clients = listOf(ira, stas), packs = listOf(Pack("p", "ira", now - 86_400_000L, 4, 120)))
+        data = addRule(addRule(data, "ira", 2, 16 * 60, null), "st", 2, 13 * 60 + 30, null)
+        assertEquals("ira", inviteClientId("/start c_ira"))
+        assertEquals("https://t.me/RifatRasp_bot?start=c_ira", inviteLink("@RifatRasp_bot", ira))
+        assertEquals(ClientCmd.Balance, parseClientBot("Сколько занятий осталось?"))
+        assertEquals(ClientCmd.Lessons, parseClientBot("Когда следующее занятие?"))
+        assertEquals(ClientCmd.Where, parseClientBot("Рифат скоро будет?"))
+        assertTrue(parseClientBot("Можно перенести на четверг") is ClientCmd.Message)
+        assertEquals("Осталось 4 занятия из 4.", clientBalanceText(data, ira))
+        // Рифат у Стаса: Ире не называем, у кого он, и не даём карту.
+        val busy = data.copy(open = mapOf("st" to now - 30 * 60_000L))
+        val st = rifatStatus(busy, ira, now, home = false)
+        val where = clientWhereText(busy, ira, now, st)
+        assertEquals("Рифат сейчас на тренировке, освободится примерно в 14:30. Ваше занятие сегодня в 16:00.", where)
+        assertTrue("Стас" !in clientAiPrompt(busy, ira, now, st, emptyList(), "где он?"))
+        assertTrue("16:00–17:00" in clientLessonsText(data, ira, now))
+        assertEquals("Перенесите" to true, parseClientAi("""{"reply": "Перенесите", "forward": true}"""))
+    }
 }

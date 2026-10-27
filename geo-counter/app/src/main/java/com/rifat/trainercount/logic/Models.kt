@@ -19,6 +19,8 @@ data class Client(
     val slots: List<Slot> = emptyList(),
     /** Семья: каждый пришедший считается отдельным занятием. */
     val perMember: Boolean = true,
+    /** Чат клиента с ботом в Telegram (подключился по своей ссылке-приглашению). */
+    val tgChatId: String = "",
 ) {
     val hasPlace get() = lat != null && lng != null
     val isFamily get() = members.size > 1
@@ -122,6 +124,8 @@ data class Settings(
     val aiKey: String = "",
     /** Модель Gemini, выбранная при проверке ключа. */
     val aiModel: String = "",
+    /** Имя бота (@…) для ссылок-приглашений клиентам. */
+    val tgBotName: String = "",
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }

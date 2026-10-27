@@ -78,7 +78,7 @@ object Store {
                     put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin); put("pp2", true)
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
                     put("placeId", c.placeId ?: JSONObject.NULL)
-                    put("perMember", c.perMember)
+                    put("perMember", c.perMember); put("tgChatId", c.tgChatId)
                     put("slots", JSONArray().apply {
                         c.slots.forEach { sl -> put(JSONObject().apply { put("day", sl.day); put("min", sl.min) }) }
                     })
@@ -140,7 +140,7 @@ object Store {
             put("tgOn", s.tgOn); put("tgToken", s.tgToken); put("tgChatId", s.tgChatId)
             put("tgChatName", s.tgChatName); put("tgMin", s.tgMin); put("tgAddress", s.tgAddress)
             put("tgBotOn", s.tgBotOn); put("tgAllowed", JSONArray(s.tgAllowed))
-            put("aiKey", s.aiKey); put("aiModel", s.aiModel)
+            put("aiKey", s.aiKey); put("aiModel", s.aiModel); put("tgBotName", s.tgBotName)
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
         put("lastPoll", d.lastPoll ?: JSONObject.NULL)
@@ -192,7 +192,7 @@ object Store {
                     radius = c.optInt("radius", 120), sessionMin = c.optInt("sessionMin", 60),
                     minMin = c.optInt("minMin", 30), price = c.optInt("price", 0),
                     archived = c.optBoolean("archived"), createdAt = c.optLong("createdAt"),
-                    perMember = c.optBoolean("perMember", true),
+                    perMember = c.optBoolean("perMember", true), tgChatId = c.optString("tgChatId"),
                     placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
                     slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
                 ).let { if (c.has("pp2")) it else perPersonMigrate(it) }
@@ -238,7 +238,7 @@ object Store {
                 tgChatName = s.optString("tgChatName"), tgMin = s.optInt("tgMin", def.tgMin),
                 tgAddress = s.optBoolean("tgAddress", def.tgAddress),
                 tgBotOn = s.optBoolean("tgBotOn"), tgAllowed = strings(s.optJSONArray("tgAllowed")),
-                aiKey = s.optString("aiKey"), aiModel = s.optString("aiModel"),
+                aiKey = s.optString("aiKey"), aiModel = s.optString("aiModel"), tgBotName = s.optString("tgBotName"),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
             lastPoll = o.lOpt("lastPoll"),

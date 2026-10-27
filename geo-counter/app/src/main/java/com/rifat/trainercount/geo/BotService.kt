@@ -21,6 +21,14 @@ import com.rifat.trainercount.R
 import com.rifat.trainercount.data.Store
 import com.rifat.trainercount.logic.AppData
 import com.rifat.trainercount.logic.BotCmd
+import com.rifat.trainercount.logic.ClientCmd
+import com.rifat.trainercount.logic.clientAiPrompt
+import com.rifat.trainercount.logic.clientAnswer
+import com.rifat.trainercount.logic.clientHelp
+import com.rifat.trainercount.logic.inviteClientId
+import com.rifat.trainercount.logic.parseClientAi
+import com.rifat.trainercount.logic.parseClientBot
+import com.rifat.trainercount.logic.rifatStatus
 import com.rifat.trainercount.logic.aiPrompt
 import com.rifat.trainercount.logic.aiChatPrompt
 import com.rifat.trainercount.logic.aiContext
@@ -132,6 +140,27 @@ class BotService : Service() {
 
     private fun handle(token: String, m: Telegram.Message) {
         val d0 = Store.data.value
+        // Клиент открыл свою ссылку-приглашение: запомнить его чат.
+        inviteClientId(m.text)?.let { cid ->
+            val c = d0.client(cid)
+            if (c == null || c.archived) {
+                Telegram.send(token, m.chat.id, "Ссылка устарела. Попросите Рифата прислать новую.")
+                return
+            }
+            Store.update { d -> d.copy(clients = d.clients.map { when {
+                it.id == cid -> it.copy(tgChatId = m.chat.id)
+                it.tgChatId == m.chat.id -> it.copy(tgChatId = "")
+                else -> it
+            } }) }
+            Notifier.clientInfo(this, c, "${c.name} подключился к боту", "Теперь может спрашивать про занятия и баланс")
+            Telegram.send(token, m.chat.id, clientHelp(c))
+            return
+        }
+        val linked = d0.clients.firstOrNull { it.tgChatId == m.chat.id && !it.archived }
+        if (!allowed(d0, m.chat.id) && linked != null) {
+            handleClient(token, linked, m)
+            return
+        }
         if (!allowed(d0, m.chat.id)) {
             Diag.add(this, "Бот: сообщение от ${m.chat.name} (нет доступа)")
             Notifier.askAllow(this, m.chat)
@@ -157,6 +186,29 @@ class BotService : Service() {
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
         Telegram.send(token, m.chat.id, reply)
+    }
+
+    /** Чат клиента: только его баланс, занятия и примерно, где Рифат. Остальное передаётся Рифату. */
+    private fun handleClient(token: String, c: com.rifat.trainercount.logic.Client, m: Telegram.Message) {
+        val now = System.currentTimeMillis()
+        val d = Store.data.value
+        val status = rifatStatus(d, c, now, Wifi.isHome(this, d))
+        var reply: String? = null
+        var forward = false
+        if (d.settings.aiKey.isNotBlank()) {
+            val past = history[m.chat.id]?.toList().orEmpty()
+            gemini(clientAiPrompt(d, c, now, status, past, m.text))?.let(::parseClientAi)?.let { (r, f) -> reply = r; forward = f }
+        }
+        if (reply == null) {
+            val cmd = parseClientBot(m.text)
+            reply = clientAnswer(d, c, cmd, now, status)
+            forward = cmd is ClientCmd.Message
+        }
+        if (forward) Notifier.clientInfo(this, c, "${c.name} пишет в бот", m.text)
+        val text = reply!!
+        history.getOrPut(m.chat.id) { ArrayDeque() }.apply { addLast(m.text to text); while (size > 4) removeFirst() }
+        Diag.add(this, "Бот: клиент ${c.name}: «${m.text.take(40)}»")
+        Telegram.send(token, m.chat.id, text)
     }
 
     /** Последние реплики по чатам: чтобы ИИ понимал «а где он закончит?» после предыдущего вопроса. */
