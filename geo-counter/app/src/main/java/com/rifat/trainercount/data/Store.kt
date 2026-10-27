@@ -11,6 +11,7 @@ import com.rifat.trainercount.logic.Pack
 import com.rifat.trainercount.logic.Pending
 import com.rifat.trainercount.logic.Place
 import com.rifat.trainercount.logic.Slot
+import com.rifat.trainercount.logic.Personal
 import com.rifat.trainercount.logic.Spot
 import com.rifat.trainercount.logic.Stay
 import com.rifat.trainercount.logic.Settings
@@ -138,6 +139,7 @@ object Store {
             put("alarmVibrate", s.alarmVibrate)
             put("tgOn", s.tgOn); put("tgToken", s.tgToken); put("tgChatId", s.tgChatId)
             put("tgChatName", s.tgChatName); put("tgMin", s.tgMin); put("tgAddress", s.tgAddress)
+            put("tgBotOn", s.tgBotOn); put("tgAllowed", JSONArray(s.tgAllowed))
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
         put("lastPoll", d.lastPoll ?: JSONObject.NULL)
@@ -164,6 +166,13 @@ object Store {
                 put("asked", s.asked); put("done", s.done)
             })
         }
+        put("events", JSONArray().apply {
+            d.events.forEach { e ->
+                put(JSONObject().apply {
+                    put("id", e.id); put("date", e.date); put("min", e.min); put("duration", e.duration); put("title", e.title)
+                })
+            }
+        })
         put("ignored", JSONArray().apply {
             d.ignored.forEach { p -> put(JSONObject().apply { put("lat", p.lat); put("lng", p.lng); put("radius", p.radius) }) }
         })
@@ -227,6 +236,7 @@ object Store {
                 tgOn = s.optBoolean("tgOn"), tgToken = s.optString("tgToken"), tgChatId = s.optString("tgChatId"),
                 tgChatName = s.optString("tgChatName"), tgMin = s.optInt("tgMin", def.tgMin),
                 tgAddress = s.optBoolean("tgAddress", def.tgAddress),
+                tgBotOn = s.optBoolean("tgBotOn"), tgAllowed = strings(s.optJSONArray("tgAllowed")),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
             lastPoll = o.lOpt("lastPoll"),
@@ -247,6 +257,9 @@ object Store {
             },
             stay = o.optJSONObject("stay")?.let { s ->
                 Stay(s.getDouble("lat"), s.getDouble("lng"), s.getLong("start"), s.getLong("last"), s.optBoolean("asked"), s.optBoolean("done"))
+            },
+            events = o.optJSONArray("events").list { e ->
+                Personal(e.getString("id"), e.getLong("date"), e.getInt("min"), e.optInt("duration", 60), e.optString("title"))
             },
             ignored = o.optJSONArray("ignored").list { p -> Spot(p.getDouble("lat"), p.getDouble("lng"), p.optInt("radius", 150)) },
         )

@@ -114,5 +114,6 @@ class MainActivity : ComponentActivity() {
         GeoSync.sync(this)
         Tracker.checkWifiNow(this)
         Planner.refresh(this)
+        com.rifat.trainercount.geo.BotService.sync(this)
     }
 }

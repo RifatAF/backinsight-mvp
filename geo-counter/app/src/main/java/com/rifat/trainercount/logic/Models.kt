@@ -114,6 +114,10 @@ data class Settings(
     val tgChatName: String = "",
     val tgMin: Int = 21 * 60 + 30,
     val tgAddress: Boolean = true,
+    /** Бот отвечает на сообщения: план дня, личные дела, где сейчас. */
+    val tgBotOn: Boolean = false,
+    /** Чаты, которым бот отвечает, кроме tgChatId. */
+    val tgAllowed: List<String> = emptyList(),
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }
@@ -138,6 +142,8 @@ data class AppData(
     val stay: Stay? = null,
     /** Места, где не спрашивать (магазины, торговые центры). */
     val ignored: List<Spot> = emptyList(),
+    /** Личные дела в общем расписании: стоматолог, встреча. Добавляются и через Telegram. */
+    val events: List<Personal> = emptyList(),
 ) {
     fun client(id: String) = clients.firstOrNull { it.id == id }
     fun place(id: String) = places.firstOrNull { it.id == id }
@@ -186,3 +192,6 @@ data class Stay(
 )
 
 data class Spot(val lat: Double, val lng: Double, val radius: Int = 150)
+
+/** Личное дело: date — день (epochDay), min — начало в минутах от полуночи. */
+data class Personal(val id: String, val date: Long, val min: Int, val duration: Int, val title: String)

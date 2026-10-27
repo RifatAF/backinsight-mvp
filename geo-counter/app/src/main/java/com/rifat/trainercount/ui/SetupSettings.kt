@@ -535,7 +535,9 @@ fun TelegramBlock(data: AppData) {
             }) { Text("Проверить") }
             OutlinedButton(enabled = !busy && s.tgToken.isNotBlank(), onClick = {
                 io {
-                    chats = withContext(Dispatchers.IO) { com.rifat.trainercount.geo.Telegram.chats(s.tgToken) }
+                    // Пока бот работает, сообщения забирает он: берём чаты, которые он видел.
+                    val found = if (s.tgBotOn) emptyList() else withContext(Dispatchers.IO) { com.rifat.trainercount.geo.Telegram.chats(s.tgToken) }
+                    chats = (found + com.rifat.trainercount.geo.Telegram.seen(ctx)).distinctBy { it.id }
                     status = if (chats.isEmpty()) "Чатов нет: пусть жена откроет бота${bot?.let { " @$it" } ?: ""} и нажмёт «Старт», затем повторите"
                     else "Выберите, кому отправлять:"
                 }
@@ -571,6 +573,38 @@ fun TelegramBlock(data: AppData) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Писать адреса", modifier = Modifier.weight(1f))
                 Switch(checked = s.tgAddress, onCheckedChange = { v -> save { it.copy(tgAddress = v) } })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("Отвечать на сообщения")
+                    Text(
+                        "Можно спросить «что в пятницу», «где Рифат», записать «30.10 17:00 стоматолог Лера». " +
+                            "Работает без ИИ и бесплатно, нужен интернет. В шторке будет тихий значок «Бот на связи».",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = s.tgBotOn, onCheckedChange = { v ->
+                    save { it.copy(tgBotOn = v) }
+                    com.rifat.trainercount.geo.BotService.sync(ctx)
+                })
+            }
+            if (s.tgBotOn) {
+                val known = (chats + com.rifat.trainercount.geo.Telegram.seen(ctx)).distinctBy { it.id }.filter { it.id != s.tgChatId }
+                Text(
+                    "Отвечает: ${s.tgChatName.ifBlank { s.tgChatId }}" + if (known.isNotEmpty()) ". Кому ещё можно (например, себе):" else
+                        ". Чтобы писать боту самому, откройте его в своём Telegram, нажмите «Старт», затем «Найти чат».",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    known.forEach { c ->
+                        FilterChip(
+                            selected = c.id in s.tgAllowed,
+                            onClick = { save { st -> st.copy(tgAllowed = if (c.id in st.tgAllowed) st.tgAllowed - c.id else st.tgAllowed + c.id) } },
+                            label = { Text(c.name.ifBlank { c.id }) },
+                        )
+                    }
+                }
             }
             Text("Так будет выглядеть:", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
             Text(

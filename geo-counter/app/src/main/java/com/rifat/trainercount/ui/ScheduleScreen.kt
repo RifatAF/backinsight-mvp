@@ -76,6 +76,7 @@ import com.rifat.trainercount.logic.addRule
 import com.rifat.trainercount.logic.cancelOnce
 import com.rifat.trainercount.logic.dayPlan
 import com.rifat.trainercount.logic.editRule
+import com.rifat.trainercount.logic.epochMs
 import com.rifat.trainercount.logic.fDur
 import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.freeSlots
@@ -127,6 +128,8 @@ private sealed interface SDlg {
     data class Cancel(val occ: Occ) : SDlg
     data class EditRule(val rule: Rule) : SDlg
     data class Add(val min: Int?) : SDlg
+    /** Личное дело: ev = null для нового. */
+    data class Event(val ev: com.rifat.trainercount.logic.Personal?, val min: Int?) : SDlg
 }
 
 @Composable
@@ -149,11 +152,16 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { dlg = SDlg.Add(null) },
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("Занятие") },
-            )
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                androidx.compose.material3.SmallFloatingActionButton(onClick = { dlg = SDlg.Event(null, null) }) {
+                    Text("+ Дело", modifier = Modifier.padding(horizontal = 12.dp))
+                }
+                ExtendedFloatingActionButton(
+                    onClick = { dlg = SDlg.Add(null) },
+                    icon = { Icon(Icons.Default.Add, null) },
+                    text = { Text("Занятие") },
+                )
+            }
         },
     ) { pad ->
         LazyColumn(
@@ -216,6 +224,7 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
                         is PlanItem.Lesson -> SDlg.Lesson(item.occ, item.status)
                         is PlanItem.Window -> SDlg.Add(item.from)
                         is PlanItem.Unplanned -> SDlg.Add(item.from)
+                        is PlanItem.Event -> SDlg.Event(item.ev, null)
                     }
                 }
             }
@@ -228,6 +237,7 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
         is SDlg.Cancel -> CancelDialog(data, d.occ, selected) { dlg = null }
         is SDlg.EditRule -> RuleDialog(data, d.rule, null, selected) { dlg = null }
         is SDlg.Add -> RuleDialog(data, null, d.min, selected) { dlg = null }
+        is SDlg.Event -> EventDialog(d.ev, d.min, selected) { dlg = null }
         null -> {}
     }
 }
@@ -303,6 +313,15 @@ private fun TimelineRow(data: AppData, item: PlanItem, onClick: () -> Unit) {
                     onClick = onClick,
                 )
             }
+            is PlanItem.Event -> LessonBlock(
+                color = Color(0xFF8E8E93),
+                title = item.ev.title,
+                time = "${hhmm(item.from)}–${hhmm(item.to)}",
+                tags = listOf("личное"),
+                faded = false,
+                height = h,
+                onClick = onClick,
+            )
             is PlanItem.Unplanned -> {
                 val c = data.client(item.visit.clientId)
                 LessonBlock(
@@ -552,7 +571,7 @@ fun NextLessonsCard(data: AppData, now: Long, onClick: () -> Unit) {
     val todayLeft = todayPlan.filter { it is PlanItem.Lesson && it.status == Status.PLANNED }
     // Тот же план, что в расписании: занятия «с–до» и окна с учётом дороги.
     val (label, list) = if (todayLeft.isNotEmpty()) "Сегодня" to todayPlan.filter {
-        (it is PlanItem.Lesson && it.status == Status.PLANNED) || (it is PlanItem.Window && it.to > nowMin)
+        (it is PlanItem.Lesson && it.status == Status.PLANNED) || ((it is PlanItem.Window || it is PlanItem.Event) && it.to > nowMin)
     } else "Завтра" to dayPlan(data, today.plusDays(1), now).filter { it !is PlanItem.Unplanned }
     val shown = list.dropWhile { it is PlanItem.Window }.dropLastWhile { it is PlanItem.Window }
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -566,6 +585,9 @@ fun NextLessonsCard(data: AppData, now: Long, onClick: () -> Unit) {
                     if (item is PlanItem.Lesson) {
                         Box(Modifier.size(10.dp).clip(CircleShape).background(clientColor(item.occ.clientId)))
                         Text("  $time  ${data.client(item.occ.clientId)?.name}", style = MaterialTheme.typography.bodyMedium)
+                    } else if (item is PlanItem.Event) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFF8E8E93)))
+                        Text("  $time  ${item.ev.title}", style = MaterialTheme.typography.bodyMedium)
                     } else {
                         Box(Modifier.size(10.dp).clip(CircleShape).border(1.dp, WINDOW, CircleShape))
                         Text("  $time  окно", style = MaterialTheme.typography.bodyMedium, color = WINDOW)
@@ -575,4 +597,51 @@ fun NextLessonsCard(data: AppData, now: Long, onClick: () -> Unit) {
             if (shown.size > 8) Text("ещё ${shown.size - 8}", style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+/** Личное дело в расписании: стоматолог, встреча. Его же можно добавить, написав боту в Telegram. */
+@Composable
+private fun EventDialog(ev: com.rifat.trainercount.logic.Personal?, min: Int?, date: LocalDate, close: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var title by remember { mutableStateOf(ev?.title ?: "") }
+    var start by remember { mutableIntStateOf(ev?.min ?: min ?: 12 * 60) }
+    var dur by remember { mutableIntStateOf(ev?.duration ?: 60) }
+    var day by remember { mutableStateOf(ev?.let { LocalDate.ofEpochDay(it.date) } ?: date) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text(if (ev == null) "Личное дело" else "Изменить дело") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = title, onValueChange = { title = it }, label = { Text("Что: стоматолог, встреча…") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        pickDate(ctx, epochMs(day, 12 * 60)) { t -> day = com.rifat.trainercount.logic.dayOf(t) }
+                    }) { Text(dayTitle(day)) }
+                    OutlinedButton(onClick = { pickTime(ctx, start) { start = it } }) { Text(hhmm(start)) }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Длится", modifier = Modifier.weight(1f))
+                    Stepper(dur, { dur = it }, 15..600, 15) { fDur(it.toLong()) }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = title.isNotBlank(), onClick = {
+                val ne = com.rifat.trainercount.logic.Personal(ev?.id ?: com.rifat.trainercount.logic.newId(), day.toEpochDay(), start, dur, title.trim())
+                Store.update { d -> d.copy(events = d.events.filter { it.id != ne.id } + ne) }
+                com.rifat.trainercount.geo.Planner.refresh(ctx)
+                close()
+            }) { Text("Сохранить") }
+        },
+        dismissButton = {
+            if (ev != null) TextButton(onClick = {
+                Store.update { d -> d.copy(events = d.events.filter { it.id != ev.id }) }
+                com.rifat.trainercount.geo.Planner.refresh(ctx)
+                close()
+            }) { Text("Удалить") } else TextButton(onClick = close) { Text("Отмена") }
+        },
+    )
 }

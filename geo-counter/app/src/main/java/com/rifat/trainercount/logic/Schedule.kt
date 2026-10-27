@@ -200,6 +200,11 @@ sealed class PlanItem {
     /** Визит без занятия в расписании. */
     data class Unplanned(val visit: Visit, override val from: Int, override val to: Int) : PlanItem()
     data class Window(override val from: Int, override val to: Int) : PlanItem()
+    /** Личное дело (стоматолог, встреча): занимает время, как занятие. */
+    data class Event(val ev: Personal) : PlanItem() {
+        override val from get() = ev.min
+        override val to get() = ev.min + ev.duration
+    }
 }
 
 fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.systemDefault()): List<PlanItem> {
@@ -234,6 +239,7 @@ fun dayPlan(d: AppData, date: LocalDate, now: Long, zone: ZoneId = ZoneId.system
         val c = d.client(v.clientId) ?: continue
         items += PlanItem.Unplanned(v, from, from + lessonMin(d, c))
     }
+    d.events.filter { it.date == date.toEpochDay() }.forEach { items += PlanItem.Event(it) }
     val busy = items.sortedBy { it.from }
     items += windows(d.settings, busy.map { it.from to it.to })
     return items.sortedWith(compareBy({ it.from }, { if (it is PlanItem.Window) 1 else 0 }))
@@ -440,23 +446,35 @@ private fun alarmed(d: AppData, date: LocalDate, min: Int): Boolean {
 fun familyText(d: AppData, now: Long, withAddress: Boolean, zone: ZoneId = ZoneId.systemDefault()): String {
     val date = dayOf(now, zone).plusDays(1)
     val t = epochMs(date, 12 * 60, zone)
-    val head = "План на завтра, ${fDow(t)} ${fDate(t)}"
+    return dayText(d, date, now, withAddress, "План на завтра, ${fDow(t)} ${fDate(t)}", zone)
+}
+
+/** План дня текстом: занятия, личные дела, начало, конец и перерывы. */
+fun dayText(d: AppData, date: LocalDate, now: Long, withAddress: Boolean, head: String, zone: ZoneId = ZoneId.systemDefault()): String {
     val plan = dayPlan(d, date, now, zone)
-    val lessons = plan.filterIsInstance<PlanItem.Lesson>()
-    if (date.dayOfWeek.value !in d.settings.days || lessons.isEmpty()) return "$head:\nЗанятий нет"
+    val work = date.dayOfWeek.value in d.settings.days
+    val busy = plan.filter { (it is PlanItem.Lesson && work) || it is PlanItem.Event }
+    if (busy.isEmpty()) return "$head:\nЗанятий нет"
     return buildString {
         append("$head:\n")
-        lessons.forEach { l ->
-            val c = d.client(l.occ.clientId)
-            append("${hhmm(l.from)}–${hhmm(l.to)} ${c?.name ?: ""}")
-            if (withAddress) {
-                val where = c?.placeId?.let { d.place(it)?.name } ?: c?.address?.takeIf { it.isNotBlank() }
-                if (where != null) append(" ($where)")
+        busy.forEach { item ->
+            append("${hhmm(item.from)}–${hhmm(item.to)} ")
+            when (item) {
+                is PlanItem.Lesson -> {
+                    val c = d.client(item.occ.clientId)
+                    append(c?.name ?: "")
+                    if (withAddress) {
+                        val where = c?.placeId?.let { d.place(it)?.name } ?: c?.address?.takeIf { it.isNotBlank() }
+                        if (where != null) append(" ($where)")
+                    }
+                }
+                is PlanItem.Event -> append("${item.ev.title} (личное)")
+                else -> {}
             }
             append('\n')
         }
-        append("Начало ${hhmm(lessons.first().from)}, конец ${hhmm(lessons.maxOf { it.to })}")
-        val w = plan.filterIsInstance<PlanItem.Window>().filter { it.from >= lessons.first().from && it.to <= lessons.maxOf { l -> l.to } }
+        append("Начало ${hhmm(busy.first().from)}, конец ${hhmm(busy.maxOf { it.to })}")
+        val w = plan.filterIsInstance<PlanItem.Window>().filter { it.from >= busy.first().from && it.to <= busy.maxOf { l -> l.to } }
         if (w.isNotEmpty()) append("\nПерерывы: " + w.joinToString(", ") { "${hhmm(it.from)}–${hhmm(it.to)}" })
     }
 }
