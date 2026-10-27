@@ -369,6 +369,26 @@ fun RemindersBlock(data: AppData) {
                 pickTime(ctx, s.alarmBefore) { m -> save { it.copy(alarmBefore = m) } }
             }) { Text("если тренировка раньше ${hm(s.alarmBefore)}") }
         }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Напоминание перед тренировкой")
+                Text("Короткий звук, видно на экране блокировки. Кроме утренней с будильником", style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = s.soonOn, onCheckedChange = { v -> save { it.copy(soonOn = v) } })
+        }
+        if (s.soonOn) Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("За сколько", modifier = Modifier.weight(1f))
+            Stepper(s.soonLead, { v -> save { it.copy(soonLead = v) } }, 10..90, 5) { "$it мин" }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Дорога между клиентами")
+                Text("Запас при поиске свободного окна", style = MaterialTheme.typography.bodySmall)
+            }
+            Stepper(s.travelMin, { v -> save { it.copy(travelMin = v) } }, 0..90, 15) { "$it мин" }
+        }
         key(tick) {
             if (!Planner.canExact(ctx)) CheckRow(false, "Точные будильники", "Нужно, чтобы будильник звонил вовремя", "Открыть") {
                 if (Build.VERSION.SDK_INT >= 31) ctx.startActivity(

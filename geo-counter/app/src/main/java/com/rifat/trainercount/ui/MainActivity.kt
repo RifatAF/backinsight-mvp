@@ -28,12 +28,15 @@ sealed interface Screen {
     data class EditPlace(val id: String?) : Screen
     data object Log : Screen
     data object Schedule : Screen
+    data object FindWindow : Screen
 }
 
 class Nav(private val stack: SnapshotStateList<Screen>) {
     val current get() = stack.last()
     /** Открыть вопрос «с кем было занятие» на главном экране. */
     var openPending by mutableStateOf<String?>(null)
+    /** Открыть расписание на этом дне. */
+    var scheduleDate by mutableStateOf<java.time.LocalDate?>(null)
     fun go(s: Screen) = stack.add(s)
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex)
@@ -68,6 +71,7 @@ class MainActivity : ComponentActivity() {
                     is Screen.EditPlace -> EditPlaceScreen(data, s.id, nav)
                     Screen.Log -> LogScreen(nav)
                     Screen.Schedule -> ScheduleScreen(data, nav)
+                    Screen.FindWindow -> FindWindowScreen(data, nav)
                 }
             }
         }

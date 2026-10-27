@@ -309,3 +309,79 @@ fun tomorrowText(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): 
 }
 
 fun hhmm(min: Int) = "%d:%02d".format(min / 60, min % 60)
+
+// ---------- Поиск окна ----------
+
+/** Свободное окно: занятие можно начать с earliest до latest (включительно), шаг 30 минут. */
+data class FreeWindow(val date: LocalDate, val earliest: Int, val latest: Int)
+
+/**
+ * Окна под занятие длиной duration на ближайшие days дней с запасом travel минут на дорогу до и после
+ * соседних занятий. Начало и конец рабочего дня запасом не ограничиваются.
+ */
+fun findWindows(
+    d: AppData, from: LocalDate, days: Int, duration: Int, travel: Int, now: Long, zone: ZoneId = ZoneId.systemDefault(),
+): List<FreeWindow> {
+    val s = d.settings
+    val nowDate = dayOf(now, zone)
+    val nowMin = Instant.ofEpochMilli(now).atZone(zone).let { it.hour * 60 + it.minute }
+    val out = mutableListOf<FreeWindow>()
+    for (i in 0 until days) {
+        val date = from.plusDays(i.toLong())
+        if (date.dayOfWeek.value !in s.days || date < nowDate) continue
+        val busy = dayPlan(d, date, now, zone)
+            .filter { it !is PlanItem.Window && !(it is PlanItem.Lesson && it.status == Status.MISSED) }
+            .map { it.from to it.to }.sortedBy { it.first }
+        var gapStart = s.startMin
+        var first = true
+        for (slot in busy + listOf(s.endMin to s.endMin)) {
+            val isEnd = slot.first == s.endMin && slot.second == s.endMin
+            val lo = if (first) gapStart else gapStart + travel
+            val hi = (if (isEnd) slot.first else slot.first - travel) - duration
+            var a = ((lo + 29) / 30) * 30
+            if (date == nowDate) a = maxOf(a, ((nowMin + travel + 29) / 30) * 30)
+            val b = (hi / 30) * 30
+            if (a <= b) out += FreeWindow(date, a, b)
+            gapStart = maxOf(gapStart, slot.second)
+            first = false
+            if (isEnd) break
+        }
+    }
+    return out
+}
+
+fun windowsText(ws: List<FreeWindow>, duration: Int, zone: ZoneId = ZoneId.systemDefault()): String = buildString {
+    append("Свободное время для занятия (${fDur(duration.toLong())}):\n")
+    ws.groupBy { it.date }.forEach { (date, list) ->
+        val t = epochMs(date, 12 * 60, zone)
+        append("${fDow(t).replaceFirstChar { it.uppercase() }} ${fDate(t)}: ")
+        append(list.joinToString(", ") { w -> if (w.earliest == w.latest) "в ${hhmm(w.earliest)}" else "с ${hhmm(w.earliest)} до ${hhmm(w.latest)}" })
+        append('\n')
+    }
+}.trimEnd()
+
+// ---------- Напоминание перед тренировкой ----------
+
+/** Ближайшее тихое напоминание: за soonLead минут до занятия, кроме того, перед которым звонит будильник. */
+fun nextSoon(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Pair<Long, Occ>? {
+    val s = d.settings
+    if (!s.soonOn || readyInDays(d, now) > 0) return null
+    val today = dayOf(now, zone)
+    for (i in 0..1) {
+        val date = today.plusDays(i.toLong())
+        if (date.dayOfWeek.value !in s.days) continue
+        for (l in dayPlan(d, date, now, zone).filterIsInstance<PlanItem.Lesson>().filter { it.status == Status.PLANNED }) {
+            if (alarmed(d, date, l.occ.min)) continue
+            val t = epochMs(date, l.occ.min - s.soonLead, zone)
+            if (t > now) return t to l.occ
+        }
+    }
+    return null
+}
+
+/** Перед этим занятием звонит будильник: оно первое за день и раньше alarmBefore. */
+private fun alarmed(d: AppData, date: LocalDate, min: Int): Boolean {
+    val s = d.settings
+    if (!s.alarmOn || min >= s.alarmBefore) return false
+    return occurrences(d, date).firstOrNull()?.min == min
+}

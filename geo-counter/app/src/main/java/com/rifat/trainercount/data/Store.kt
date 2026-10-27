@@ -130,6 +130,7 @@ object Store {
             put("setupDone", s.setupDone)
             put("eveningMin", s.eveningMin); put("eveningOn", s.eveningOn)
             put("alarmOn", s.alarmOn); put("alarmLead", s.alarmLead); put("alarmBefore", s.alarmBefore)
+            put("soonOn", s.soonOn); put("soonLead", s.soonLead); put("travelMin", s.travelMin)
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
         put("lastPoll", d.lastPoll ?: JSONObject.NULL)
@@ -203,6 +204,8 @@ object Store {
                 eveningMin = s.optInt("eveningMin", def.eveningMin), eveningOn = s.optBoolean("eveningOn", def.eveningOn),
                 alarmOn = s.optBoolean("alarmOn", def.alarmOn), alarmLead = s.optInt("alarmLead", def.alarmLead),
                 alarmBefore = s.optInt("alarmBefore", def.alarmBefore),
+                soonOn = s.optBoolean("soonOn", def.soonOn), soonLead = s.optInt("soonLead", def.soonLead),
+                travelMin = s.optInt("travelMin", def.travelMin),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
             lastPoll = o.lOpt("lastPoll"),

@@ -97,6 +97,12 @@ fun HomeScreen(data: AppData, nav: Nav) {
         ) {
             item { StatusCard(data, now) }
             item { NextLessonsCard(data, now) { nav.go(Screen.Schedule) } }
+            item {
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = { nav.go(Screen.FindWindow) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Найти свободное окно") }
+            }
             val todayIso = java.time.LocalDate.now().dayOfWeek.value
             if (todayIso !in data.settings.days) item {
                 WarnCard("Сегодня учёт выключен: этот день не отмечен как рабочий. Нажмите, чтобы изменить.") { nav.go(Screen.Settings) }

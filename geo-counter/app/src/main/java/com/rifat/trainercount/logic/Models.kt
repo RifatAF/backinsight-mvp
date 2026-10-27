@@ -97,6 +97,11 @@ data class Settings(
     val alarmOn: Boolean = true,
     val alarmLead: Int = 45,
     val alarmBefore: Int = 12 * 60,
+    /** Тихое напоминание за soonLead минут до тренировки (кроме той, перед которой звонит будильник). */
+    val soonOn: Boolean = true,
+    val soonLead: Int = 30,
+    /** Запас на дорогу между занятиями при поиске окна. */
+    val travelMin: Int = 30,
 ) {
     val hasHome get() = homeLat != null && homeLng != null
 }

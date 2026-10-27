@@ -26,6 +26,7 @@ import com.rifat.trainercount.logic.hhmm
 import com.rifat.trainercount.logic.learnRules
 import com.rifat.trainercount.logic.nextAlarm
 import com.rifat.trainercount.logic.nextEvening
+import com.rifat.trainercount.logic.nextSoon
 import com.rifat.trainercount.logic.readyInDays
 import com.rifat.trainercount.logic.tomorrowText
 import com.rifat.trainercount.ui.MainActivity
@@ -34,6 +35,8 @@ import com.rifat.trainercount.ui.MainActivity
 object Planner {
     const val CH_EVENING = "evening"
     const val CH_ALARM = "alarm"
+    const val CH_SOON = "soon"
+    private const val NID_SOON = 7003
     const val EXTRA_SCHEDULE = "openSchedule"
     private const val NID_EVENING = 7001
     const val NID_ALARM = 7002
@@ -43,6 +46,14 @@ object Planner {
         nm.createNotificationChannel(
             NotificationChannel(CH_EVENING, "Расписание на завтра", NotificationManager.IMPORTANCE_DEFAULT)
                 .apply { description = "Вечерняя сводка: кто и во сколько завтра, свободные окна" }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_SOON, "Скоро тренировка", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "За 30 минут до тренировки: короткий звук, видно на экране блокировки"
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 200)
+            }
         )
         nm.createNotificationChannel(
             NotificationChannel(CH_ALARM, "Будильник перед тренировкой", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -95,6 +106,13 @@ object Planner {
         am.cancel(evening)
         if (s.eveningOn) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextEvening(s, now), evening)
 
+        val soon = pi(ctx, ScheduleReceiver.SOON, 18)
+        am.cancel(soon)
+        nextSoon(d, now)?.let { (at, _) ->
+            if (canExact(ctx)) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, soon)
+            else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, soon)
+        }
+
         val alarm = pi(ctx, ScheduleReceiver.ALARM, 12)
         am.cancel(alarm)
         val next = nextAlarm(d, now) ?: return
@@ -123,6 +141,32 @@ object Planner {
             .build()
         NotificationManagerCompat.from(ctx).notify(NID_EVENING, n)
         Diag.add(ctx, "Сводка на завтра: $title")
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showSoon(ctx: Context) {
+        if (!Perms.notifications(ctx)) return
+        val d = Store.data.value
+        val now = System.currentTimeMillis()
+        val nowMin = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
+        val lessons = com.rifat.trainercount.logic.dayPlan(d, com.rifat.trainercount.logic.dayOf(now), now)
+            .filterIsInstance<com.rifat.trainercount.logic.PlanItem.Lesson>()
+            .filter { it.status == com.rifat.trainercount.logic.Status.PLANNED && it.occ.min - nowMin in 0..(d.settings.soonLead + 10) }
+        val l = lessons.firstOrNull() ?: return
+        val c = d.client(l.occ.clientId)
+        val where = c?.placeId?.let { d.place(it)?.name } ?: c?.address?.takeIf { it.isNotBlank() }
+        val n = NotificationCompat.Builder(ctx, CH_SOON)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("${hhmm(l.occ.min)} ${c?.name}: через ${l.occ.min - nowMin} мин")
+            .setContentText(where ?: "Тренировка по расписанию")
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(openSchedule(ctx, 19))
+            .setAutoCancel(true)
+            .setTimeoutAfter((d.settings.soonLead + 30) * 60_000L)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(NID_SOON, n)
+        Diag.add(ctx, "Напоминание: ${hhmm(l.occ.min)} ${c?.name}")
     }
 
     @SuppressLint("MissingPermission")
@@ -164,6 +208,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val ALARM = "com.rifat.trainercount.ALARM"
         const val STOP = "com.rifat.trainercount.ALARM_STOP"
         const val SNOOZE = "com.rifat.trainercount.ALARM_SNOOZE"
+        const val SOON = "com.rifat.trainercount.SOON"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
@@ -183,6 +228,10 @@ class ScheduleReceiver : BroadcastReceiver() {
                 val text = first?.let { "${hhmm(it.occ.min)} ${d.client(it.occ.clientId)?.name}" } ?: "Тренировка по расписанию"
                 Diag.add(ctx, "Будильник: $text")
                 Planner.ring(ctx, text)
+                Planner.reschedule(ctx)
+            }
+            SOON -> {
+                Planner.showSoon(ctx)
                 Planner.reschedule(ctx)
             }
             STOP -> NotificationManagerCompat.from(ctx).cancel(Planner.NID_ALARM)

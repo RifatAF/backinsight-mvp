@@ -416,4 +416,29 @@ class LogicTest {
         val s = cafeStay(withRules, t(17, 55), t(20, 5))
         assertEquals(listOf("Аня", "Борис"), s.data.visits.sortedBy { it.start }.map { it.clientId })
     }
+
+    @Test fun findWindowWithTravel() {
+        val s = home.copy(startMin = 9 * 60, endMin = 20 * 60)
+        var d = base.copy(settings = s)
+        d = addRule(d, "s", 3, 10 * 60, null) // 10:00–11:00
+        d = addRule(d, "e", 3, 14 * 60, null) // 14:00–15:00
+        val ws = findWindows(d, date(7), 1, 60, 30, t(7, day = 7))
+        // 9:00 до 10:00 нужно ехать к 10:00 → нет; 11:30–12:30 … 12:30–13:30; после 15:30 до 20:00.
+        assertEquals(listOf("11:30-12:30", "15:30-19:00"), ws.map { hhmm(it.earliest) + "-" + hhmm(it.latest) })
+        val txt = windowsText(ws, 60)
+        assertTrue("Ср 07.10: с 11:30 до 12:30, с 15:30 до 19:00" in txt, txt)
+        // Сегодня после 16:10 окно начинается не раньше 17:00 (дорога 30 мин, округление).
+        val later = findWindows(d, date(7), 1, 60, 30, t(16, 10, day = 7))
+        assertEquals(17 * 60, later.single().earliest)
+    }
+
+    @Test fun soonReminderSkipsAlarmedLesson() {
+        var d = base.copy(visits = listOf(auto("v", "s", 1, 9, 0)))
+        d = addRule(d, "s", 4, 9 * 60, null)   // чт 9:00: будильник
+        d = addRule(d, "e", 4, 14 * 60, null)  // чт 14:00: напоминание 13:30
+        val (at, occ) = nextSoon(d, t(20, day = 7))!!
+        assertEquals(t(13, 30, day = 8), at)
+        assertEquals("e", occ.clientId)
+        assertNull(nextSoon(d.copy(settings = d.settings.copy(soonOn = false)), t(20, day = 7)))
+    }
 }

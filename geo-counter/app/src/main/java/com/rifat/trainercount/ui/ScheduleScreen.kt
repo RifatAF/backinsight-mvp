@@ -132,7 +132,8 @@ private sealed interface SDlg {
 fun ScheduleScreen(data: AppData, nav: Nav) {
     val now = rememberNow()
     val today = LocalDate.now()
-    var selected by remember { mutableStateOf(today) }
+    var selected by remember { mutableStateOf(nav.scheduleDate ?: today) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { nav.scheduleDate = null }
     var dlg by remember { mutableStateOf<SDlg?>(null) }
     val weekStart = selected.minusDays((selected.dayOfWeek.value - 1).toLong())
     val plan = dayPlan(data, selected, now)
@@ -143,6 +144,7 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
             TopAppBar(
                 title = { Text("Расписание") },
                 navigationIcon = { IconButton(onClick = nav::back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
+                actions = { TextButton(onClick = { nav.go(Screen.FindWindow) }) { Text("Найти окно") } },
             )
         },
         floatingActionButton = {
