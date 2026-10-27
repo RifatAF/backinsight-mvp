@@ -86,6 +86,13 @@ fun visitsOfPack(d: AppData, pack: Pack): List<Visit> {
     return out
 }
 
+/** Оплата за каждое занятие: сколько проведено и ещё не оплачено. */
+fun unpaid(d: AppData, c: Client): Int = (-balance(d, c.id).left).coerceAtLeast(0)
+
+/** Записать оплату n занятий по цене клиента. */
+fun payVisits(d: AppData, c: Client, n: Int, t: Long): AppData =
+    if (n <= 0) d else d.copy(packs = d.packs + Pack(newId(), c.id, t, n, n * pricePerSession(d, c)))
+
 fun pricePerSession(d: AppData, c: Client): Int {
     if (c.price > 0) return c.price
     val last = d.packs.filter { it.clientId == c.id && it.sessions > 0 }.maxByOrNull { it.paidAt } ?: return 0

@@ -397,6 +397,11 @@ fun clientHelp(c: Client) = """Здравствуйте, ${c.name}! Я помо�
 Остальное (перенос, вопрос) я передам Рифату."""
 
 fun clientBalanceText(d: AppData, c: Client): String {
+    if (c.perVisit) {
+        val n = unpaid(d, c)
+        val price = pricePerSession(d, c)
+        return if (n == 0) "Все занятия оплачены." else "Не оплачено: ${lessons(n)}" + (if (price > 0) " (${fMoney(n * price)})" else "") + "."
+    }
     val b = balance(d, c.id)
     return when {
         b.left < 0 -> "Проведено сверх оплаты: ${lessons(-b.left)}. Пора оплатить следующий пакет."

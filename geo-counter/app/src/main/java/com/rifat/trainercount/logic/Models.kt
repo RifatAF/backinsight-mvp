@@ -21,6 +21,8 @@ data class Client(
     val perMember: Boolean = true,
     /** Чат клиента с ботом в Telegram (подключился по своей ссылке-приглашению). */
     val tgChatId: String = "",
+    /** Платит за каждое занятие отдельно, а не пакетом: считаем, сколько проведено и не оплачено. */
+    val perVisit: Boolean = false,
 ) {
     val hasPlace get() = lat != null && lng != null
     val isFamily get() = members.size > 1

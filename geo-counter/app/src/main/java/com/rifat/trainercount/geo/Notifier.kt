@@ -179,7 +179,11 @@ object Notifier {
         val d = Store.data.value
         val c = d.client(v.clientId) ?: return
         val b = balance(d, c.id)
+        val debt = com.rifat.trainercount.logic.unpaid(d, c)
+        val price = com.rifat.trainercount.logic.pricePerSession(d, c)
         val left = when {
+            c.perVisit && debt > 0 -> "Не оплачено: ${com.rifat.trainercount.logic.lessons(debt)}" + if (price > 0) " (${com.rifat.trainercount.logic.fMoney(debt * price)})" else ""
+            c.perVisit -> "Оплачено"
             b.current != null && b.left > 1 -> "Осталось ${b.left} из ${b.activeTotal}"
             b.left == 1 -> "Осталась 1, пора напомнить об оплате"
             b.left == 0 && b.paid > 0 -> "Пакет закончился, пора напомнить об оплате"
@@ -197,7 +201,7 @@ object Notifier {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val n = NotificationCompat.Builder(ctx, if (b.left <= 1) CH_PAY else CH_VISITS)
+        val n = NotificationCompat.Builder(ctx, if (!c.perVisit && b.left <= 1) CH_PAY else CH_VISITS)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("${c.name}: +${trainings(v.count)}")
             .setContentText(text)
@@ -205,6 +209,7 @@ object Notifier {
             .setContentIntent(open)
             .setAutoCancel(true)
             .addAction(0, "Отменить", action(ctx, ActionReceiver.UNDO, v))
+        if (c.perVisit && debt > 0) n.addAction(0, "Оплачено", action(ctx, ActionReceiver.PAID, v))
         when {
             // Семья: одной кнопкой «был только один».
             c.countsEach && v.members.size == 2 -> v.members.forEach { m ->
@@ -234,6 +239,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val STAY_NO = "com.rifat.trainercount.STAY_NO"
         const val STAY_IGNORE = "com.rifat.trainercount.STAY_IGNORE"
         const val TG_ALLOW = "com.rifat.trainercount.TG_ALLOW"
+        const val PAID = "com.rifat.trainercount.PAID"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
@@ -264,6 +270,11 @@ class ActionReceiver : BroadcastReceiver() {
         val id = intent.getStringExtra("visitId") ?: return
         val v = Store.data.value.visits.firstOrNull { it.id == id } ?: return
         when (intent.action) {
+            PAID -> {
+                val c = Store.data.value.client(v.clientId) ?: return
+                Store.update { com.rifat.trainercount.logic.payVisits(it, c, v.count, System.currentTimeMillis()) }
+                Notifier.show(ctx, v)
+            }
             UNDO -> {
                 Store.update { d -> d.copy(visits = d.visits.filter { it.id != id }) }
                 Notifier.cancel(ctx, v)

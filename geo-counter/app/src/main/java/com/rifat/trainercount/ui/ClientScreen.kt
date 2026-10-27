@@ -74,6 +74,8 @@ import com.rifat.trainercount.logic.perPerson
 import com.rifat.trainercount.logic.withMembers
 import com.rifat.trainercount.logic.pricePerSession
 import com.rifat.trainercount.logic.reportText
+import com.rifat.trainercount.logic.payVisits
+import com.rifat.trainercount.logic.unpaid
 import com.rifat.trainercount.logic.trainings
 
 private sealed interface Dlg {
@@ -110,7 +112,11 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
+                        val debt = unpaid(data, c)
+                        val price = pricePerSession(data, c)
                         val (big, small) = when {
+                            c.perVisit && debt > 0 -> "$debt" to "не оплачено" + if (price > 0) " · ${fMoney(debt * price)}" else ""
+                            c.perVisit -> "✓" to "все занятия оплачены"
                             b.left < 0 -> "${-b.left}" to "сверх оплаты, нужно получить оплату"
                             b.current != null -> "${b.left}" to "осталось из ${b.activeTotal} оплаченных"
                             b.paid > 0 -> "0" to "пакет закончился"
@@ -118,7 +124,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                         }
                         Text(
                             big, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.SemiBold,
-                            color = if (b.left <= 1) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                            color = if (if (c.perVisit) debt > 0 else b.left <= 1) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                         )
                         Text(small, style = MaterialTheme.typography.bodyMedium)
                         if (c.members.size > 1) {
@@ -130,7 +136,14 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilledTonalButton(onClick = { dlg = Dlg.AddVisit }) { Text("+ Тренировка") }
-                            FilledTonalButton(onClick = { dlg = Dlg.Pay }) { Text("Оплата") }
+                            if (c.perVisit) {
+                                if (debt > 0) FilledTonalButton(onClick = {
+                                    Store.update { payVisits(it, c, 1, System.currentTimeMillis()) }
+                                }) { Text("Оплатил 1") }
+                                if (debt > 1) FilledTonalButton(onClick = {
+                                    Store.update { payVisits(it, c, debt, System.currentTimeMillis()) }
+                                }) { Text("Оплатил все $debt") }
+                            } else FilledTonalButton(onClick = { dlg = Dlg.Pay }) { Text("Оплата") }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {

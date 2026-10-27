@@ -80,6 +80,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
     var archived by remember { mutableStateOf(c0.archived) }
     var placeId by remember { mutableStateOf(c0.placeId) }
     var perMember by remember { mutableStateOf(c0.perMember) }
+    var perVisit by remember { mutableStateOf(c0.perVisit) }
     var slots by remember { mutableStateOf(c0.slots) }
 
     var askDelete by remember { mutableStateOf(false) }
@@ -89,7 +90,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
         members = members.split(',').map { it.trim() }.filter { it.isNotEmpty() },
         address = address.trim(), lat = lat, lng = lng, radius = radius.toInt(),
         sessionMin = sessionMin, minMin = minMin, price = price.toIntOrNull() ?: 0, archived = archived,
-        placeId = placeId, slots = slots, perMember = perMember,
+        placeId = placeId, slots = slots, perMember = perMember, perVisit = perVisit,
     )
 
     fun save() {
@@ -173,6 +174,22 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
                         Text("Расписание", style = MaterialTheme.typography.titleSmall)
                         SlotsEditor(slots) { slots = it }
                     }
+                }
+            }
+
+            SectionTitle("Как платит")
+            Card {
+                Column(Modifier.padding(12.dp)) {
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.FilterChip(selected = !perVisit, onClick = { perVisit = false }, label = { Text("Пакетом (например, 10 занятий)") })
+                        androidx.compose.material3.FilterChip(selected = perVisit, onClick = { perVisit = true }, label = { Text("За каждое занятие") })
+                    }
+                    Text(
+                        if (perVisit) "Показываю, сколько проведено и не оплачено и на какую сумму. После занятия в уведомлении кнопка «Оплачено»."
+                        else "Показываю, сколько осталось из оплаченного пакета.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

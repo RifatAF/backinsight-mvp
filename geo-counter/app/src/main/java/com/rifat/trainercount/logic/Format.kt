@@ -64,6 +64,7 @@ private fun dowCap(t: Long) = fDow(t).replaceFirstChar { it.uppercase() }
  * занятия сверх оплаты.
  */
 fun reportText(d: AppData, c: Client): String {
+    if (c.perVisit) return perVisitReport(d, c)
     val packs = d.packs.filter { it.clientId == c.id }.sortedBy { it.paidAt }
     val visits = d.visits.filter { it.clientId == c.id }.sortedBy { it.start }
     val used = visits.sumOf { it.count }
@@ -134,4 +135,33 @@ fun reportText(d: AppData, c: Client): String {
         else -> sb.append("Сверх оплаты: ${lessons(-left)}, нужна оплата")
     }
     return sb.toString()
+}
+
+/** Отчёт, когда клиент платит за каждое занятие: что не оплачено и на какую сумму. */
+private fun perVisitReport(d: AppData, c: Client): String {
+    val visits = d.visits.filter { it.clientId == c.id }.sortedBy { it.start }
+    val paid = d.packs.filter { it.clientId == c.id }.sumOf { it.sessions }
+    val used = visits.sumOf { it.count }
+    val price = pricePerSession(d, c)
+    fun line(v: Visit) = "${dowCap(v.start)} ${fDate(v.start)}" + (if (v.kind == VisitKind.AUTO) ", ${fTime(v.start)}" else "") +
+        (if (v.count > 1) " · ${lessons(v.count)}" else "") +
+        (if (v.members.isNotEmpty() && c.isFamily) " · " + v.members.joinToString(", ") else "")
+    return buildString {
+        append("${c.name}: занятия\n")
+        if (used <= paid) {
+            append("Все занятия оплачены ✓\n")
+            visits.takeLast(3).takeIf { it.isNotEmpty() }?.let { last ->
+                append("\nПоследние:\n"); last.forEach { append(line(it)).append('\n') }
+            }
+            return@buildString
+        }
+        // Неоплаченные: последние занятия сверх оплаченных.
+        var skip = paid
+        val open = mutableListOf<Visit>()
+        for (v in visits) { if (skip >= v.count) skip -= v.count else { open += v; skip = 0 } }
+        append("\nНе оплачено:\n")
+        open.forEachIndexed { i, v -> append("${i + 1}. ${line(v)}\n") }
+        val n = used - paid
+        append("\nК оплате: ${lessons(n)}" + if (price > 0) ", ${fMoney(n * price)}" else "")
+    }.trimEnd()
 }

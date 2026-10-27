@@ -208,7 +208,13 @@ fun ClientCard(data: AppData, c: Client, onClick: () -> Unit) {
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     val color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                    val debt = com.rifat.trainercount.logic.unpaid(data, c)
                     when {
+                        c.perVisit && debt > 0 -> {
+                            Text("$debt", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.error)
+                            Text("не оплачено", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                        c.perVisit -> Text("оплачено ✓", style = MaterialTheme.typography.bodySmall)
                         b.left < 0 -> {
                             Text("${-b.left}", style = MaterialTheme.typography.headlineMedium, color = color)
                             Text("сверх оплаты", style = MaterialTheme.typography.bodySmall, color = color)
@@ -223,7 +229,7 @@ fun ClientCard(data: AppData, c: Client, onClick: () -> Unit) {
                 }
             }
             val cur = b.current
-            if (cur != null) {
+            if (cur != null && !c.perVisit) {
                 Spacer(Modifier.height(10.dp))
                 LinearProgressIndicator(
                     progress = { (b.activeTotal - b.left).toFloat() / b.activeTotal.coerceAtLeast(1) },

@@ -451,6 +451,21 @@ class LogicTest {
         assertNull(onHomeArrive(d, t(19, 0)).data.openTrip)
     }
 
+    @Test fun payPerVisit() {
+        val c = sveta.copy(perVisit = true, price = 30)
+        var d = base.copy(clients = listOf(c, egor), visits = listOf(auto("a", "s", 5, 10, 0), auto("b", "s", 7, 10, 0), auto("c", "s", 9, 10, 0)))
+        assertEquals(3, unpaid(d, c))
+        d = payVisits(d, c, 1, t(12, day = 9))
+        assertEquals(2, unpaid(d, c))
+        val r = reportText(d, c)
+        assertTrue("Не оплачено:\n1. Ср 07.10" in r && "2. Пт 09.10" in r, r)
+        assertTrue("К оплате: 2 занятия, $60" in r, r)
+        d = payVisits(d, c, 2, t(13, day = 9))
+        assertEquals(0, unpaid(d, c))
+        assertTrue("Все занятия оплачены" in reportText(d, c))
+        assertEquals("Все занятия оплачены.", clientBalanceText(d, c))
+    }
+
     @Test fun oldFamilyDurationMigrated() {
         val old = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), sessionMin = 120, minMin = 90)
         val m = perPersonMigrate(old)
