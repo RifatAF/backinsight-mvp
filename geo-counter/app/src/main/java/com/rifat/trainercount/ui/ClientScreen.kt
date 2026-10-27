@@ -337,7 +337,7 @@ private fun PayDialog(data: AppData, c: Client, close: () -> Unit) {
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it.filter(Char::isDigit).take(9) },
-                    label = { Text("Сумма, ₽ (необязательно)") },
+                    label = { Text("Сумма, $ (необязательно)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.padding(top = 12.dp),

@@ -195,7 +195,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav) {
                     }
                     OutlinedTextField(
                         value = price, onValueChange = { price = it.filter(Char::isDigit).take(7) },
-                        label = { Text("Цена тренировки, ₽ (для статистики)") },
+                        label = { Text("Цена тренировки, $ (для статистики)") },
                         supportingText = { Text("Пусто: возьмётся из последней оплаты") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

@@ -314,6 +314,10 @@ class LogicTest {
     private fun auto(id: String, client: String, day: Int, h: Int, m: Int) =
         Visit(id, client, t(h, m, day), t(h, m, day) + 3_600_000, 1)
 
+    /** Визит семьи на 2 часа. */
+    private fun auto2(id: String, client: String, day: Int, h: Int, m: Int) =
+        Visit(id, client, t(h, m, day), t(h, m, day) + 7_200_000, 2)
+
     @Test fun rounding() {
         assertEquals(16 * 60, roundSlot(16 * 60 + 5))
         assertEquals(11 * 60 + 30, roundSlot(11 * 60 + 25))
@@ -348,7 +352,7 @@ class LogicTest {
     @Test fun familyMovesDoNotDoubleSchedule() {
         // Ерлан и Рита по четвергам: две недели в 15:00, потом две недели в 16:00 (переносы).
         val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0)
-        val vs = listOf(auto("a", "f", 1, 15, 0), auto("b", "f", 8, 15, 5), auto("c", "f", 15, 16, 0), auto("d", "f", 22, 15, 55))
+        val vs = listOf(auto2("a", "f", 1, 15, 0), auto2("b", "f", 8, 15, 5), auto2("c", "f", 15, 16, 0), auto2("d", "f", 22, 15, 55))
         val d = learnRules(base.copy(clients = base.clients + fam, visits = vs), t(20, day = 22))
         assertEquals(listOf(16 * 60), d.rules.filter { it.clientId == "f" }.map { it.min })
         assertEquals(listOf(16 * 60 to 18 * 60), occurrences(d, date(29)).filter { it.clientId == "f" }.map { it.min to it.min + it.duration })
@@ -376,7 +380,7 @@ class LogicTest {
     @Test fun fridayWithShiftingTimes() {
         // Ерлан и Рита по пятницам, время из-за переносов разное: 13:00, 15:00, 16:00, 15:00.
         val fam = Client("f", "Ерлан и Рита", members = listOf("Ерлан", "Рита"), lat = 3.0, lng = 3.0)
-        val vs = listOf(auto("a", "f", 2, 13, 0), auto("b", "f", 9, 15, 0), auto("c", "f", 16, 16, 0), auto("d", "f", 23, 15, 5))
+        val vs = listOf(auto2("a", "f", 2, 13, 0), auto2("b", "f", 9, 15, 0), auto2("c", "f", 16, 16, 0), auto2("d", "f", 23, 15, 5))
         val d = learnRules(base.copy(clients = base.clients + fam, visits = vs), t(20, day = 27))
         assertEquals(listOf(15 * 60 to null), d.rules.filter { it.clientId == "f" }.map { it.min to it.parity })
         // Пришли в 17:00 вместо 15:00: занятие отмечено как было в 17:00, без второго блока.
@@ -404,6 +408,19 @@ class LogicTest {
         val d = learnRules(base.copy(visits = vs), t(20, day = 27))
         assertEquals(listOf(5 to 14 * 60 + 30), d.rules.map { it.day to it.min })
         assertNull(d.rules.single().parity)
+    }
+
+    @Test fun familyLengthFromVisitsAndSlots() {
+        // Трое детей, а занятие обычно 2 часа: в расписании 2 часа, а не 3.
+        val fam = Client("f", "Анна", members = listOf("Анна", "Макар", "Федя"), lat = 3.0, lng = 3.0)
+        val d0 = base.copy(clients = base.clients + fam)
+        assertEquals(180, lessonMin(d0, fam))
+        assertEquals(120, lessonMin(d0.copy(visits = listOf(auto2("a", "f", 4, 17, 30), auto2("b", "f", 11, 17, 30))), fam))
+        // Время из карточки клиента главнее выученного; ночная ручная запись ничему не учит.
+        val c = sveta.copy(slots = listOf(Slot(3, 10 * 60)))
+        val vs = listOf(auto("a", "s", 14, 11, 0), auto("b", "s", 21, 11, 0), Visit("n", "s", t(23, 6, day = 23), t(23, 6, day = 23), 1, VisitKind.MANUAL))
+        val d = learnRules(base.copy(clients = listOf(c, egor), visits = vs), t(20, day = 27))
+        assertEquals(listOf(3 to 10 * 60), d.rules.map { it.day to it.min })
     }
 
     @Test fun oldFamilyDurationMigrated() {

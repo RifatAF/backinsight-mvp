@@ -35,9 +35,19 @@ fun parityOf(date: LocalDate): Int = Math.floorMod(weekIndex(date), 2).toInt()
 fun epochMs(date: LocalDate, min: Int, zone: ZoneId = ZoneId.systemDefault()): Long =
     date.atStartOfDay(zone).plusMinutes(min.toLong()).toInstant().toEpochMilli()
 
-/** Длина занятия в расписании: час (sessionMin) на человека, у семьи с раздельным счётом на каждого. */
-fun lessonMin(d: AppData, c: Client): Int =
-    c.placeId?.let { d.place(it)?.sessionMin } ?: (c.sessionMin * if (c.countsEach) c.members.size.coerceAtLeast(1) else 1)
+/**
+ * Длина занятия в расписании. Семья: сколько обычно длятся её визиты (медиана трёх последних,
+ * до получаса), от часа до часа на каждого. Без визитов: час на каждого.
+ */
+fun lessonMin(d: AppData, c: Client): Int {
+    c.placeId?.let { d.place(it)?.sessionMin }?.let { return it }
+    if (!c.countsEach) return c.sessionMin
+    val most = c.sessionMin * c.members.size
+    val recent = d.visits.filter { it.clientId == c.id && it.kind == VisitKind.AUTO && it.end - it.start >= c.minMin * 60_000L }
+        .sortedByDescending { it.start }.take(3).map { ((it.end - it.start) / 60_000).toInt() }.sorted()
+    if (recent.isEmpty()) return most
+    return ((recent[recent.size / 2] + 15) / 30 * 30).coerceIn(c.sessionMin, most)
+}
 
 // ---------- Обучение по визитам ----------
 
@@ -63,10 +73,18 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
     for (c in d.clients.filter { !it.archived }) {
         val planned = d.changes.filter { it.clientId == c.id && (it.kind == ChangeKind.MOVE || it.kind == ChangeKind.EXTRA) }
         fun byChange(date: LocalDate) = planned.any { ch -> (if (ch.kind == ChangeKind.MOVE) ch.toDate else ch.date) == date.toEpochDay() }
+        // Ручные записи вне рабочего времени внесены задним числом: ни дня, ни времени по ним не понять.
         val visits = d.visits.filter { it.clientId == c.id && it.kind != VisitKind.BURNED }
             .filter { dayOf(it.start, zone) in fromDay..today }
+            .filter { it.kind != VisitKind.MANUAL || minuteOf(it.start, zone) in d.settings.startMin..d.settings.endMin }
+        // Время, заданное в карточке клиента, главнее выученного.
+        val slotRules = c.slots.filter { s -> manual.none { it.clientId == c.id && it.day == s.day } }
+            .map { Rule("slot-${c.id}-${it.day}-${it.min}", c.id, it.day, it.min, null) }
+        learned += slotRules
         if (visits.isEmpty()) continue
         val firstDay = visits.minOf { dayOf(it.start, zone) }
+        // С понедельника первой недели: если клиент был во вторник, понедельник без занятия тоже о чём-то говорит.
+        val firstMonday = firstDay.minusDays(firstDay.dayOfWeek.value - 1L)
         // Недели, когда клиент занимался: по ним видно, в какие дни занятий не было.
         val active = visits.map { weekIndex(dayOf(it.start, zone)) }.toSet()
         // День → (неделя → время прихода). Ручной визит даёт только факт занятия: его время вписано позже.
@@ -88,10 +106,10 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
             return last.first { counts[it.value!!] == top }.value
         }
         for ((day, byWeek) in hits) {
-            if (curWeek - byWeek.keys.max() > STALE_WEEKS) continue
+            if (curWeek - byWeek.keys.max() > STALE_WEEKS || slotRules.any { it.day == day }) continue
             val observed = active.filter { w ->
                 val date = LocalDate.ofEpochDay(w * 7 - 3 + (day - 1))
-                date >= firstDay && date < today
+                date >= firstMonday && date < today
             }.toSet() + byWeek.keys
             fun often(weeks: Collection<Long>, base: Collection<Long>) = weeks.size * 2 >= base.size
             val pars = byWeek.keys.map(::par).toSet()

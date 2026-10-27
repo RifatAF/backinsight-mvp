@@ -28,7 +28,7 @@ fun fDur(min: Long): String {
     }
 }
 
-fun fMoney(v: Int): String = "%,d".format(RU, v).replace(' ', ' ') + " ₽"
+fun fMoney(v: Int): String = "$" + "%,d".format(Locale.US, v)
 
 fun plural(n: Int, one: String, few: String, many: String): String {
     val a = kotlin.math.abs(n) % 100

@@ -72,7 +72,7 @@ object Store {
                 put(JSONObject().apply {
                     put("id", c.id); put("name", c.name); put("members", arr(c.members))
                     put("address", c.address); put("lat", c.lat ?: JSONObject.NULL); put("lng", c.lng ?: JSONObject.NULL)
-                    put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin); put("pp", true)
+                    put("radius", c.radius); put("sessionMin", c.sessionMin); put("minMin", c.minMin); put("pp2", true)
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
                     put("placeId", c.placeId ?: JSONObject.NULL)
                     put("perMember", c.perMember)
@@ -174,7 +174,7 @@ object Store {
                     perMember = c.optBoolean("perMember", true),
                     placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
                     slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
-                ).let { if (c.has("pp")) it else perPersonMigrate(it) }
+                ).let { if (c.has("pp2")) it else perPersonMigrate(it) }
             },
             places = o.optJSONArray("places").list { p ->
                 Place(

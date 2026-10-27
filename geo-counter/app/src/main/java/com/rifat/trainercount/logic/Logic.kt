@@ -128,13 +128,11 @@ private fun closeVisit(d: AppData, clientId: String, t: Long, forced: Boolean): 
 }
 
 /**
- * Раньше длину занятия семьи ставили на всех (2 человека: 120 минут). Теперь она на одного человека,
- * а засчитывать начинаем как у одного.
+ * Раньше длину занятия семьи ставили на всех (2 человека: 120 минут). Теперь правило одно:
+ * 1 человек = 1 час, засчитывать начинаем как у одного.
  */
 fun perPersonMigrate(c: Client): Client =
-    if (c.countsEach && c.members.size > 1 && c.sessionMin >= 60 * c.members.size)
-        c.copy(sessionMin = c.sessionMin / c.members.size, minMin = c.minMin.coerceAtMost(c.sessionMin / c.members.size / 2))
-    else c
+    if (c.countsEach) c.copy(sessionMin = 60, minMin = c.minMin.coerceAtMost(30)) else c
 
 /** Сколько занятий на одного человека в визите семьи. */
 fun perPerson(v: Visit, c: Client?): Int =
