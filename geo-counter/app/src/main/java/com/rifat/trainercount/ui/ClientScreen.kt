@@ -97,6 +97,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
     val b = balance(data, id)
     val visits = data.visits.filter { it.clientId == id }.sortedByDescending { it.start }
     val packs = data.packs.filter { it.clientId == id }.sortedByDescending { it.paidAt }
+    val unpaidIds = com.rifat.trainercount.logic.unpaidVisitIds(data, id)
 
     Scaffold(topBar = {
         TopAppBar(
@@ -193,10 +194,11 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                             }
                             if (v.members.isNotEmpty()) add(v.members.joinToString(", "))
                             if (v.check) add("проверить")
+                            if (v.id in unpaidIds) add("не оплачено")
                         }
                         Text(
                             tags.joinToString(" · "),
-                            color = if (v.check) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (v.check || v.id in unpaidIds) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
                     trailingContent = { Text("×${v.count}", style = MaterialTheme.typography.titleMedium) },
@@ -209,7 +211,10 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
             items(packs, key = { it.id }) { p ->
                 ListItem(
                     headlineContent = { Text("${fDateY(p.paidAt)} · ${trainings(p.sessions)}") },
-                    supportingContent = { if (p.amount > 0) Text(fMoney(p.amount)) },
+                    supportingContent = {
+                        val via = if (p.id.startsWith("bb:")) "Bybit, подтверждено автоматически" else "внесено вручную"
+                        Text((if (p.amount > 0) fMoney(p.amount) + " · " else "") + via)
+                    },
                     trailingContent = { TextButton(onClick = { dlg = Dlg.DelPack(p) }) { Text("Удалить") } },
                 )
             }

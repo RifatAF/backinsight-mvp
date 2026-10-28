@@ -50,4 +50,14 @@ class BybitTest {
         assertEquals("150 USDT (TRC20)", fCoin(deps[0]))
         assertTrue("другой биржи" in payerText(deps[1]))
     }
+
+    @Test fun unpaidVisits() {
+        val d = AppData(
+            clients = listOf(Client("a", "Анна", price = 30)),
+            packs = listOf(Pack("p", "a", 0, 2, 60)),
+            visits = listOf(Visit("v1", "a", 10, 20, 1), Visit("v2", "a", 30, 40, 1), Visit("v3", "a", 50, 60, 1)),
+        )
+        assertEquals(setOf("v3"), unpaidVisitIds(d, "a"))
+        assertEquals(emptySet(), unpaidVisitIds(d.copy(packs = d.packs + Pack("bb:1", "a", 70, 1, 30)), "a"))
+    }
 }

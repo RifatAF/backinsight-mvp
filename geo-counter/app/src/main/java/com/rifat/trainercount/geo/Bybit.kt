@@ -194,6 +194,16 @@ object Bybit {
                 )
             }
         }
+        // Сверка: занятие прошло больше суток назад, а перевода за него нет. Говорим один раз на занятие.
+        val now = System.currentTimeMillis()
+        for (c in d.clients.filter { it.autoPay && !it.archived }) {
+            val ids = com.rifat.trainercount.logic.unpaidVisitIds(d, c.id)
+            val late = d.visits.filter { it.id in ids && it.end < now - 24 * 3600_000L && it.end > since && seen.add("u:" + it.id) }
+            if (late.isNotEmpty()) Notifier.clientInfo(
+                ctx, c, "${c.name}: нет оплаты",
+                "Занятие ${late.joinToString(", ") { com.rifat.trainercount.logic.fDate(it.start) }} не оплачено: перевода в Bybit не было.",
+            )
+        }
         val paid = events.count { it is PayEvent.Paid }
         val status = "${com.rifat.trainercount.logic.fTime(System.currentTimeMillis())}: " +
             if (paid > 0) "записано оплат: $paid" else "новых оплат нет"

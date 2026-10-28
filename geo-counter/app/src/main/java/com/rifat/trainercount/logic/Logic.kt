@@ -86,6 +86,19 @@ fun visitsOfPack(d: AppData, pack: Pack): List<Visit> {
     return out
 }
 
+/**
+ * Сверка с оплатами: занятия по порядку списываются из оплаченных; те, на которые оплат не хватило,
+ * не оплачены. Оплата из Bybit приходит сама, остальные вносятся вручную.
+ */
+fun unpaidVisitIds(d: AppData, clientId: String): Set<String> {
+    var left = d.packs.filter { it.clientId == clientId }.sumOf { it.sessions }
+    val out = mutableSetOf<String>()
+    for (v in d.visits.filter { it.clientId == clientId }.sortedBy { it.start }) {
+        if (left >= v.count) left -= v.count else { left = 0; out += v.id }
+    }
+    return out
+}
+
 /** Оплата за каждое занятие: сколько проведено и ещё не оплачено. */
 fun unpaid(d: AppData, c: Client): Int = (-balance(d, c.id).left).coerceAtLeast(0)
 
