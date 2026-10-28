@@ -102,7 +102,7 @@ class BotTest {
         val st = rifatStatus(busy, ira, now, home = false)
         val where = clientWhereText(busy, ira, now, st)
         // Клиенту не говорим, где Рифат и с кем он: только про его занятие.
-        assertEquals("Ваше занятие сегодня в 16:00, Рифат будет к этому времени. Если что-то изменится, он предупредит.", where)
+        assertEquals("Ваше занятие сегодня в 16:00, Рифат будет к этому времени. За 30 минут до начала здесь можно посмотреть, где он и успевает ли.", where)
         val prompt = clientAiPrompt(busy, ira, now, st, emptyList(), "где он?")
         assertTrue("тренировке" !in prompt.substringAfter("Сведения:") && "$" !in prompt.substringAfter("Сведения:").substringBefore("Новое"), prompt)
         assertTrue("Стас" !in clientAiPrompt(busy, ira, now, st, emptyList(), "где он?"))
@@ -162,5 +162,21 @@ class BotTest {
         assertEquals(ClientCmd.Help, parseClientBot("❓ Помощь"))
         assertTrue(isButton("💰 Остатки", OWNER_BUTTONS))
         assertTrue(keyboardJson(CLIENT_BUTTONS).startsWith("{\"keyboard\":[[{\"text\":\"📋 Сколько занятий осталось\"}"))
+    }
+
+    @Test fun trackBeforeLesson() {
+        val z = ZoneId.systemDefault()
+        fun t(h: Int, m: Int) = LocalDateTime.of(2026, 10, 27, h, m).atZone(z).toInstant().toEpochMilli()
+        val ira = Client("ira", "Ира", lat = -34.60, lng = -58.40)
+        val data = addRule(AppData(clients = listOf(ira)), "ira", 2, 16 * 60, null)
+        assertEquals(null, trackLesson(data, ira, t(15, 20)))
+        val l = trackLesson(data, ira, t(15, 35))!!
+        // 3 км по прямой: около 10 минут, успевает.
+        val near = clientTrackText(data, ira, l, Triple(-34.627, -58.40, t(15, 35)), t(15, 35))
+        assertTrue("около 10 мин" in near && "Успевает к 16:00" in near && "maps.google.com" in near, near)
+        val far = clientTrackText(data, ira, l, Triple(-34.78, -58.40, t(15, 50)), t(15, 50))
+        assertTrue("опоздать" in far, far)
+        assertTrue("Рифат уже рядом" in clientTrackText(data, ira, l, Triple(-34.601, -58.40, t(15, 55)), t(15, 55)))
+        assertTrue("За 30 минут" in clientWhereText(data, ira, t(12, 0), RifatStatus.Home))
     }
 }

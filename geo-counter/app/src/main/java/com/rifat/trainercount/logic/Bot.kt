@@ -226,8 +226,8 @@ val OWNER_BUTTONS = listOf(
 )
 val CLIENT_BUTTONS = listOf(
     listOf("📋 Сколько занятий осталось", "📅 Мои занятия"),
-    listOf("🧾 Отчёт", "✉️ Написать Рифату"),
-    listOf("❓ Помощь"),
+    listOf("🚗 Где Рифат", "🧾 Отчёт"),
+    listOf("✉️ Написать Рифату", "❓ Помощь"),
 )
 
 fun isButton(text: String, buttons: List<List<String>>) = buttons.any { row -> text.trim() in row }
@@ -583,7 +583,7 @@ fun clientHelp(c: Client) = """Здравствуйте, ${c.name}! Я помо�
 Пишите обычными словами, как человеку, я пойму. Например:
 • сколько у меня осталось занятий?
 • когда следующая тренировка?
-• Рифат скоро будет?
+• Рифат скоро будет? (за 30 минут до занятия покажу, где он и успевает ли)
 • пришлите отчёт по занятиям
 
 Если нужно перенести занятие или что-то спросить, просто напишите: я передам Рифату, он ответит сам.
@@ -621,8 +621,60 @@ fun clientWhereText(d: AppData, c: Client, now: Long, status: RifatStatus, zone:
     val nowMin = minuteOf(now, zone)
     val mine = dayPlan(d, today, now, zone).filterIsInstance<PlanItem.Lesson>()
         .firstOrNull { it.occ.clientId == c.id && it.to > nowMin && it.status == Status.PLANNED }
-    return if (mine != null) "Ваше занятие сегодня в ${hhmm(mine.from)}, Рифат будет к этому времени. Если что-то изменится, он предупредит."
+    return if (mine != null) "Ваше занятие сегодня в ${hhmm(mine.from)}, Рифат будет к этому времени. " +
+        "За $TRACK_BEFORE_MIN минут до начала здесь можно посмотреть, где он и успевает ли."
     else "Сегодня занятия у вас нет. " + (nextLessons(d, c, now, zone).firstOrNull()?.let { "Ближайшее: $it." } ?: "Напишите, если хотите записаться.")
+}
+
+/** За сколько минут до занятия клиент видит, где Рифат; после начала ещё TRACK_LATE_MIN на случай опоздания. */
+const val TRACK_BEFORE_MIN = 30
+const val TRACK_LATE_MIN = 20
+
+/** Скорость по городу с учётом пробок и не прямой дороги: 20 км/ч по прямой. */
+fun etaMin(distM: Double): Int = Math.ceil(distM / (20_000.0 / 60)).toInt().coerceAtLeast(1)
+
+/** Занятие клиента сегодня, перед которым можно показать, где Рифат. */
+fun trackLesson(d: AppData, c: Client, now: Long, zone: ZoneId = ZoneId.systemDefault()): PlanItem.Lesson? {
+    val nowMin = minuteOf(now, zone)
+    return dayPlan(d, dayOf(now, zone), now, zone).filterIsInstance<PlanItem.Lesson>().firstOrNull {
+        it.occ.clientId == c.id && it.status == Status.PLANNED && nowMin in it.from - TRACK_BEFORE_MIN..it.from + TRACK_LATE_MIN
+    }
+}
+
+/** Куда едет Рифат: адрес клиента или общее место. */
+fun destOf(d: AppData, c: Client): Pair<Double, Double>? =
+    if (c.lat != null && c.lng != null) c.lat to c.lng else c.placeId?.let { d.place(it) }?.let { it.lat to it.lng }
+
+/** Ответ клиенту перед занятием: сколько ехать, успевает ли, точка на карте. fix: координаты и время замера. */
+fun clientTrackText(d: AppData, c: Client, lesson: PlanItem.Lesson, fix: Triple<Double, Double, Long>?, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    if (fix == null) return "Ваше занятие в ${hhmm(lesson.from)}. Сейчас не получается определить, где Рифат: если он задерживается, он предупредит."
+    val nowMin = minuteOf(now, zone)
+    val dest = destOf(d, c)
+    val map = "Где он сейчас: https://maps.google.com/?q=${fix.first},${fix.second} (на ${fTime(fix.third)})"
+    if (dest == null) return "Рифат едет к вам, занятие в ${hhmm(lesson.from)}.\n$map"
+    val dist = distanceM(fix.first, fix.second, dest.first, dest.second)
+    if (dist < 300) return "Рифат уже рядом с вами.\n$map"
+    // Ещё на предыдущей тренировке: выедет, когда она закончится.
+    val busyTo = d.open.keys.firstOrNull { it != c.id }?.let { k ->
+        dayPlan(d, dayOf(now, zone), now, zone).filterIsInstance<PlanItem.Lesson>().firstOrNull { it.occ.clientId == k && it.to > nowMin }?.to
+    }
+    val start = maxOf(nowMin, busyTo ?: nowMin)
+    val eta = etaMin(dist)
+    val arrive = start + eta
+    val late = arrive - lesson.from
+    val km = "%.1f".format(Locale("ru"), dist / 1000)
+    return buildString {
+        append(if (busyTo != null) "Рифат заканчивает предыдущую тренировку в ${hhmm(busyTo)} и выезжает к вам. " else "Рифат едет к вам. ")
+        append("До вас примерно $km км, около ${eta} мин, будет примерно в ${hhmm(arrive)}. ")
+        append(
+            when {
+                late <= 0 -> "Успевает к ${hhmm(lesson.from)} ✓"
+                late <= 5 -> "Может задержаться на пару минут."
+                else -> "Может опоздать примерно на $late мин."
+            }
+        )
+        append("\n").append(map)
+    }
 }
 
 sealed class RifatStatus {
@@ -664,6 +716,7 @@ fun clientAiPrompt(d: AppData, c: Client, now: Long, status: RifatStatus, histor
 Строго нельзя сообщать: где сейчас Рифат и чем он занят, его адрес и дом, других клиентов и их занятия,
 его заработок, цены других клиентов, личные дела и семью. На такие вопросы вежливо отвечай, что этого ты не подскажешь.
 Если человек спрашивает, скоро ли Рифат, отвечай только про его собственное занятие.
+Где Рифат и успевает ли, клиент может посмотреть за $TRACK_BEFORE_MIN минут до своего занятия кнопкой «🚗 Где Рифат».
 
 Сведения:
 """

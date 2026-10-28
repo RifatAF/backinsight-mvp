@@ -29,6 +29,9 @@ import com.rifat.trainercount.logic.inviteClientId
 import com.rifat.trainercount.logic.parseClientAi
 import com.rifat.trainercount.logic.parseClientBot
 import com.rifat.trainercount.logic.rifatStatus
+import com.rifat.trainercount.logic.RifatStatus
+import com.rifat.trainercount.logic.trackLesson
+import com.rifat.trainercount.logic.clientTrackText
 import com.rifat.trainercount.logic.aiPrompt
 import com.rifat.trainercount.logic.aiChatPrompt
 import com.rifat.trainercount.logic.aiContext
@@ -216,6 +219,13 @@ class BotService : Service() {
             reply = "Передал Рифату, он ответит вам сам."
             forward = true
         }
+        // За 30 минут до занятия «где Рифат» показывает дорогу к клиенту: сколько ехать и успевает ли.
+        if (reply == null && parseClientBot(m.text) is ClientCmd.Where && status != RifatStatus.WithYou) {
+            trackLesson(d, c, now)?.let { l ->
+                val fix = currentFix()?.let { Triple(it.latitude, it.longitude, it.time) }
+                reply = clientTrackText(d, c, l, fix, now)
+            }
+        }
         if (reply == null && d.settings.aiKey.isNotBlank() && !isButton(m.text, CLIENT_BUTTONS)) {
             val past = history[m.chat.id]?.toList().orEmpty()
             gemini(clientAiPrompt(d, c, now, status, past, m.text))?.let(::parseClientAi)?.let { (r, f) -> reply = r; forward = f }
@@ -287,6 +297,15 @@ class BotService : Service() {
 
     /** Где сейчас: у кого, с какого времени, что дальше, точка на карте. */
     @SuppressLint("MissingPermission")
+    /** Текущее место телефона (до 25 секунд) или последнее известное. */
+    private fun currentFix(): android.location.Location? {
+        if (!Perms.location(this)) return null
+        val fused = LocationServices.getFusedLocationProviderClient(this)
+        return runCatching {
+            Tasks.await(fused.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, CancellationTokenSource().token), 20, TimeUnit.SECONDS)
+        }.getOrNull() ?: runCatching { Tasks.await(fused.lastLocation, 5, TimeUnit.SECONDS) }.getOrNull()
+    }
+
     private fun whereText(): String {
         val d = Store.data.value
         val now = System.currentTimeMillis()
@@ -313,11 +332,8 @@ class BotService : Service() {
             }
             lines += "Дальше: ${hhmm(next.from)} $what"
         }
-        if (!home && Perms.location(this)) {
-            val fused = LocationServices.getFusedLocationProviderClient(this)
-            val l = runCatching {
-                Tasks.await(fused.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, CancellationTokenSource().token), 20, TimeUnit.SECONDS)
-            }.getOrNull() ?: runCatching { Tasks.await(fused.lastLocation, 5, TimeUnit.SECONDS) }.getOrNull()
+        if (!home) {
+            val l = currentFix()
             if (l != null) lines += "На карте (±${l.accuracy.toInt()} м, ${fTime(l.time)}): https://maps.google.com/?q=${l.latitude},${l.longitude}"
         }
         return lines.joinToString("\n")
