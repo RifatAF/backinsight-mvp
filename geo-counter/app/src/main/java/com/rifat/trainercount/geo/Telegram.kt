@@ -90,8 +90,10 @@ object Telegram {
         }.distinctBy { it.id }
     }.getOrDefault(emptyList())
 
-    fun send(token: String, chatId: String, text: String): Result<Unit> = runCatching {
-        val o = call(token, "sendMessage", mapOf("chat_id" to chatId, "text" to text))
+    /** keyboard: reply_markup с кнопками быстрых вопросов. */
+    fun send(token: String, chatId: String, text: String, keyboard: String? = null): Result<Unit> = runCatching {
+        val p = mapOf("chat_id" to chatId, "text" to text) + (keyboard?.let { mapOf("reply_markup" to it) } ?: emptyMap())
+        val o = call(token, "sendMessage", p)
         if (!o.optBoolean("ok")) error(o.optString("description", "ошибка Telegram"))
     }
 

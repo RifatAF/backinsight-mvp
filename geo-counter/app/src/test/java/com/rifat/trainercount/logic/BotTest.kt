@@ -101,7 +101,10 @@ class BotTest {
         val busy = data.copy(open = mapOf("st" to now - 30 * 60_000L))
         val st = rifatStatus(busy, ira, now, home = false)
         val where = clientWhereText(busy, ira, now, st)
-        assertEquals("Рифат сейчас на тренировке, освободится примерно в 14:30. Ваше занятие сегодня в 16:00.", where)
+        // Клиенту не говорим, где Рифат и с кем он: только про его занятие.
+        assertEquals("Ваше занятие сегодня в 16:00, Рифат будет к этому времени. Если что-то изменится, он предупредит.", where)
+        val prompt = clientAiPrompt(busy, ira, now, st, emptyList(), "где он?")
+        assertTrue("тренировке" !in prompt.substringAfter("Сведения:") && "$" !in prompt.substringAfter("Сведения:").substringBefore("Новое"), prompt)
         assertTrue("Стас" !in clientAiPrompt(busy, ira, now, st, emptyList(), "где он?"))
         assertTrue("16:00–17:00" in clientLessonsText(data, ira, now))
         assertEquals("Перенесите" to true, parseClientAi("""{"reply": "Перенесите", "forward": true}"""))
@@ -140,5 +143,24 @@ class BotTest {
         assertTrue("Занятий: 10" in sum && "Получено оплат: $300" in sum, sum)
         val ctx = aiContext(data, now, "дома")
         assertTrue("Анна: пакетом, осталось 2 из 10" in ctx && "Игорь: платит за каждое занятие" in ctx, ctx)
+    }
+
+    @Test fun buttons() {
+        assertEquals(BotCmd.Plan(today), parseBot("📅 Сегодня", today))
+        assertEquals(BotCmd.Plan(d(28)), parseBot("📅 Завтра", today))
+        assertEquals(BotCmd.Week(today), parseBot("🗓 Неделя", today))
+        assertEquals(BotCmd.Free(null), parseBot("🕐 Свободное время", today))
+        assertEquals(BotCmd.Where, parseBot("📍 Где Рифат", today))
+        assertTrue(parseBot("💰 Остатки", today) is BotCmd.Balances)
+        assertTrue(parseBot("⚠️ Кто должен", today) is BotCmd.Balances)
+        assertTrue(parseBot("📊 Сводка", today) is BotCmd.Summary)
+        assertEquals(BotCmd.Help, parseBot("❓ Помощь", today))
+        assertEquals(ClientCmd.Balance, parseClientBot("📋 Сколько занятий осталось"))
+        assertEquals(ClientCmd.Lessons, parseClientBot("📅 Мои занятия"))
+        assertEquals(ClientCmd.Report, parseClientBot("🧾 Отчёт"))
+        assertEquals(ClientCmd.Compose, parseClientBot("✉️ Написать Рифату"))
+        assertEquals(ClientCmd.Help, parseClientBot("❓ Помощь"))
+        assertTrue(isButton("💰 Остатки", OWNER_BUTTONS))
+        assertTrue(keyboardJson(CLIENT_BUTTONS).startsWith("{\"keyboard\":[[{\"text\":\"📋 Сколько занятий осталось\"}"))
     }
 }

@@ -43,6 +43,11 @@ import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.hhmm
 import com.rifat.trainercount.logic.minuteOf
 import com.rifat.trainercount.logic.parseBot
+import com.rifat.trainercount.logic.BOT_HELP
+import com.rifat.trainercount.logic.CLIENT_BUTTONS
+import com.rifat.trainercount.logic.OWNER_BUTTONS
+import com.rifat.trainercount.logic.isButton
+import com.rifat.trainercount.logic.keyboardJson
 import com.rifat.trainercount.ui.MainActivity
 import java.util.concurrent.TimeUnit
 
@@ -54,6 +59,16 @@ class BotService : Service() {
     companion object {
         private const val CH = "bot"
         private const val NID = 5501
+        val OWNER_KB = keyboardJson(OWNER_BUTTONS)
+        val CLIENT_KB = keyboardJson(CLIENT_BUTTONS)
+
+        /** Чат только что разрешили: прислать приветствие с кнопками. */
+        fun welcome(ctx: Context, chatId: String) {
+            Store.init(ctx)
+            val token = Store.data.value.settings.tgToken
+            if (token.isBlank()) return
+            Thread { Telegram.send(token, chatId, "Готово, чат подключён ✓\n\n$BOT_HELP", OWNER_KB) }.start()
+        }
 
         /** Включить или выключить по настройкам. */
         fun sync(ctx: Context) {
@@ -153,7 +168,7 @@ class BotService : Service() {
                 else -> it
             } }) }
             Notifier.clientInfo(this, c, "${c.name} подключился к боту", "Теперь может спрашивать про занятия и баланс")
-            Telegram.send(token, m.chat.id, clientHelp(c))
+            Telegram.send(token, m.chat.id, clientHelp(c), CLIENT_KB)
             return
         }
         val linked = d0.clients.firstOrNull { it.tgChatId == m.chat.id && !it.archived }
@@ -164,19 +179,19 @@ class BotService : Service() {
         if (!allowed(d0, m.chat.id)) {
             Diag.add(this, "Бот: сообщение от ${m.chat.name} (нет доступа)")
             Notifier.askAllow(this, m.chat)
-            Telegram.send(token, m.chat.id, "Этот чат пока не подключён. На телефоне Рифата появилось уведомление «Разрешить». После нажатия напишите ещё раз.")
+            Telegram.send(token, m.chat.id, "Здравствуйте! Это помощник Рифата. Чтобы пользоваться ботом, Рифат должен подтвердить этот чат: ему пришло уведомление. Как только он нажмёт «Разрешить», я пришлю приветствие и подсказки.")
             return
         }
         val now = System.currentTimeMillis()
         var cmd = parseBot(m.text, dayOf(now))
         // С ключом Gemini на вопросы отвечает ИИ; записи, удаления, балансы и сводки приложение считает само, точно.
         val exact = cmd is BotCmd.Add || cmd is BotCmd.Remove || cmd is BotCmd.Help ||
-            cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances
+            cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances || isButton(m.text, OWNER_BUTTONS)
         if (d0.settings.aiKey.isNotBlank() && !exact) {
             val smart = smartReply(m.chat.id, m.text, now)
             if (smart != null) {
                 Diag.add(this, "Бот (ИИ): «${m.text.take(40)}» от ${m.chat.name}")
-                Telegram.send(token, m.chat.id, smart)
+                Telegram.send(token, m.chat.id, smart, OWNER_KB)
                 return
             }
         }
@@ -187,7 +202,7 @@ class BotService : Service() {
         Store.update { d -> botAnswer(d, cmd, now, { where }).also { reply = it.second }.first }
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
-        Telegram.send(token, m.chat.id, reply)
+        Telegram.send(token, m.chat.id, reply, OWNER_KB)
     }
 
     /** Чат клиента: только его баланс, занятия и примерно, где Рифат. Остальное передаётся Рифату. */
@@ -197,7 +212,11 @@ class BotService : Service() {
         val status = rifatStatus(d, c, now, Wifi.isHome(this, d))
         var reply: String? = null
         var forward = false
-        if (d.settings.aiKey.isNotBlank()) {
+        if (composing.remove(m.chat.id) && parseClientBot(m.text) !is ClientCmd.Compose && !isButton(m.text, CLIENT_BUTTONS)) {
+            reply = "Передал Рифату, он ответит вам сам."
+            forward = true
+        }
+        if (reply == null && d.settings.aiKey.isNotBlank() && !isButton(m.text, CLIENT_BUTTONS)) {
             val past = history[m.chat.id]?.toList().orEmpty()
             gemini(clientAiPrompt(d, c, now, status, past, m.text))?.let(::parseClientAi)?.let { (r, f) -> reply = r; forward = f }
         }
@@ -205,13 +224,17 @@ class BotService : Service() {
             val cmd = parseClientBot(m.text)
             reply = clientAnswer(d, c, cmd, now, status)
             forward = cmd is ClientCmd.Message
+            if (cmd is ClientCmd.Compose) composing += m.chat.id
         }
         if (forward) Notifier.clientInfo(this, c, "${c.name} пишет в бот", m.text)
         val text = reply!!
         history.getOrPut(m.chat.id) { ArrayDeque() }.apply { addLast(m.text to text); while (size > 4) removeFirst() }
         Diag.add(this, "Бот: клиент ${c.name}: «${m.text.take(40)}»")
-        Telegram.send(token, m.chat.id, text)
+        Telegram.send(token, m.chat.id, text, CLIENT_KB)
     }
+
+    /** Клиенты, нажавшие «Написать Рифату»: их следующее сообщение передаётся как есть. */
+    private val composing = mutableSetOf<String>()
 
     /** Последние реплики по чатам: чтобы ИИ понимал «а где он закончит?» после предыдущего вопроса. */
     private val history = mutableMapOf<String, ArrayDeque<Pair<String, String>>>()

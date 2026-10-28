@@ -159,7 +159,7 @@ private fun takeDuration(sc: Scan): Int? = sc.take(Regex("\\sна\\s+(?:(\\d+(?:
 }
 
 fun parseBot(text: String, today: LocalDate): BotCmd {
-    val sc = Scan(text)
+    val sc = Scan(text.replace(LEAD, ""))
     if (sc.has(Regex("^\\s*/?(start|help|помощь|команды|что умеешь)"))) return BotCmd.Help
     if (sc.has(Regex("\\s(где|/where)(?=\\s)"))) return BotCmd.Where
     // Деньги и статистика; фраза со временем это запись дела («17:00 оплатить интернет»).
@@ -177,7 +177,7 @@ fun parseBot(text: String, today: LocalDate): BotCmd {
         if (sc.has(Regex("\\s(баланс|остат|пакет|долг|должен|должн|задолж|не\\s*оплач|неоплач|оплат|осталось\\s+(?:у|занят|трен))"))) return BotCmd.Balances(text)
     }
     val remove = sc.take(Regex("\\s(удали|удалить|отмени|отменить|убери|убрать)(?=\\s)")) != null
-    val week = sc.take(Regex("\\s(?:на\\s+)?(?:эту\\s+|всю\\s+)?неделю(?=\\s)")) != null
+    val week = sc.take(Regex("\\s(?:на\\s+)?(?:эту\\s+|всю\\s+)?недел[юя](?=\\s)")) != null
     val free = sc.take(Regex("\\s(свобод[а-я]*|окн[а-я]*)(?=\\s)")) != null
     val dur = takeDuration(sc)
     val date = takeDate(sc, today)
@@ -200,18 +200,43 @@ fun parseBot(text: String, today: LocalDate): BotCmd {
     }
 }
 
-const val BOT_HELP = """Я помощник по расписанию. Примеры:
-• что в пятницу / расписание на 30 / завтра
-• расписание на неделю
-• свободно в четверг?
-• 30.10 17:00 стоматолог Лера
-• тридцатого десятого в 17 стоматолог на 2 часа
+const val BOT_HELP = """Я помощник Рифата по расписанию и клиентам.
+
+Пишите обычными словами, как человеку, я пойму. Например:
+• что у Рифата завтра после обеда?
+• запиши на пятницу 17:00 стоматолог Лера
+• тридцатого в 5 вечера родительское собрание на час
 • удали 30.10 стоматолог
-• где Рифат
-• сколько осталось / сколько осталось у Анны
-• кто должен
-• сводка / итоги за прошлый месяц
-• отчёт Анна"""
+• когда он свободен на этой неделе?
+• во сколько и где он сегодня заканчивает?
+• сколько осталось у Анны / кто должен
+• итоги за прошлый месяц / отчёт Игорь
+
+Частые вопросы есть на кнопках внизу.""""
+
+/** Значки в начале кнопок не мешают разбору. */
+private val LEAD = Regex("^[^\\p{L}\\d/]+")
+
+/** Кнопки быстрых вопросов под полем ввода в Telegram. */
+val OWNER_BUTTONS = listOf(
+    listOf("📅 Сегодня", "📅 Завтра", "🗓 Неделя"),
+    listOf("🕐 Свободное время", "📍 Где Рифат"),
+    listOf("💰 Остатки", "⚠️ Кто должен", "📊 Сводка"),
+    listOf("❓ Помощь"),
+)
+val CLIENT_BUTTONS = listOf(
+    listOf("📋 Сколько занятий осталось", "📅 Мои занятия"),
+    listOf("🧾 Отчёт", "✉️ Написать Рифату"),
+    listOf("❓ Помощь"),
+)
+
+fun isButton(text: String, buttons: List<List<String>>) = buttons.any { row -> text.trim() in row }
+
+/** reply_markup для Telegram: постоянная клавиатура с кнопками. */
+fun keyboardJson(buttons: List<List<String>>): String =
+    buttons.joinToString(",", "{\"keyboard\":[", "],\"resize_keyboard\":true,\"is_persistent\":true}") { row ->
+        row.joinToString(",", "[", "]") { "{\"text\":\"$it\"}" }
+    }
 
 /** Ответ бота. where: где сейчас (считается на телефоне), только для команды «где». */
 fun botAnswer(d: AppData, cmd: BotCmd, now: Long, where: () -> String, zone: ZoneId = ZoneId.systemDefault()): Pair<AppData, String> {
@@ -534,28 +559,35 @@ sealed class ClientCmd {
     data object Where : ClientCmd()
     data object Report : ClientCmd()
     data object Help : ClientCmd()
+    /** Нажал «Написать Рифату»: следующее сообщение уйдёт Рифату. */
+    data object Compose : ClientCmd()
     /** Всё остальное (перенос, вопрос): передать Рифату. */
     data class Message(val text: String) : ClientCmd()
 }
 
 fun parseClientBot(text: String): ClientCmd {
-    val s = " " + text.lowercase().replace('ё', 'е') + " "
+    val s = " " + text.replace(LEAD, "").lowercase().replace('ё', 'е') + " "
     return when {
         Regex("^\\s*/?(start|help|помощь)").containsMatchIn(s) -> ClientCmd.Help
+        Regex("^\\s*написать рифату\\s*$").containsMatchIn(s) -> ClientCmd.Compose
         Regex("отч[её]т|истори").containsMatchIn(s) -> ClientCmd.Report
         Regex("сколько|осталось|остаток|баланс|оплат").containsMatchIn(s) -> ClientCmd.Balance
         Regex("\\sгде\\s|скоро|едешь|опаздыва|приедешь|будешь").containsMatchIn(s) -> ClientCmd.Where
-        Regex("когда|расписани|следующ|занятие\\??\\s*$").containsMatchIn(s) -> ClientCmd.Lessons
+        Regex("когда|расписани|следующ|мои занят|мое занят|занятие\\??\\s*$").containsMatchIn(s) -> ClientCmd.Lessons
         else -> ClientCmd.Message(text.trim())
     }
 }
 
-fun clientHelp(c: Client) = """Здравствуйте, ${c.name}! Я помощник Рифата. Можно спросить:
-• сколько занятий осталось
-• когда следующее занятие
+fun clientHelp(c: Client) = """Здравствуйте, ${c.name}! Я помощник Рифата.
+
+Пишите обычными словами, как человеку, я пойму. Например:
+• сколько у меня осталось занятий?
+• когда следующая тренировка?
 • Рифат скоро будет?
-• отчёт
-Остальное (перенос, вопрос) я передам Рифату."""
+• пришлите отчёт по занятиям
+
+Если нужно перенести занятие или что-то спросить, просто напишите: я передам Рифату, он ответит сам.
+Частые вопросы есть на кнопках внизу. Я вижу только ваши занятия и оплаты."""
 
 fun clientBalanceText(d: AppData, c: Client): String {
     if (c.perVisit) {
@@ -583,18 +615,14 @@ fun clientLessonsText(d: AppData, c: Client, now: Long, zone: ZoneId = ZoneId.sy
  * busyUntil: когда закончится текущее занятие (если он на занятии), atClient: у этого ли клиента.
  */
 fun clientWhereText(d: AppData, c: Client, now: Long, status: RifatStatus, zone: ZoneId = ZoneId.systemDefault()): String {
+    // Где Рифат и чем занят, клиенту не сообщаем: только про его собственное занятие.
+    if (status == RifatStatus.WithYou) return "Рифат уже у вас."
     val today = dayOf(now, zone)
     val nowMin = minuteOf(now, zone)
     val mine = dayPlan(d, today, now, zone).filterIsInstance<PlanItem.Lesson>()
-        .firstOrNull { it.occ.clientId == c.id && it.to > nowMin }
-    val now1 = when (status) {
-        RifatStatus.WithYou -> "Рифат уже у вас."
-        is RifatStatus.Busy -> "Рифат сейчас на тренировке" + (status.until?.let { ", освободится примерно в ${hhmm(it)}" } ?: "") + "."
-        RifatStatus.OnTheWay -> "Рифат сейчас в дороге."
-        RifatStatus.Home -> "Рифат сейчас не на работе."
-    }
-    val yours = mine?.let { " Ваше занятие сегодня в ${hhmm(it.from)}." } ?: ""
-    return now1 + yours
+        .firstOrNull { it.occ.clientId == c.id && it.to > nowMin && it.status == Status.PLANNED }
+    return if (mine != null) "Ваше занятие сегодня в ${hhmm(mine.from)}, Рифат будет к этому времени. Если что-то изменится, он предупредит."
+    else "Сегодня занятия у вас нет. " + (nextLessons(d, c, now, zone).firstOrNull()?.let { "Ближайшее: $it." } ?: "Напишите, если хотите записаться.")
 }
 
 sealed class RifatStatus {
@@ -619,6 +647,7 @@ fun rifatStatus(d: AppData, c: Client, now: Long, home: Boolean, zone: ZoneId = 
 
 fun clientAnswer(d: AppData, c: Client, cmd: ClientCmd, now: Long, status: RifatStatus): String = when (cmd) {
     ClientCmd.Help -> clientHelp(c)
+    ClientCmd.Compose -> "Напишите сообщение, я сразу передам его Рифату."
     ClientCmd.Balance -> clientBalanceText(d, c)
     ClientCmd.Lessons -> clientLessonsText(d, c, now)
     ClientCmd.Where -> clientWhereText(d, c, now, status)
@@ -632,7 +661,9 @@ fun clientAiPrompt(d: AppData, c: Client, now: Long, status: RifatStatus, histor
         """Ты помощник персонального тренера Рифата. Тебе пишет его клиент «${c.name}» в Telegram.
 Отвечай по-русски, вежливо, на «вы», коротко: 1–3 предложения. Опирайся только на сведения ниже, ничего не выдумывай.
 Не обещай переносов и не назначай занятия сам: такие просьбы передавай Рифату (forward = true).
-Никогда не упоминай других клиентов и не называй, где именно сейчас Рифат.
+Строго нельзя сообщать: где сейчас Рифат и чем он занят, его адрес и дом, других клиентов и их занятия,
+его заработок, цены других клиентов, личные дела и семью. На такие вопросы вежливо отвечай, что этого ты не подскажешь.
+Если человек спрашивает, скоро ли Рифат, отвечай только про его собственное занятие.
 
 Сведения:
 """

@@ -247,6 +247,7 @@ class ActionReceiver : BroadcastReceiver() {
         if (intent.action == TG_ALLOW) {
             val chat = intent.getStringExtra("chatId") ?: return
             Store.update { d -> d.copy(settings = d.settings.copy(tgAllowed = (d.settings.tgAllowed + chat).distinct())) }
+            BotService.welcome(ctx, chat)
             Notifier.cancelId(ctx, intent.getIntExtra("notifId", 0))
             return
         }
