@@ -106,8 +106,39 @@ object Bybit {
         return o.getJSONObject("result")
     }
 
-    /** Входящие переводы внутри Bybit с start (не больше 30 дней назад). */
-    fun deposits(key: String, secret: String, start: Long): List<Deposit> {
+    /** Все входящие: внутри Bybit и по сети (TRC20 и др.). */
+    fun deposits(key: String, secret: String, start: Long): List<Deposit> = internal(key, secret, start) + onChain(key, secret, start)
+
+    /** Переводы с кошельков по сети. fromAddress Bybit даёт, только если адрес отправителя однозначен. */
+    private fun onChain(key: String, secret: String, start: Long): List<Deposit> {
+        val now = System.currentTimeMillis()
+        val from = maxOf(start, now - 29L * 24 * 3600_000)
+        val out = mutableListOf<Deposit>()
+        var cursor = ""
+        repeat(10) {
+            val q = "limit=50&startTime=$from&endTime=$now" + if (cursor.isNotEmpty()) "&cursor=" + java.net.URLEncoder.encode(cursor, "UTF-8") else ""
+            val r = get(key, secret, "/v5/asset/deposit/query-record", q)
+            val rows = r.optJSONArray("rows")
+            for (i in 0 until (rows?.length() ?: 0)) {
+                val x = rows!!.getJSONObject(i)
+                val st = x.optInt("status")
+                out += Deposit(
+                    id = "c" + x.optString("id"), coin = x.optString("coin"),
+                    amount = x.optString("amount").toDoubleOrNull() ?: 0.0,
+                    // 3: зачислен, 70012: зачислен и после отката сети. Остальное не считаем.
+                    status = if (st == 3 || st == 70012) 2 else 1,
+                    address = x.optString("fromAddress"), fromUid = "",
+                    time = x.optString("successAt").toLongOrNull()?.let { if (it < 10_000_000_000L) it * 1000 else it } ?: now,
+                    chain = x.optString("chain").ifBlank { "сеть" },
+                )
+            }
+            cursor = r.optString("nextPageCursor")
+            if (cursor.isEmpty() || (rows?.length() ?: 0) == 0) return out
+        }
+        return out
+    }
+
+    private fun internal(key: String, secret: String, start: Long): List<Deposit> {
         val now = System.currentTimeMillis()
         val from = maxOf(start, now - 29L * 24 * 3600_000)
         val out = mutableListOf<Deposit>()
@@ -156,8 +187,10 @@ object Bybit {
                     "${e.client.name}: ${fCoin(e.dep)}. Не понял, сколько это занятий: укажите цену занятия у клиента или внесите оплату вручную.",
                 )
                 is PayEvent.Unknown -> if (seen.add(e.dep.id)) Notifier.info(
-                    ctx, "Перевод в Bybit от неизвестного",
-                    "${fCoin(e.dep)} от ${payerText(e.dep)}. Если это клиент, впишите это в его карточке: «Изменить» → «Оплата через Bybit».",
+                    ctx, "Пришло ${fCoin(e.dep)}: от кого?",
+                    if (e.dep.chain.isNotBlank() && e.dep.address.isBlank())
+                        "Отправитель ${payerText(e.dep)}. Внесите оплату клиенту вручную."
+                    else "От ${payerText(e.dep)}. Если это клиент, впишите это в его карточке: «Изменить» → «Оплата через Bybit», и следующие переводы запишутся сами.",
                 )
             }
         }

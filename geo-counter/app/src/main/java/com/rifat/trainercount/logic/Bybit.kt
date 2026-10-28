@@ -2,17 +2,19 @@ package com.rifat.trainercount.logic
 
 import kotlin.math.roundToInt
 
-/** Входящий перевод внутри Bybit (по UID, e-mail или телефону). */
+/** Входящий перевод: внутри Bybit (по UID, e-mail или телефону) или по сети (TRC20 и др., chain не пустой). */
 data class Deposit(
     val id: String,
     val coin: String,
     val amount: Double,
     /** 1 = в обработке, 2 = зачислен, 3 = ошибка. */
     val status: Int,
-    /** E-mail или телефон отправителя. */
+    /** E-mail или телефон отправителя; для перевода по сети: адрес кошелька (пусто, если не определён). */
     val address: String,
     val fromUid: String,
     val time: Long,
+    /** Сеть для перевода с кошелька: TRX (TRC20), ETH и т. п. Пусто: перевод внутри Bybit. */
+    val chain: String = "",
 )
 
 sealed class PayEvent {
@@ -29,10 +31,13 @@ val PAY_COINS = setOf("USDT", "USDC")
 
 fun bybitPackId(dep: Deposit) = "bb:" + dep.id
 
+/** Платёжные данные клиента: можно несколько через запятую (UID, e-mail, адрес кошелька TRC20). */
+fun payIds(c: Client): List<String> = c.payId.split(Regex("[,;\\s]+")).map { it.trim() }.filter { it.isNotEmpty() }
+
 fun payerOf(d: AppData, dep: Deposit): Client? = d.clients.firstOrNull { c ->
-    val id = c.payId.trim()
-    !c.archived && c.autoPay && id.isNotEmpty() &&
-        (id == dep.fromUid || id.equals(dep.address.trim(), ignoreCase = true))
+    !c.archived && c.autoPay && payIds(c).any { id ->
+        (dep.fromUid.isNotBlank() && id == dep.fromUid) || (dep.address.isNotBlank() && id.equals(dep.address.trim(), ignoreCase = true))
+    }
 }
 
 /**
@@ -57,9 +62,12 @@ fun applyDeposits(d: AppData, deps: List<Deposit>, since: Long): Pair<AppData, L
 }
 
 fun fCoin(dep: Deposit): String =
-    (if (dep.amount % 1.0 == 0.0) dep.amount.toLong().toString() else "%.2f".format(java.util.Locale.US, dep.amount)) + " " + dep.coin
+    (if (dep.amount % 1.0 == 0.0) dep.amount.toLong().toString() else "%.2f".format(java.util.Locale.US, dep.amount)) + " " + dep.coin +
+        if (dep.chain.isNotBlank()) " (${chainName(dep.chain)})" else ""
 
-fun payerText(dep: Deposit) = listOf(dep.address, dep.fromUid.takeIf { it.isNotBlank() }?.let { "UID $it" })
+fun chainName(chain: String) = when (chain.uppercase()) { "TRX" -> "TRC20"; "ETH" -> "ERC20"; "BSC" -> "BEP20"; else -> chain }
+
+fun payerText(dep: Deposit) = if (dep.chain.isNotBlank() && dep.address.isBlank()) "кошелька, который Bybit не показывает (обычно это перевод с другой биржи)" else listOf(dep.address, dep.fromUid.takeIf { it.isNotBlank() }?.let { "UID $it" })
     .filterNotNull().filter { it.isNotBlank() }.joinToString(", ").ifBlank { "неизвестного отправителя" }
 
 /** Сообщение клиенту в бот после автоматического подтверждения. */

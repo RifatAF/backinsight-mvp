@@ -37,4 +37,17 @@ class BybitTest {
         assertTrue(ev2.none { it is PayEvent.Paid })
         assertTrue("Оплата получена ✓ 300 USDT, это 10 занятий" in paidClientText(d, ev[0] as PayEvent.Paid))
     }
+
+    @Test fun trc20() {
+        val data = AppData(clients = listOf(Client("a", "Анна", price = 30, payId = "123456, TXabcWallet1", autoPay = true)))
+        val deps = listOf(
+            Deposit("c1", "USDT", 150.0, 2, "TXabcWallet1", "", 2_000, chain = "TRX"),
+            Deposit("c2", "USDT", 300.0, 2, "", "", 2_000, chain = "TRX"), // с биржи: отправитель неизвестен
+        )
+        val (d, ev) = applyDeposits(data, deps, since = 1_000)
+        assertEquals(listOf(5), d.packs.map { it.sessions })
+        assertTrue(ev[1] is PayEvent.Unknown)
+        assertEquals("150 USDT (TRC20)", fCoin(deps[0]))
+        assertTrue("другой биржи" in payerText(deps[1]))
+    }
 }

@@ -207,11 +207,11 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
                     if (autoPay) {
                         OutlinedTextField(
                             value = payId, onValueChange = { payId = it }, singleLine = true,
-                            label = { Text("Bybit UID, e-mail или телефон клиента") },
+                            label = { Text("Bybit UID, e-mail или адрес кошелька TRC20") },
                             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                         )
                         Text(
-                            "UID клиента виден в истории перевода в Bybit или в его профиле. Число занятий считается по цене: " +
+                            "Можно несколько через запятую. UID или адрес кошелька видны в истории перевода в Bybit. Число занятий считается по цене: " +
                                 "${'$'}300 при цене ${'$'}30 = 10 занятий. Клиенту в бот придёт «Оплата получена ✓».",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
