@@ -115,5 +115,6 @@ class MainActivity : ComponentActivity() {
         Tracker.checkWifiNow(this)
         Planner.refresh(this)
         com.rifat.trainercount.geo.BotService.sync(this)
+        com.rifat.trainercount.geo.Bybit.checkSoon(this)
     }
 }

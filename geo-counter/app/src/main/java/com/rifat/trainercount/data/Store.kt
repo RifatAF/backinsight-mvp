@@ -79,6 +79,7 @@ object Store {
                     put("price", c.price); put("archived", c.archived); put("createdAt", c.createdAt)
                     put("placeId", c.placeId ?: JSONObject.NULL)
                     put("perMember", c.perMember); put("tgChatId", c.tgChatId); put("perVisit", c.perVisit)
+                    put("payId", c.payId); put("autoPay", c.autoPay)
                     put("slots", JSONArray().apply {
                         c.slots.forEach { sl -> put(JSONObject().apply { put("day", sl.day); put("min", sl.min) }) }
                     })
@@ -193,6 +194,7 @@ object Store {
                     minMin = c.optInt("minMin", 30), price = c.optInt("price", 0),
                     archived = c.optBoolean("archived"), createdAt = c.optLong("createdAt"),
                     perMember = c.optBoolean("perMember", true), tgChatId = c.optString("tgChatId"), perVisit = c.optBoolean("perVisit"),
+                    payId = c.optString("payId"), autoPay = c.optBoolean("autoPay"),
                     placeId = if (c.has("placeId") && !c.isNull("placeId")) c.getString("placeId") else null,
                     slots = c.optJSONArray("slots").list { sl -> Slot(sl.getInt("day"), sl.getInt("min")) },
                 ).let { if (c.has("pp2")) it else perPersonMigrate(it) }

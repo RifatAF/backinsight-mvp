@@ -301,6 +301,8 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
             SectionTitle("Telegram: план на завтра")
             Card { Column(Modifier.padding(12.dp)) { TelegramBlock(data) } }
+            SectionTitle("Bybit: автоподтверждение оплат")
+            Card { Column(Modifier.padding(12.dp)) { BybitBlock() } }
             SectionTitle("Общие места")
             Card { Column(Modifier.padding(12.dp)) { PlacesBlock(data, nav) } }
             SectionTitle("Данные")
@@ -653,5 +655,74 @@ fun TelegramBlock(data: AppData) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+@Composable
+fun BybitBlock() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var key by remember { mutableStateOf(com.rifat.trainercount.geo.Bybit.key(ctx)) }
+    var secret by remember { mutableStateOf(com.rifat.trainercount.geo.Bybit.secret(ctx)) }
+    var on by remember { mutableStateOf(com.rifat.trainercount.geo.Bybit.on(ctx)) }
+    var status by remember { mutableStateOf(com.rifat.trainercount.geo.Bybit.lastStatus(ctx)) }
+    var busy by remember { mutableStateOf(false) }
+    Column {
+        Text(
+            "Клиенты платят USDT переводом внутри Bybit (по UID или e-mail)? Приложение раз в 15 минут смотрит входящие " +
+                "переводы и само записывает оплату тем клиентам, у кого включено «Оплата через Bybit автоматически». " +
+                "Остальные клиенты отмечаются вручную, как раньше. Ключ только для чтения: деньгами он управлять не может.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "1. В приложении Bybit: профиль (иконка слева сверху) → API → «Создать новый ключ» → «Ключи, созданные системой».\n" +
+                "2. Разрешения: «Только чтение». Торговлю и вывод не включайте. IP не привязывайте.\n" +
+                "3. Скопируйте API Key и API Secret сюда и нажмите «Проверить».\n" +
+                "4. У нужных клиентов: «Изменить» → включите «Оплата через Bybit» и впишите их UID или e-mail.\n" +
+                "Учитываются переводы USDT и USDC внутри Bybit после подключения. Переводы с другой биржи или кошелька по сети не распознаются.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        OutlinedTextField(
+            value = key, onValueChange = { key = it.trim() }, label = { Text("API Key") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = secret, onValueChange = { secret = it.trim() }, label = { Text("API Secret") },
+            singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+            OutlinedButton(enabled = !busy && key.isNotBlank() && secret.isNotBlank(), onClick = {
+                busy = true
+                scope.launch {
+                    val r = withContext(Dispatchers.IO) {
+                        runCatching { com.rifat.trainercount.geo.Bybit.deposits(key, secret, System.currentTimeMillis() - 7L * 24 * 3600_000).size }
+                    }
+                    status = r.fold(
+                        { n ->
+                            com.rifat.trainercount.geo.Bybit.save(ctx, key, secret); on = true
+                            "✓ Работает. Входящих переводов за 7 дней: $n. Новые оплаты будут записываться сами."
+                        },
+                        { e -> "✗ Не получилось: ${e.message}. Проверьте ключ, секрет и что ключ «Только чтение» не удалён." },
+                    )
+                    busy = false
+                }
+            }) { Text("Проверить") }
+            if (on) OutlinedButton(enabled = !busy, onClick = {
+                busy = true
+                scope.launch {
+                    status = withContext(Dispatchers.IO) {
+                        runCatching { "✓ " + com.rifat.trainercount.geo.Bybit.check(ctx) }.getOrElse { e -> com.rifat.trainercount.geo.Bybit.fail(ctx, e); "✗ ${e.message}" }
+                    }
+                    busy = false
+                }
+            }) { Text("Проверить оплаты") }
+            if (on) OutlinedButton(onClick = {
+                com.rifat.trainercount.geo.Bybit.clear(ctx); key = ""; secret = ""; on = false; status = ""
+            }) { Text("Отключить") }
+        }
+        if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
     }
 }

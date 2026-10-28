@@ -81,6 +81,8 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
     var placeId by remember { mutableStateOf(c0.placeId) }
     var perMember by remember { mutableStateOf(c0.perMember) }
     var perVisit by remember { mutableStateOf(c0.perVisit) }
+    var autoPay by remember { mutableStateOf(c0.autoPay) }
+    var payId by remember { mutableStateOf(c0.payId) }
     var slots by remember { mutableStateOf(c0.slots) }
 
     var askDelete by remember { mutableStateOf(false) }
@@ -91,6 +93,7 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
         address = address.trim(), lat = lat, lng = lng, radius = radius.toInt(),
         sessionMin = sessionMin, minMin = minMin, price = price.toIntOrNull() ?: 0, archived = archived,
         placeId = placeId, slots = slots, perMember = perMember, perVisit = perVisit,
+        autoPay = autoPay && payId.isNotBlank(), payId = payId.trim(),
     )
 
     fun save() {
@@ -190,6 +193,30 @@ fun EditClientScreen(data: AppData, id: String?, nav: Nav, fromStay: Boolean = f
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Оплата через Bybit автоматически")
+                            Text(
+                                if (com.rifat.trainercount.geo.Bybit.on(ctx)) "Перевод USDT от этого клиента сам запишется как оплата"
+                                else "Сначала подключите Bybit: Настройки → Bybit",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Switch(checked = autoPay, onCheckedChange = { autoPay = it })
+                    }
+                    if (autoPay) {
+                        OutlinedTextField(
+                            value = payId, onValueChange = { payId = it }, singleLine = true,
+                            label = { Text("Bybit UID, e-mail или телефон клиента") },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        )
+                        Text(
+                            "UID клиента виден в истории перевода в Bybit или в его профиле. Число занятий считается по цене: " +
+                                "${'$'}300 при цене ${'$'}30 = 10 занятий. Клиенту в бот придёт «Оплата получена ✓».",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 

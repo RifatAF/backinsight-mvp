@@ -269,6 +269,7 @@ class BootReceiver : BroadcastReceiver() {
         GeoSync.schedule(ctx)
         Planner.reschedule(ctx)
         BotService.sync(ctx)
+        Bybit.schedule(ctx)
     }
 }
 

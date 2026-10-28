@@ -23,6 +23,10 @@ data class Client(
     val tgChatId: String = "",
     /** Платит за каждое занятие отдельно, а не пакетом: считаем, сколько проведено и не оплачено. */
     val perVisit: Boolean = false,
+    /** Bybit UID, e-mail или телефон, с которого клиент переводит USDT. */
+    val payId: String = "",
+    /** Оплату подтверждать автоматически по переводам в Bybit. */
+    val autoPay: Boolean = false,
 ) {
     val hasPlace get() = lat != null && lng != null
     val isFamily get() = members.size > 1

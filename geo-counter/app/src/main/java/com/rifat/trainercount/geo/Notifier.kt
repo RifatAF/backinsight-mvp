@@ -150,6 +150,21 @@ object Notifier {
         NotificationManagerCompat.from(ctx).notify(id, n.build())
     }
 
+    /** Простое уведомление без привязки к клиенту. */
+    @SuppressLint("MissingPermission")
+    fun info(ctx: Context, title: String, text: String) {
+        if (!Perms.notifications(ctx)) return
+        val id = ("info" + title + text).hashCode()
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(ctx, id, null))
+            .setAutoCancel(true)
+        NotificationManagerCompat.from(ctx).notify(id, n.build())
+    }
+
     /** Кто-то написал боту, а его чат не разрешён: спросить Рифата. */
     @SuppressLint("MissingPermission")
     fun askAllow(ctx: Context, chat: Telegram.Chat) {
