@@ -5,6 +5,8 @@ import com.rifat.trainercount.logic.LatLng
 import com.rifat.trainercount.logic.Leg
 import com.rifat.trainercount.logic.Router
 import com.rifat.trainercount.logic.distanceM
+import com.rifat.trainercount.logic.subteLeg
+import com.rifat.trainercount.logic.walkMin
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -30,7 +32,7 @@ object Routes {
 
     fun clearCache(ctx: Context) {
         val p = prefs(ctx)
-        p.edit().apply { p.all.keys.filter { it.startsWith("r:") }.forEach { remove(it) } }.apply()
+        p.edit().apply { p.all.keys.filter { it.startsWith("r:") || it.startsWith("w:") }.forEach { remove(it) } }.apply()
     }
 
     private fun key(a: LatLng, b: LatLng, hour: Int) =
@@ -57,8 +59,21 @@ object Routes {
     private fun fetch(ctx: Context, a: LatLng, b: LatLng, depart: Long): Leg? {
         val g = googleKey(ctx)
         if (g.isNotBlank()) runCatching { google(g, a, b, depart) }.getOrNull()?.let { return it }
-        val straight = distanceM(a.first, a.second, b.first, b.second)
-        return if (straight < 2500) runCatching { osmWalk(a, b) }.getOrNull() else null
+        // Бесплатно: схема метро + пешие участки по улицам (OpenStreetMap), каждый участок кешируется.
+        val leg = subteLeg(a, b) { p, q -> walk(ctx, p, q) }
+        return leg.copy(exact = osmOk && "метро" !in leg.how)
+    }
+
+    @Volatile private var osmOk = true
+
+    /** Минуты пешком по улицам; без сети: оценка по прямой. */
+    private fun walk(ctx: Context, p: LatLng, q: LatLng): Int {
+        if (distanceM(p.first, p.second, q.first, q.second) > 3500) return walkMin(p, q)
+        val k = "w:" + key(p, q, 0)
+        prefs(ctx).getInt(k, -1).takeIf { it > 0 }?.let { return it }
+        val m = runCatching { osmWalk(p, q)?.min }.getOrNull()
+        osmOk = m != null
+        return m?.also { prefs(ctx).edit().putInt(k, it).apply() } ?: walkMin(p, q)
     }
 
     private fun http(url: String, body: String? = null, headers: Map<String, String> = emptyMap()): JSONObject {

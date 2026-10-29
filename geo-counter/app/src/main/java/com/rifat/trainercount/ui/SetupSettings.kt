@@ -299,7 +299,7 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { HoursBlock(data) } }
             SectionTitle("Напоминания и будильник")
             Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
-            SectionTitle("Маршруты: ключ Google Maps")
+            SectionTitle("Маршруты: метро и пешком")
             Card { Column(Modifier.padding(12.dp)) { RoutesBlock(data) } }
             SectionTitle("Telegram: план на завтра")
             Card { Column(Modifier.padding(12.dp)) { TelegramBlock(data) } }
@@ -394,7 +394,7 @@ fun RemindersBlock(data: AppData) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Дорога, если маршрута нет")
-                Text("Для клиентов без места на карте. Маршруты и ключ Google: раздел ниже", style = MaterialTheme.typography.bodySmall)
+                Text("Для клиентов без места на карте. Маршруты: раздел ниже", style = MaterialTheme.typography.bodySmall)
             }
             Stepper(s.travelMin, { v -> save { it.copy(travelMin = v) } }, 0..90, 15) { "$it мин" }
         }
@@ -738,20 +738,22 @@ fun RoutesBlock(data: AppData) {
     var key by remember { mutableStateOf(R.googleKey(ctx)) }
     var status by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var google by remember { mutableStateOf(key.isNotBlank()) }
     Column {
         Text(
-            "Помощник считает дорогу по маршруту: метро, автобус и сколько идти пешком, и добавляет запас.",
+            "Помощник сам считает дорогу между клиентами бесплатно: метро по схеме всех линий (A–E, H) с пересадками " +
+                "и пешком по настоящим улицам (OpenStreetMap). Ничего настраивать не нужно. Автобусы не учитываются.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Text("Запас к дороге", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
         Stepper(data.settings.travelExtra, { v -> Store.update { it.copy(settings = it.settings.copy(travelExtra = v)) } }, 0..30, step = 5) { "$it мин" }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            Text("Точнее через Google Maps (необязательно)", modifier = Modifier.weight(1f))
+            Switch(checked = google, onCheckedChange = { google = it })
+        }
+        if (!google) return@Column
         Text(
-            "Без ключа: пешие маршруты по улицам (OpenStreetMap), метро и автобус примерно по расстоянию.\n" +
-                "С ключом Google Maps маршрут на транспорте точный, как в Google Картах:\n" +
-                "1. console.cloud.google.com → войдите → создайте проект.\n" +
-                "2. «APIs & Services» → «Library» → найдите «Routes API» → «Enable». Google попросит привязать карту: " +
-                "у него есть бесплатный месячный лимит, для расписания его хватает с запасом.\n" +
-                "3. «Credentials» → «Create credentials» → «API key». Скопируйте ключ (начинается с AIza) сюда.",
+            "С ключом Google считает и автобусы, и реальное расписание. Нужен проект в console.cloud.google.com с включёнными Routes API и оплатой.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp),
