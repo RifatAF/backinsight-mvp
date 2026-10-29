@@ -12,7 +12,7 @@ object Gemini {
     private fun http(key: String, path: String, body: JSONObject?): JSONObject {
         val c = URL(BASE + path).openConnection() as HttpURLConnection
         c.connectTimeout = 15_000
-        c.readTimeout = 30_000
+        c.readTimeout = 90_000
         c.setRequestProperty("x-goog-api-key", key.trim())
         if (body != null) {
             c.requestMethod = "POST"
@@ -40,15 +40,15 @@ object Gemini {
             .firstOrNull() ?: error("нет подходящей модели")
     }
 
-    /** Модель поумнее для помощника (не lite): лучше планирует. null: такой нет. */
-    fun pickSmart(key: String): String? {
+    /** Модели для помощника от самой умной: Pro, затем Flash. Пустой список: таких нет. */
+    fun pickSmart(key: String): List<String> {
         val models = http(key, "models?pageSize=200", null).optJSONArray("models") ?: JSONArray()
         return (0 until models.length()).map { models.getJSONObject(it) }
             .filter { m -> m.optJSONArray("supportedGenerationMethods")?.toString()?.contains("generateContent") == true }
             .map { it.getString("name").removePrefix("models/") }
-            .filter { "flash" in it && "lite" !in it && listOf("image", "tts", "live", "audio", "exp", "preview").none { w -> w in it } }
-            .sortedWith(compareByDescending<String> { it == "gemini-flash-latest" }.thenByDescending { it })
-            .firstOrNull()
+            .filter { ("flash" in it || "pro" in it) && "lite" !in it && listOf("image", "tts", "live", "audio", "exp", "preview", "vision", "embedding").none { w -> w in it } }
+            .sortedWith(compareByDescending<String> { "pro" in it }.thenByDescending { it.endsWith("-latest") }.thenByDescending { it })
+            .let { all -> all.filter { "pro" in it }.take(2) + all.filter { "flash" in it }.take(1) }
     }
 
     /** Отправить запрос, получить текст ответа. */

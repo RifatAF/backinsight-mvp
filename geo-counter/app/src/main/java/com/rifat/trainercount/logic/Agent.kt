@@ -18,6 +18,8 @@ data class SlotQuery(
     val lng: Double?,
     val place: String,
     val days: Int = 7,
+    /** Сколько раз в неделю: при 2 и больше приложение подбирает и пары дней. */
+    val perWeek: Int = 1,
 )
 
 /** routes: «сколько ехать от А до Б» (имя клиента или «дом»). */
@@ -84,6 +86,11 @@ fun agentContext(d: AppData, now: Long, status: String, zone: ZoneId = ZoneId.sy
             ": $where; занятие ${lessonMin(d, c)} мин; " +
             (if (rules.isEmpty()) "постоянного расписания нет" else "постоянно " + rules.joinToString(", ") { ruleText(it) }) +
             "; оплата: ${balanceLine(d, c)}\n")
+        val real = d.visits.filter { it.clientId == c.id && it.kind == VisitKind.AUTO && it.end > it.start }.sortedBy { it.start }.takeLast(4)
+        if (real.isNotEmpty()) append("  по факту (приход–уход): " + real.joinToString(", ") { v ->
+            val dd = dayOf(v.start, zone)
+            "${dayLabel(dd)} ${hhmm(minuteOf(v.start, zone))}–${hhmm(minuteOf(v.end, zone))}"
+        } + "\n")
     }
     append("\nРасписание на 14 дней:\n")
     for (i in 0 until 14) append(agentDay(d, today.plusDays(i.toLong()), now, zone)).append('\n')
@@ -129,6 +136,12 @@ fun agentPrompt(
    кто до и после, сколько ехать и сколько из этого пешком. actions пока не делай: Рифат выберет («давай 1 и 3»),
    тогда добавь add_client и add_rule на выбранные.
 5. Личное дело (врач, встреча, «Лера к стоматологу») → add_event. Никогда не записывай просьбу про клиентов как личное дело.
+6a. Если Рифат поправляет факты («Ира заканчивает в 12:00», «Петр и Мария обычно до 18:30», «у Анны 2 часа»),
+   не спорь: предложи set_rule (новое время начала) или set_length (длительность), и заново посчитай варианты.
+6b. Адрес нового клиента: если дана только улица без номера (длинные улицы тянутся на километры), спроси номер дома
+   или перекрёсток, прежде чем считать дорогу. Можно сразу предложить ближайшую станцию метро как ориентир.
+6c. Варианты из «Ответа приложения» переписывай точно: те же дни, время, минуты дороги и пешком. Ничего не округляй и не выдумывай.
+   Если просят N раз в неделю, в query укажи per_week, и предложи пары из «Лучших пар дней».
 6. Имена клиентов пиши точно как в списке. Время только :00 или :30. Даты в формате ГГГГ-ММ-ДД.
 7. Если непонятно, о ком или о каком дне речь, задай один короткий вопрос в reply и не делай actions.
 8. Вопросы (что завтра, сколько осталось у Анны, когда свободен) просто отвечай по сведениям, без actions.
@@ -157,9 +170,11 @@ fun agentPrompt(
    {"type": "remove_event", "date": "ГГГГ-ММ-ДД", "title": "что"},
    {"type": "add_client", "name": "Имя", "address": "адрес", "lat": -34.6, "lng": -58.4, "minutes": 60, "price": 0},
    {"type": "add_rule", "client": "Имя", "day": 1, "time": "ЧЧ:ММ", "biweekly": false},
-   {"type": "remove_rule", "client": "Имя", "day": 1}
+   {"type": "remove_rule", "client": "Имя", "day": 1},
+   {"type": "set_rule", "client": "Имя", "day": 4, "time": "16:30"},
+   {"type": "set_length", "client": "Имя", "minutes": 120}
  ],
- "query": null или {"after": "14:00", "before": "21:00", "minutes": 60, "place": "адрес", "lat": -34.6, "lng": -58.4},
+ "query": null или {"after": "14:00", "before": "21:00", "minutes": 60, "place": "адрес", "lat": -34.6, "lng": -58.4, "per_week": 2},
  "routes": [] или [{"from": "Анна", "to": "Стас"}, {"from": "дом", "to": "Игорь"}]}
 day: 1 = понедельник … 7 = воскресенье. Пустой список actions, если менять ничего не нужно."""
     )
@@ -177,6 +192,7 @@ fun parseAgent(raw: String): AgentReply? {
             after = timeOf(q.str("after")) ?: 0, before = timeOf(q.str("before")) ?: 24 * 60,
             minutes = q.num("minutes")?.toInt()?.coerceIn(30, 240) ?: 60,
             lat = q.num("lat"), lng = q.num("lng"), place = q.str("place").orEmpty(),
+            perWeek = q.num("per_week")?.toInt()?.coerceIn(1, 3) ?: 1,
         )
     }
     val routes = o.list("routes").mapNotNull { r -> r.str("from")?.let { f -> r.str("to")?.let { t -> f to t } } }
@@ -213,6 +229,7 @@ fun findSlotsText(d: AppData, q: SlotQuery, now: Long, zone: ZoneId = ZoneId.sys
         val from0 = maxOf(w.earliest, (q.after + 29) / 30 * 30)
         val to0 = minOf(w.latest, q.before - q.minutes)
         if (from0 > to0) continue
+        fun endOf(p: PlanItem) = realEnd(d, p, w.date, zone)
         val prev = plan.filter { it.to <= from0 }.maxByOrNull { it.to }
         val next = plan.filter { it.from >= from0 + q.minutes }.minByOrNull { it.from }
         fun who(p: PlanItem?) = (p as? PlanItem.Lesson)?.let { d.client(it.occ.clientId) }
@@ -222,11 +239,12 @@ fun findSlotsText(d: AppData, q: SlotQuery, now: Long, zone: ZoneId = ZoneId.sys
         val legIn = leg(prevAt, target, epochMs(w.date, prev?.to ?: from0, zone))
         val legOut = if (next != null) leg(target, nextAt, epochMs(w.date, from0 + q.minutes, zone)) else null
         // Начало после дороги от предыдущего, конец с запасом до следующего. Только :00 и :30.
-        val start = if (prev != null) maxOf(from0, (prev.to + needMin(s, legIn) + 29) / 30 * 30) else from0
+        val start = if (prev != null) maxOf(from0, (endOf(prev) + needMin(s, legIn) + 29) / 30 * 30) else from0
         val latest = if (next != null) minOf(to0, (next.from - needMin(s, legOut) - q.minutes) / 30 * 30) else to0
         if (start > latest) continue
         val before = when (prev) {
-            is PlanItem.Lesson -> "до этого ${prevC?.name} до ${hhmm(prev.to)}, оттуда " + (legIn?.text() ?: "дорога неизвестна")
+            is PlanItem.Lesson -> "до этого ${prevC?.name} до ${hhmm(endOf(prev))}" + (if (endOf(prev) > prev.to) " (так по факту, по плану до ${hhmm(prev.to)})" else "") +
+                ", оттуда " + (legIn?.text() ?: "дорога неизвестна")
             is PlanItem.Event -> "до этого личное дело до ${hhmm(prev.to)}"
             else -> "первое занятие дня" + (legIn?.let { ", из дома " + it.text() } ?: "")
         }
@@ -236,15 +254,26 @@ fun findSlotsText(d: AppData, q: SlotQuery, now: Long, zone: ZoneId = ZoneId.sys
             else -> "дальше свободно"
         }
         val range = if (start == latest) "в ${hhmm(start)}" else "с ${hhmm(start)} до ${hhmm(latest)}"
-        val cost = (legIn?.min ?: 0) + (legOut?.min ?: 0)
-        opts += Opt(w.date, start, "${dayLabel(w.date)} (день ${w.date.dayOfWeek.value}): начать можно $range; $before; $after; запас ${s.travelExtra} мин к дороге учтён", cost)
+        // Простой между занятиями тоже неудобен: считаем его в стоимость.
+        val idle = if (prev != null) start - endOf(prev) - (legIn?.min ?: 0) else 0
+        val idleText = if (prev != null && idle >= 30) "; ждать на месте ${fDur(idle.toLong())}" else ""
+        val cost = (legIn?.min ?: 0) + (legOut?.min ?: 0) + idle / 2
+        opts += Opt(w.date, start, "${dayLabel(w.date)} (день ${w.date.dayOfWeek.value}): начать можно $range; $before$idleText; $after; запас ${s.travelExtra} мин к дороге учтён", cost)
     }
     if (opts.isEmpty()) return "Подходящих окон нет в ближайшие ${q.days} дней."
     val loc = if (target == null) "Координаты клиента неизвестны, дорогу посчитать не получилось.\n" else ""
     // Каждый день хотя бы одним вариантом, лучшие по дороге первыми.
     val perDay = opts.groupBy { it.date }.values.map { it.minByOrNull { o -> o.cost }!! }
     val rest = (opts - perDay.toSet()).sortedBy { it.cost }.take(6)
-    return loc + (perDay.sortedBy { it.cost } + rest).joinToString("\n") { it.text }
+    val list = (perDay.sortedBy { it.cost } + rest).mapIndexed { i, o -> "${i + 1}) ${o.text}" }.joinToString("\n")
+    if (q.perWeek < 2 || perDay.size < 2) return loc + list
+    // Пары дней: не подряд (между занятиями хотя бы день отдыха), лучшие по сумме дороги.
+    fun gap(a: LocalDate, b: LocalDate): Int { val x = Math.floorMod(a.dayOfWeek.value - b.dayOfWeek.value, 7); return minOf(x, 7 - x) }
+    val pairs = perDay.flatMap { a -> perDay.filter { b -> b.date > a.date && gap(a.date, b.date) >= 2 }.map { b -> a to b } }
+        .sortedBy { (a, b) -> a.cost + b.cost }.take(6)
+    return loc + list + "\n\nЛучшие пары дней на 2 раза в неделю:\n" + pairs.mapIndexed { i, (a, b) ->
+        "${'A' + i}) ${dayLabel(a.date)} в ${hhmm(a.start)} + ${dayLabel(b.date)} в ${hhmm(b.start)} (дорога всего ~${a.cost + b.cost} мин)"
+    }.joinToString("\n")
 }
 
 /** Выполнить действия ИИ по порядку. Шаг, который не получился, остаётся в плане с пометкой. */
@@ -324,6 +353,21 @@ fun applyActions(
                 nd = addRule(nd, c.id, day, t, parity)
                 ok("Постоянно: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}" + (if (parity != null) " через неделю" else "") + ", с ${dayLabel(first)}")
             }
+            "set_rule" -> {
+                // Поправить время постоянного занятия в этот день (Рифат уточнил, как на самом деле).
+                val day = a.num("day")?.toInt()?.takeIf { it in 1..7 }
+                val t = timeOf(a.str("time"))
+                val rule = nd.rules.firstOrNull { c != null && it.clientId == c.id && it.day == day && !it.off }
+                if (c == null || day == null || t == null || rule == null) { bad("Поправить время «$who»: не нашёл постоянное занятие в этот день"); continue }
+                nd = editRule(nd, rule, day, roundSlot(t), rule.parity)
+                ok("Поправить: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(rule.min)} → ${hhmm(roundSlot(t))}")
+            }
+            "set_length" -> {
+                val m = a.num("minutes")?.toInt()?.coerceIn(30, 300)
+                if (c == null || m == null) { bad("Длительность «$who»: не понял"); continue }
+                nd = nd.copy(clients = nd.clients.map { if (it.id == c.id) it.copy(sessionMin = if (it.countsEach) m / it.members.size.coerceAtLeast(1) else m, minMin = minOf(it.minMin, m)) else it })
+                ok("Длительность занятия: ${c.name} — ${fDur(m.toLong())}")
+            }
             "remove_rule" -> {
                 val day = a.num("day")?.toInt()
                 val rules = nd.rules.filter { c != null && it.clientId == c.id && it.day == day && !it.off }
@@ -364,9 +408,10 @@ fun clashText(
                 ?: estimateLeg(if (before) there else here, if (before) here else there)
         else null
         val gap = if (it is PlanItem.Lesson) needMin(s, leg) else 0
-        if (min < it.to + gap && end > it.from - gap) {
+        val itTo = realEnd(d, it, date, zone)
+        if (min < itTo + gap && end > it.from - gap) {
             val what = other?.name ?: (it as? PlanItem.Event)?.ev?.title ?: "занятием"
-            return "занятие ${hhmm(min)}–${hhmm(end)} не помещается рядом с «$what» ${hhmm(it.from)}–${hhmm(it.to)}" +
+            return "занятие ${hhmm(min)}–${hhmm(end)} не помещается рядом с «$what» ${hhmm(it.from)}–${hhmm(itTo)}" +
                 if (it is PlanItem.Lesson) " (дорога: " + (leg?.text()?.let { t -> "$t + ${s.travelExtra} мин запас" } ?: "${s.travelMin} мин") + ")" else ""
         }
     }
@@ -383,6 +428,21 @@ fun routesText(d: AppData, pairs: List<Pair<String, String>>, now: Long, router:
         val l = router?.leg(p, q, now + 3600_000) ?: estimateLeg(p, q)
         "$a → $b: ${l.text()}; с запасом ${l.min + d.settings.travelExtra} мин"
     }
+}
+
+/**
+ * Когда занятие закончится на самом деле: если по последним приходам в этот день недели клиент
+ * обычно уходит позже плана, берём фактическое время (с округлением до 15 минут вверх).
+ */
+fun realEnd(d: AppData, item: PlanItem, date: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Int {
+    if (item !is PlanItem.Lesson || item.status != Status.PLANNED) return item.to
+    val ends = d.visits.filter {
+        it.clientId == item.occ.clientId && it.kind == VisitKind.AUTO && it.end > it.start &&
+            dayOf(it.start, zone).dayOfWeek == date.dayOfWeek && dayOf(it.start, zone) > date.minusDays(60)
+    }.sortedBy { it.start }.takeLast(3).map { minuteOf(it.end, zone) }.sorted()
+    if (ends.isEmpty()) return item.to
+    val median = ends[ends.size / 2]
+    return maxOf(item.to, (median + 14) / 15 * 15)
 }
 
 /** Подтверждение плана словами в чате. */

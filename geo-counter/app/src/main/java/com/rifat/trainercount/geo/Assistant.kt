@@ -23,15 +23,17 @@ object Assistant {
     /** План, ждущий подтверждения: действия ИИ (выполняются заново на свежих данных). */
     class Proposal(val plan: AgentPlan, val actions: List<Any?>)
 
-    @Volatile private var smart: String? = null
+    @Volatile private var smart: List<String>? = null
 
     private fun ask(prompt: String): String? {
         val s = Store.data.value.settings
         if (s.aiKey.isBlank()) return null
-        // Сначала модель поумнее; если лимит бесплатного тарифа или её нет, обычная.
-        val m = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.also { smart = it }
-        if (m != null) runCatching { return Gemini.ask(s.aiKey, m, prompt) }
-        return runCatching { Gemini.ask(s.aiKey, s.aiModel.ifBlank { Gemini.pickModel(s.aiKey) }, prompt) }.getOrNull()
+        // Сначала Gemini Pro (умнее всех, но лимит бесплатного тарифа меньше), потом Flash, потом обычная.
+        val models = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.also { smart = it }.orEmpty()
+        for (m in models + s.aiModel.ifBlank { null }.let { listOfNotNull(it) }) {
+            runCatching { Gemini.ask(s.aiKey, m, prompt) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return runCatching { Gemini.ask(s.aiKey, Gemini.pickModel(s.aiKey), prompt) }.getOrNull()
     }
 
     private fun geocode(ctx: Context, place: String): Pair<Double, Double>? {

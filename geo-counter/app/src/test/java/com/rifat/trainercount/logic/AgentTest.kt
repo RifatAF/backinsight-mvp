@@ -52,7 +52,7 @@ class AgentTest {
         assertEquals(14 * 60, q.after)
         val slots = findSlotsText(data(), q, now, z)
         // Вторник после Анны (живёт рядом с Каррансой) лучше всего: почти без лишней дороги.
-        val first = slots.lines().first()
+        val first = slots.lines().first().substringAfter(") ")
         assertTrue(first.startsWith("вт 03.11") && "до этого Анна до 15:00" in first && "с 15:30" in first, slots)
         val raw = """{"reply": "Лучше всего вторник сразу после Анны: она в 600 м.",
  "actions": [{"type": "add_client", "name": "Виталий", "address": "Estación Ministro Carranza, Buenos Aires", "lat": -34.5752, "lng": -58.4349},
@@ -115,5 +115,24 @@ class AgentTest {
         val q = SlotQuery(14 * 60, 21 * 60, 60, -34.5752, -58.4349, "")
         val slots = findSlotsText(d.copy(settings = d.settings.copy(days = (1..7).toSet())), q, now, z, slow)
         assertTrue("вс 01.11" in slots && "пт 30.10" in slots, slots)
+    }
+
+    @Test fun realEndsIdleAndPairs() {
+        val now = t(29, 8)
+        // Петр и Мария по четвергам по плану 10:00–12:00, а по факту последние разы уходил в 13:00.
+        var d = data()
+        d = d.copy(visits = listOf(15, 22).map { day -> Visit("v$day", "pe", t(day, 10), t(day, 13), 2, members = listOf("Петр", "Мария")) })
+        val plan = dayPlan(d, LocalDate.of(2026, 11, 5), now, z).filterIsInstance<PlanItem.Lesson>().first { it.occ.clientId == "pe" }
+        assertEquals(13 * 60, realEnd(d, plan, LocalDate.of(2026, 11, 5), z))
+        assertTrue(clashText(d, "an", LocalDate.of(2026, 11, 5), 13 * 60, now, z)!!.contains("Петр Мария"))
+        // Пары дней на 2 раза в неделю: не подряд.
+        val q = SlotQuery(14 * 60, 21 * 60, 60, -34.5752, -58.4349, "", perWeek = 2)
+        val slots = findSlotsText(d.copy(settings = d.settings.copy(days = (1..7).toSet())), q, now, z)
+        assertTrue("Лучшие пары дней на 2 раза в неделю" in slots && "A) " in slots, slots)
+        // Поправить время постоянного занятия.
+        val (nd, steps) = applyActions(d, Json.parse("""{"actions":[{"type":"set_rule","client":"Петр","day":4,"time":"16:30"},{"type":"set_length","client":"Анна","minutes":120}]}""").list("actions"), now, z)
+        assertTrue(steps.all { it.ok }, steps.toString())
+        assertTrue(nd.rules.any { it.clientId == "pe" && it.day == 4 && it.min == 16 * 60 + 30 && !it.off })
+        assertEquals(120, nd.client("an")!!.sessionMin)
     }
 }

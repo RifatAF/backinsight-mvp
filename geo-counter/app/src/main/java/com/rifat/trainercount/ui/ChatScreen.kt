@@ -1,7 +1,8 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 package com.rifat.trainercount.ui
 
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -133,11 +134,31 @@ fun ChatScreen(data: AppData, nav: Nav) {
 
     fun update(i: Int, f: (ChatLog.Msg) -> ChatLog.Msg) { msgs[i] = f(msgs[i]) }
 
+    // Выбор сообщений, как в Telegram: долгое нажатие начинает выбор, нажатия добавляют и убирают.
+    var picked by remember { mutableStateOf(setOf<Int>()) }
+    fun copy(idx: Collection<Int>) {
+        val text = idx.sorted().mapNotNull { msgs.getOrNull(it) }.joinToString("\n\n") { (if (it.mine) "Я: " else "Помощник: ") + it.text }
+        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Помощник", text))
+        android.widget.Toast.makeText(ctx, "Скопировано: ${idx.size}", android.widget.Toast.LENGTH_SHORT).show()
+        picked = emptySet()
+    }
+
     Scaffold(topBar = {
-        TopAppBar(
+        if (picked.isNotEmpty()) TopAppBar(
+            title = { Text("Выбрано: ${picked.size}") },
+            navigationIcon = { IconButton(onClick = { picked = emptySet() }) { Text("✕") } },
+            actions = {
+                androidx.compose.material3.TextButton(onClick = { picked = msgs.indices.toSet() }) { Text("Все") }
+                androidx.compose.material3.TextButton(onClick = { copy(picked) }) { Text("Копировать") }
+            },
+        ) else TopAppBar(
             title = { Text("Помощник") },
             navigationIcon = { IconButton(onClick = { nav.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
-            actions = { if (msgs.isNotEmpty() && !busy) androidx.compose.material3.TextButton(onClick = { ChatLog.clear(ctx) }) { Text("Очистить") } },
+            actions = {
+                if (msgs.isNotEmpty()) androidx.compose.material3.TextButton(onClick = { copy(msgs.indices.toList()) }) { Text("Копировать всё") }
+                if (msgs.isNotEmpty() && !busy) androidx.compose.material3.TextButton(onClick = { ChatLog.clear(ctx) }) { Text("Очистить") }
+            },
         )
     }) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
@@ -166,10 +187,14 @@ fun ChatScreen(data: AppData, nav: Nav) {
                             colors = CardDefaults.cardColors(
                                 containerColor = if (m.mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                             ),
-                            modifier = Modifier.widthIn(max = 330.dp),
+                            modifier = Modifier.widthIn(max = 330.dp).combinedClickable(
+                                onClick = { if (picked.isNotEmpty()) picked = if (i in picked) picked - i else picked + i },
+                                onLongClick = { picked = picked + i },
+                            ),
+                            border = if (i in picked) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                         ) {
                             Column(Modifier.padding(10.dp)) {
-                                androidx.compose.foundation.text.selection.SelectionContainer { Text(m.text) }
+                                Text(m.text)
                                 when (m.st) {
                                     ChatLog.St.ASK -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                                         Button(onClick = {
