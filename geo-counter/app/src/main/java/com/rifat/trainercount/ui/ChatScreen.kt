@@ -48,7 +48,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Переписка с помощником живёт, пока открыто приложение. */
+/**
+ * Переписка с помощником. Запрос к ИИ идёт в фоне и не обрывается, если выйти с экрана;
+ * текст переписки сохраняется и после перезапуска приложения.
+ */
 object ChatLog {
     enum class St { NONE, ASK, DONE, SKIPPED, UNDONE }
     data class Msg(
@@ -59,6 +62,49 @@ object ChatLog {
         val before: AppData? = null,
     )
     val msgs = mutableStateListOf<Msg>()
+    var busy by mutableStateOf(false)
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main)
+    private var loaded = false
+
+    fun load(ctx: android.content.Context) {
+        if (loaded) return
+        loaded = true
+        val arr = runCatching { org.json.JSONArray(ctx.getSharedPreferences("chat", 0).getString("msgs", "[]")) }.getOrNull() ?: return
+        for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { msgs += Msg(it.optBoolean("mine"), it.optString("text")) }
+    }
+
+    private fun save(ctx: android.content.Context) {
+        val arr = org.json.JSONArray()
+        msgs.takeLast(40).forEach { arr.put(org.json.JSONObject().put("mine", it.mine).put("text", it.text)) }
+        ctx.getSharedPreferences("chat", 0).edit().putString("msgs", arr.toString()).apply()
+    }
+
+    fun add(ctx: android.content.Context, m: Msg) { msgs += m; save(ctx) }
+
+    fun clear(ctx: android.content.Context) { msgs.clear(); save(ctx) }
+
+    fun send(ctx: android.content.Context, text: String) {
+        val t = text.trim()
+        if (t.isEmpty() || busy) return
+        val app = ctx.applicationContext
+        val history = history()
+        add(app, Msg(true, t))
+        busy = true
+        scope.launch {
+            val p = withContext(Dispatchers.IO) {
+                runCatching {
+                    Assistant.think(app, t, history, if (com.rifat.trainercount.geo.Wifi.isHome(app, com.rifat.trainercount.data.Store.data.value)) "дома" else "не дома")
+                }.getOrNull()
+            }
+            add(app, when {
+                p == null -> Msg(false, "Не получилось связаться с ИИ. Проверьте интернет и ключ Gemini в настройках.")
+                p.plan.hasChanges -> Msg(false, p.plan.text(), p, St.ASK)
+                else -> Msg(false, p.plan.text())
+            })
+            busy = false
+        }
+    }
+
     fun history() = msgs.zipWithNext().filter { (q, a) -> q.mine && !a.mine }.map { (q, a) -> q.text to a.text }.takeLast(6)
 }
 
@@ -72,31 +118,17 @@ private val EXAMPLES = listOf(
 @Composable
 fun ChatScreen(data: AppData, nav: Nav) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    val busy = ChatLog.busy
     val list = rememberLazyListState()
     val msgs = ChatLog.msgs
+    LaunchedEffect(Unit) { ChatLog.load(ctx) }
     LaunchedEffect(msgs.size, busy) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.size - 1 + if (busy) 1 else 0) }
 
     fun send(text: String) {
-        val t = text.trim()
-        if (t.isEmpty() || busy) return
+        if (text.isBlank() || busy) return
         input = ""
-        val history = ChatLog.history()
-        msgs += ChatLog.Msg(true, t)
-        busy = true
-        scope.launch {
-            val p = withContext(Dispatchers.IO) {
-                runCatching { Assistant.think(ctx, t, history, if (com.rifat.trainercount.geo.Wifi.isHome(ctx, data)) "дома" else "не дома") }.getOrNull()
-            }
-            msgs += when {
-                p == null -> ChatLog.Msg(false, "Не получилось связаться с ИИ. Проверьте интернет и ключ Gemini в настройках.")
-                p.plan.hasChanges -> ChatLog.Msg(false, p.plan.text(), p, ChatLog.St.ASK)
-                else -> ChatLog.Msg(false, p.plan.text())
-            }
-            busy = false
-        }
+        ChatLog.send(ctx, text)
     }
 
     fun update(i: Int, f: (ChatLog.Msg) -> ChatLog.Msg) { msgs[i] = f(msgs[i]) }
@@ -105,6 +137,7 @@ fun ChatScreen(data: AppData, nav: Nav) {
         TopAppBar(
             title = { Text("Помощник") },
             navigationIcon = { IconButton(onClick = { nav.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
+            actions = { if (msgs.isNotEmpty() && !busy) androidx.compose.material3.TextButton(onClick = { ChatLog.clear(ctx) }) { Text("Очистить") } },
         )
     }) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
@@ -136,13 +169,13 @@ fun ChatScreen(data: AppData, nav: Nav) {
                             modifier = Modifier.widthIn(max = 330.dp),
                         ) {
                             Column(Modifier.padding(10.dp)) {
-                                Text(m.text)
+                                androidx.compose.foundation.text.selection.SelectionContainer { Text(m.text) }
                                 when (m.st) {
                                     ChatLog.St.ASK -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                                         Button(onClick = {
                                             val (before, done) = Assistant.apply(ctx, m.proposal!!)
                                             update(i) { it.copy(st = ChatLog.St.DONE, before = before) }
-                                            msgs += ChatLog.Msg(false, done)
+                                            ChatLog.add(ctx, ChatLog.Msg(false, done))
                                         }) { Text("Сделать") }
                                         OutlinedButton(onClick = { update(i) { it.copy(st = ChatLog.St.SKIPPED) } }) { Text("Не надо") }
                                     }

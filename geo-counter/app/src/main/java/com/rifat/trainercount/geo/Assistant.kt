@@ -61,8 +61,18 @@ object Assistant {
             val slots = findSlotsText(d, q, now)
             r = parseAgent(ask(agentPrompt(context, history, text, slots)) ?: return null) ?: r
         }
-        val actions = refine(ctx, r.actions)
-        val (nd, steps) = applyActions(d, actions, now)
+        var actions = refine(ctx, r.actions)
+        var (nd, steps) = applyActions(d, actions, now)
+        // Проверка не пропустила часть действий: один раз просим ИИ поправиться с объяснением причин.
+        val rejected = steps.filter { !it.ok }
+        if (rejected.isNotEmpty()) {
+            val fb = rejected.joinToString("\n") { it.text }
+            parseAgent(ask(agentPrompt(context, history, text, null, fb)) ?: "")?.let { r2 ->
+                val a2 = refine(ctx, r2.actions)
+                val (nd2, s2) = applyActions(d, a2, now)
+                if (s2.count { !it.ok } < rejected.size) { r = r2; actions = a2; nd = nd2; steps = s2 }
+            }
+        }
         return Proposal(AgentPlan(r.reply.ifBlank { if (steps.isEmpty()) "Не понял, напишите подробнее." else "Вот что сделаю:" }, steps, nd), actions)
     }
 

@@ -86,4 +86,17 @@ class AgentTest {
         assertTrue(eventsToAsk(no, t(29, 9), z).isEmpty())
         assertTrue("Апто медико (личное дело) [не был]" in agentContext(no, t(28, 8), "дома", z))
     }
+
+    @Test fun rejectsClashes() {
+        val now = t(29, 8)
+        val d = data().copy(clients = data().clients + Client("vi", "Виталий", lat = -34.575, lng = -58.435))
+        // Игорь по четвергам 13:30–14:30: Виталию в 14:30 нужно ещё 30 мин на дорогу.
+        assertTrue(clashText(d, "vi", thu, 14 * 60 + 30, now, z)!!.contains("Игорь"))
+        assertEquals(null, clashText(d, "vi", thu, 15 * 60, now, z))
+        val (_, steps) = applyActions(d, Json.parse("""{"actions":[{"type":"add_rule","client":"Виталий","day":4,"time":"13:00"}]}""").list("actions"), now, z)
+        assertTrue(!steps.single().ok && "Игорь" in steps.single().text, steps.toString())
+        val ctx = agentContext(d, now, "дома", z)
+        assertTrue("Свободные окна на 14 дней" in ctx, ctx)
+        println(ctx.substringAfter("Свободные окна").take(400))
+    }
 }

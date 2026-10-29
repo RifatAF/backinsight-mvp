@@ -484,12 +484,15 @@ private fun CancelDialog(data: AppData, occ: Occ, date: LocalDate, close: () -> 
 
 /** Добавить занятие (разово или постоянно) или изменить постоянное. */
 @Composable
-private fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date: LocalDate, close: () -> Unit) {
+internal fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date0: LocalDate, preClient: String? = null, close: () -> Unit) {
     val ctx = LocalContext.current
     val clients = data.clients.filter { !it.archived }.sortedBy { it.name.lowercase() }
-    var clientId by remember { mutableStateOf(rule?.clientId) }
+    var clientId by remember { mutableStateOf(rule?.clientId ?: preClient) }
+    var date by remember { mutableStateOf(date0) }
+    var dateText by remember { mutableStateOf("%02d.%02d".format(date0.dayOfMonth, date0.monthValue)) }
     var day by remember { mutableIntStateOf(rule?.day ?: date.dayOfWeek.value) }
     var min by remember { mutableIntStateOf(rule?.min ?: startMin ?: 10 * 60) }
+    var timeText by remember { mutableStateOf(hhmm(rule?.min ?: startMin ?: 10 * 60)) }
     // 0: разово, 1: каждую неделю, 2: через неделю
     var mode by remember { mutableIntStateOf(if (rule == null) 0 else if (rule.parity == null) 1 else 2) }
 
@@ -498,9 +501,13 @@ private fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date: LocalDa
         title = { Text(if (rule == null) "Новое занятие" else "Постоянное время") },
         text = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                if (rule == null && preClient != null) {
+                    Text(data.client(preClient)?.name ?: "", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                }
                 if (rule == null) {
-                    Text("Клиент", style = MaterialTheme.typography.labelLarge)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (preClient == null) Text("Клиент", style = MaterialTheme.typography.labelLarge)
+                    if (preClient == null) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         clients.forEach { c ->
                             FilterChip(
                                 selected = clientId == c.id, onClick = { clientId = c.id },
@@ -529,11 +536,53 @@ private fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date: LocalDa
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         DAY_NAMES.forEachIndexed { i, n -> FilterChip(selected = day == i + 1, onClick = { day = i + 1 }, label = { Text(n) }) }
                     }
-                } else {
-                    Text("${dayTitle(date)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+                }
+                if (mode != 1) {
+                    // Дату и время можно вписать руками или выбрать.
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = dateText, singleLine = true, modifier = Modifier.weight(1f),
+                            label = { Text(if (mode == 0) "Дата (дд.мм)" else "Первая неделя (дд.мм)") },
+                            onValueChange = { v ->
+                                dateText = v
+                                Regex("^(\\d{1,2})[./](\\d{1,2})$").find(v.trim())?.let { m ->
+                                    runCatching { LocalDate.of(date0.year, m.groupValues[2].toInt(), m.groupValues[1].toInt()) }.getOrNull()
+                                        ?.let { dd -> date = if (dd < LocalDate.now().minusDays(60)) dd.plusYears(1) else dd }
+                                }
+                            },
+                        )
+                        TextButton(onClick = {
+                            pickDate(ctx, epochNoon(date)) { t ->
+                                val dd = com.rifat.trainercount.logic.dayOf(t)
+                                date = dd; dateText = "%02d.%02d".format(dd.dayOfMonth, dd.monthValue)
+                            }
+                        }) { Text("📅") }
+                    }
+                    Text(dayTitle(date), style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { pickTime(ctx, min) { min = roundSlot(it) } }) { Text("Время: ${hhmm(min)}") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = timeText, singleLine = true, modifier = Modifier.weight(1f),
+                        label = { Text("Время (чч:мм)") },
+                        onValueChange = { v ->
+                            timeText = v
+                            Regex("^(\\d{1,2})[:.](\\d{2})$").find(v.trim())?.let { m ->
+                                val t = m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt()
+                                if (t in 0 until 24 * 60) min = if (mode == 0) t else roundSlot(t)
+                            }
+                        },
+                    )
+                    TextButton(onClick = { pickTime(ctx, min) { min = if (mode == 0) it else roundSlot(it); timeText = hhmm(min) } }) { Text("🕐") }
+                }
+                val cid = clientId
+                if (cid != null && rule == null) {
+                    val check = if (mode == 1) date.let { d -> (0..6).map { d.plusDays(it.toLong()) }.first { it.dayOfWeek.value == day } } else date
+                    com.rifat.trainercount.logic.clashText(data, cid, check, min, System.currentTimeMillis())?.let {
+                        Text("⚠ ${dayTitle(check)}: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
                 if (mode == 2) Text(
                     "Через неделю, начиная с недели ${date.dayOfMonth}.${"%02d".format(date.monthValue)}",
                     style = MaterialTheme.typography.bodySmall,

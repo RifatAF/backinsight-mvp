@@ -85,14 +85,33 @@ fun agentContext(d: AppData, now: Long, status: String, zone: ZoneId = ZoneId.sy
     }
     append("\nРасписание на 14 дней:\n")
     for (i in 0 until 14) append(agentDay(d, today.plusDays(i.toLong()), now, zone)).append('\n')
+    append("\nСвободные окна на 14 дней: время, в которое можно НАЧАТЬ часовое занятие, дорога ${s.travelMin} мин до и после соседних уже учтена.\n")
+    append("Для занятия длиннее часа поздняя граница раньше на разницу (для 2 часов на 1 час).\n")
+    val ws = findWindows(d, today, 14, 60, s.travelMin, now, zone)
+    if (ws.isEmpty()) append("нет\n")
+    ws.groupBy { it.date }.forEach { (date, list) ->
+        append(dayLabel(date) + ": " + list.joinToString(", ") { if (it.earliest == it.latest) "в ${hhmm(it.earliest)}" else "с ${hhmm(it.earliest)} до ${hhmm(it.latest)}" } + "\n")
+    }
     val ym = java.time.YearMonth.from(today)
     append("\nСтатистика:\n${summaryText(d, ym, now, zone)}\n")
 }
 
-fun agentPrompt(context: String, history: List<Pair<String, String>>, text: String, slots: String? = null): String = buildString {
+fun agentPrompt(
+    context: String, history: List<Pair<String, String>>, text: String, slots: String? = null, feedback: String? = null,
+): String = buildString {
     append(
         """Ты умный помощник Рифата, персонального тренера в Буэнос-Айресе. Ты ведёшь его расписание в приложении «Тренировки».
 Пишет Рифат или его жена. Пойми просьбу целиком, как понял бы толковый секретарь, и выполни её через actions.
+
+Как устроено приложение (соблюдай всегда):
+• У каждого клиента своя длительность занятия (указана в списке клиентов). Занятие с 15:30 на 60 мин заканчивается в 16:30.
+• Между занятиями у разных клиентов нужна дорога (сколько минут, указано в сведениях): следующее занятие можно начать
+  не раньше конца предыдущего плюс дорога.
+• У клиента не больше одного занятия в день. Занятия только в рабочее время и рабочие дни.
+• «Через неделю» значит чередование недель: такое занятие бывает не каждую неделю (смотри расписание на 14 дней).
+• Новое время (move, extra, add_rule) выбирай ТОЛЬКО из «Свободных окон» ниже, никогда не придумывай сам.
+  Для постоянного занятия время должно быть свободно в этот день на обеих ближайших неделях.
+• Приложение само проверит каждое действие и отклонит то, что не помещается.
 
 Правила:
 1. Сообщение с несколькими просьбами разбери на все действия сразу.
@@ -120,6 +139,7 @@ fun agentPrompt(context: String, history: List<Pair<String, String>>, text: Stri
     }
     append("\nНовое сообщение: «$text»\n")
     if (slots != null) append("\nРезультат поиска окон (ты его запрашивал):\n$slots\nТеперь query не нужен: предложи варианты.\n")
+    if (feedback != null) append("\nПроверка приложения отклонила часть твоих действий:\n$feedback\nИсправь: выбери другое время только из свободных окон и верни полный список actions заново.\n")
     append(
         """
 Ответь только JSON:
@@ -243,6 +263,8 @@ fun applyActions(d: AppData, actions: List<Any?>, now: Long, zone: ZoneId = Zone
                 val toDate = dateOf(a.str("to_date")) ?: date
                 if (c == null || date == null || to == null || toDate == null) { bad("Перенести: не понял клиента «$who» или время"); continue }
                 val occ = if (type == "move") occurrences(nd, date).firstOrNull { it.clientId == c.id } else null
+                val clash = clashText(nd, c.id, toDate, to, now, zone)
+                if (clash != null) { bad("${c.name} ${dayLabel(toDate)} ${hhmm(to)}: $clash"); continue }
                 if (occ != null) {
                     nd = moveOnce(nd, occ, date, toDate, to)
                     ok("Перенести: ${c.name}, ${dayLabel(date)} ${hhmm(occ.min)} → " + (if (toDate != date) dayLabel(toDate) + " " else "") + hhmm(to))
@@ -286,6 +308,9 @@ fun applyActions(d: AppData, actions: List<Any?>, now: Long, zone: ZoneId = Zone
                 val today = dayOf(now, zone)
                 val first = (0..6).map { today.plusDays(it.toLong()) }.first { it.dayOfWeek.value == day }
                 val parity = if (a.bool("biweekly")) parityOf(first) else null
+                val step = if (parity != null) 14L else 7L
+                val clash = listOf(first, first.plusDays(step)).firstNotNullOfOrNull { dt -> clashText(nd, c.id, dt, t, now, zone)?.let { dayLabel(dt) + ": " + it } }
+                if (clash != null) { bad("Постоянно ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}: $clash"); continue }
                 nd = addRule(nd, c.id, day, t, parity)
                 ok("Постоянно: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}" + (if (parity != null) " через неделю" else "") + ", с ${dayLabel(first)}")
             }
@@ -300,6 +325,30 @@ fun applyActions(d: AppData, actions: List<Any?>, now: Long, zone: ZoneId = Zone
         }
     }
     return nd to steps
+}
+
+/**
+ * Помещается ли занятие клиента в день: рабочее время и дорога до и после соседних занятий.
+ * null: помещается, иначе причина.
+ */
+fun clashText(d: AppData, clientId: String, date: LocalDate, min: Int, now: Long, zone: ZoneId = ZoneId.systemDefault()): String? {
+    val c = d.client(clientId) ?: return null
+    val dur = lessonMin(d, c)
+    val s = d.settings
+    val end = min + dur
+    if (date.dayOfWeek.value !in s.days) return "нерабочий день"
+    if (min < s.startMin || end > s.endMin) return "вне рабочего времени ${hhmm(s.startMin)}–${hhmm(s.endMin)}"
+    val busy = dayPlan(d, date, now, zone).filter {
+        (it is PlanItem.Lesson && it.occ.clientId != clientId) || (it is PlanItem.Event && it.ev.went != false)
+    }
+    val hit = busy.firstOrNull { val gap = if (it is PlanItem.Lesson) s.travelMin else 0; min < it.to + gap && end > it.from - gap } ?: return null
+    val what = when (hit) {
+        is PlanItem.Lesson -> d.client(hit.occ.clientId)?.name ?: "занятием"
+        is PlanItem.Event -> hit.ev.title
+        else -> ""
+    }
+    return "занятие ${hhmm(min)}–${hhmm(end)} не помещается рядом с «$what» ${hhmm(hit.from)}–${hhmm(hit.to)}" +
+        if (hit is PlanItem.Lesson) " (нужно ${s.travelMin} мин на дорогу)" else ""
 }
 
 /** Подтверждение плана словами в чате. */

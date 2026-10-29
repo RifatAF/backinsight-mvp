@@ -80,6 +80,7 @@ import com.rifat.trainercount.logic.trainings
 
 private sealed interface Dlg {
     data object AddVisit : Dlg
+    data object Plan : Dlg
     data object Pay : Dlg
     data class EditVisit(val v: Visit) : Dlg
     data class DelPack(val p: Pack) : Dlg
@@ -146,6 +147,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
                                 }) { Text("Оплатил все $debt") }
                             } else FilledTonalButton(onClick = { dlg = Dlg.Pay }) { Text("Оплата") }
                         }
+                        OutlinedButton(onClick = { dlg = Dlg.Plan }) { Text("📅 В расписание: дата и время") }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {
                                 val send = Intent(Intent.ACTION_SEND).setType("text/plain")
@@ -223,6 +225,7 @@ fun ClientScreen(data: AppData, id: String, nav: Nav) {
 
     when (val d = dlg) {
         Dlg.AddVisit -> AddVisitDialog(c) { dlg = null }
+        Dlg.Plan -> RuleDialog(data, null, null, java.time.LocalDate.now(), preClient = c.id) { dlg = null }
         Dlg.Pay -> PayDialog(data, c) { dlg = null }
         is Dlg.EditVisit -> EditVisitDialog(c, d.v) { dlg = null }
         is Dlg.DelPack -> AlertDialog(
