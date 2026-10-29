@@ -301,6 +301,8 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
             SectionTitle("Telegram: план на завтра")
             Card { Column(Modifier.padding(12.dp)) { TelegramBlock(data) } }
+            SectionTitle("Дорога между клиентами")
+            Card { Column(Modifier.padding(12.dp)) { RoutesBlock(data) } }
             SectionTitle("Bybit: автоподтверждение оплат")
             Card { Column(Modifier.padding(12.dp)) { BybitBlock() } }
             SectionTitle("Общие места")
@@ -723,6 +725,57 @@ fun BybitBlock() {
             if (on) OutlinedButton(onClick = {
                 com.rifat.trainercount.geo.Bybit.clear(ctx); key = ""; secret = ""; on = false; status = ""
             }) { Text("Отключить") }
+        }
+        if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable
+fun RoutesBlock(data: AppData) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val R = com.rifat.trainercount.geo.Routes
+    var key by remember { mutableStateOf(R.googleKey(ctx)) }
+    var status by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    Column {
+        Text(
+            "Помощник считает дорогу по маршруту: метро, автобус и сколько идти пешком, и добавляет запас.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text("Запас к дороге", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+        Stepper(data.settings.travelExtra, { v -> Store.update { it.copy(settings = it.settings.copy(travelExtra = v)) } }, 0..30, step = 5) { "$it мин" }
+        Text(
+            "Без ключа: пешие маршруты по улицам (OpenStreetMap), метро и автобус примерно по расстоянию.\n" +
+                "С ключом Google Maps маршрут на транспорте точный, как в Google Картах:\n" +
+                "1. console.cloud.google.com → войдите → создайте проект.\n" +
+                "2. «APIs & Services» → «Library» → найдите «Routes API» → «Enable». Google попросит привязать карту: " +
+                "у него есть бесплатный месячный лимит, для расписания его хватает с запасом.\n" +
+                "3. «Credentials» → «Create credentials» → «API key». Скопируйте ключ (начинается с AIza) сюда.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        OutlinedTextField(
+            value = key, onValueChange = { key = it.trim() }, label = { Text("Ключ Google Maps (Routes API)") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+            OutlinedButton(enabled = !busy && key.isNotBlank(), onClick = {
+                busy = true
+                scope.launch {
+                    // Проверка на настоящем маршруте: от Обелиска до станции Ministro Carranza.
+                    val r = withContext(Dispatchers.IO) {
+                        runCatching { R.google(key, -34.6037 to -58.3816, -34.5757 to -58.4354, System.currentTimeMillis() + 3600_000) }
+                    }
+                    status = r.fold(
+                        { l -> if (l == null) "✗ Google не нашёл маршрут" else { R.setGoogleKey(ctx, key); "✓ Работает. Обелиск → Ministro Carranza: ${l.how}" } },
+                        { e -> "✗ ${e.message}. Проверьте, что Routes API включён и ключ скопирован целиком." },
+                    )
+                    busy = false
+                }
+            }) { Text("Проверить") }
+            if (R.googleKey(ctx).isNotBlank()) OutlinedButton(onClick = { R.setGoogleKey(ctx, ""); key = ""; status = "" }) { Text("Убрать") }
         }
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
     }

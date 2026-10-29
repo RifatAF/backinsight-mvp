@@ -10,6 +10,7 @@ import com.rifat.trainercount.logic.agentPrompt
 import com.rifat.trainercount.logic.applyActions
 import com.rifat.trainercount.logic.findSlotsText
 import com.rifat.trainercount.logic.parseAgent
+import com.rifat.trainercount.logic.routesText
 import com.rifat.trainercount.logic.undoPlan
 import java.util.Locale
 
@@ -55,21 +56,28 @@ object Assistant {
         val d = Store.data.value
         val context = agentContext(d, now, status)
         var r = parseAgent(ask(agentPrompt(context, history, text)) ?: return null) ?: return null
-        r.query?.let { q0 ->
-            val at = geocode(ctx, q0.place)
-            val q = if (at != null) q0.copy(lat = at.first, lng = at.second) else q0
-            val slots = findSlotsText(d, q, now)
-            r = parseAgent(ask(agentPrompt(context, history, text, slots)) ?: return null) ?: r
+        val router = Routes.router(ctx)
+        // ИИ попросил окна или маршруты: считаем сами и отдаём ему.
+        if (r.query != null || r.routes.isNotEmpty()) {
+            val info = buildList {
+                r.query?.let { q0 ->
+                    val at = geocode(ctx, q0.place)
+                    val q = if (at != null) q0.copy(lat = at.first, lng = at.second) else q0
+                    add("Окна:\n" + findSlotsText(d, q, now, router = router))
+                }
+                if (r.routes.isNotEmpty()) add("Маршруты:\n" + routesText(d, r.routes, now, router))
+            }.joinToString("\n\n")
+            r = parseAgent(ask(agentPrompt(context, history, text, info)) ?: return null) ?: r
         }
         var actions = refine(ctx, r.actions)
-        var (nd, steps) = applyActions(d, actions, now)
+        var (nd, steps) = applyActions(d, actions, now, router = router)
         // Проверка не пропустила часть действий: один раз просим ИИ поправиться с объяснением причин.
         val rejected = steps.filter { !it.ok }
         if (rejected.isNotEmpty()) {
             val fb = rejected.joinToString("\n") { it.text }
             parseAgent(ask(agentPrompt(context, history, text, null, fb)) ?: "")?.let { r2 ->
                 val a2 = refine(ctx, r2.actions)
-                val (nd2, s2) = applyActions(d, a2, now)
+                val (nd2, s2) = applyActions(d, a2, now, router = router)
                 if (s2.count { !it.ok } < rejected.size) { r = r2; actions = a2; nd = nd2; steps = s2 }
             }
         }
@@ -80,7 +88,8 @@ object Assistant {
     fun apply(ctx: Context, p: Proposal): Pair<AppData, String> {
         val before = Store.data.value
         var steps = emptyList<com.rifat.trainercount.logic.AgentStep>()
-        Store.update { d -> applyActions(d, p.actions, System.currentTimeMillis()).also { steps = it.second }.first }
+        val router = Routes.router(ctx, offline = true)
+        Store.update { d -> applyActions(d, p.actions, System.currentTimeMillis(), router = router).also { steps = it.second }.first }
         Planner.refresh(ctx)
         Diag.add(ctx, "Помощник: выполнено ${steps.count { it.ok }} действий")
         val done = steps.filter { it.ok }.joinToString("\n") { "✓ " + it.text }

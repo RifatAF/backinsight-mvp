@@ -579,7 +579,7 @@ internal fun RuleDialog(data: AppData, rule: Rule?, startMin: Int?, date0: Local
                 val cid = clientId
                 if (cid != null && rule == null) {
                     val check = if (mode == 1) date.let { d -> (0..6).map { d.plusDays(it.toLong()) }.first { it.dayOfWeek.value == day } } else date
-                    com.rifat.trainercount.logic.clashText(data, cid, check, min, System.currentTimeMillis())?.let {
+                    com.rifat.trainercount.logic.clashText(data, cid, check, min, System.currentTimeMillis(), router = com.rifat.trainercount.geo.Routes.router(ctx, offline = true))?.let {
                         Text("⚠ ${dayTitle(check)}: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
                 }

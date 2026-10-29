@@ -141,7 +141,7 @@ object Store {
             put("tgOn", s.tgOn); put("tgToken", s.tgToken); put("tgChatId", s.tgChatId)
             put("tgChatName", s.tgChatName); put("tgMin", s.tgMin); put("tgAddress", s.tgAddress)
             put("tgBotOn", s.tgBotOn); put("tgAllowed", JSONArray(s.tgAllowed))
-            put("aiKey", s.aiKey); put("aiModel", s.aiModel); put("tgBotName", s.tgBotName)
+            put("travelExtra", s.travelExtra); put("aiKey", s.aiKey); put("aiModel", s.aiModel); put("tgBotName", s.tgBotName)
         })
         put("open", JSONObject().apply { d.open.forEach { (k, v) -> put(k, v) } })
         put("lastPoll", d.lastPoll ?: JSONObject.NULL)
@@ -241,7 +241,7 @@ object Store {
                 tgChatName = s.optString("tgChatName"), tgMin = s.optInt("tgMin", def.tgMin),
                 tgAddress = s.optBoolean("tgAddress", def.tgAddress),
                 tgBotOn = s.optBoolean("tgBotOn"), tgAllowed = strings(s.optJSONArray("tgAllowed")),
-                aiKey = s.optString("aiKey"), aiModel = s.optString("aiModel"), tgBotName = s.optString("tgBotName"),
+                travelExtra = s.optInt("travelExtra", def.travelExtra), aiKey = s.optString("aiKey"), aiModel = s.optString("aiModel"), tgBotName = s.optString("tgBotName"),
             ),
             open = open?.keys()?.asSequence()?.associateWith { open.getLong(it) } ?: emptyMap(),
             lastPoll = o.lOpt("lastPoll"),

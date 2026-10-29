@@ -99,4 +99,21 @@ class AgentTest {
         assertTrue("Свободные окна на 14 дней" in ctx, ctx)
         println(ctx.substringAfter("Свободные окна").take(400))
     }
+
+    @Test fun usesRoutes() {
+        val now = t(29, 8)
+        val d = data().copy(clients = data().clients + Client("vi", "Виталий", lat = -34.575, lng = -58.435))
+        // Маршрут от Игоря 40 мин на метро: с запасом 10 мин Виталий в 15:00 уже не успевает, в 15:30 успевает.
+        val slow = Router { _, _, _ -> Leg(40, 12, "40 мин: пешком 5 мин → метро D 28 мин → пешком 7 мин", true) }
+        val why = clashText(d, "vi", thu, 15 * 60, now, z, slow)!!
+        assertTrue("метро D" in why && "+ 10 мин запас" in why, why)
+        assertEquals(null, clashText(d, "vi", thu, 15 * 60 + 30, now, z, slow))
+        val r = parseAgent("""{"reply":"","actions":[],"routes":[{"from":"Игорь","to":"Анна"},{"from":"дом","to":"Вася"}]}""")!!
+        val txt = routesText(d, r.routes, now, slow)
+        assertTrue("Игорь → Анна: 40 мин" in txt && "с запасом 50 мин" in txt && "Вася: нет места" in txt, txt)
+        // Слоты: в каждом рабочем дне есть вариант, воскресенье тоже.
+        val q = SlotQuery(14 * 60, 21 * 60, 60, -34.5752, -58.4349, "")
+        val slots = findSlotsText(d.copy(settings = d.settings.copy(days = (1..7).toSet())), q, now, z, slow)
+        assertTrue("вс 01.11" in slots && "пт 30.10" in slots, slots)
+    }
 }
