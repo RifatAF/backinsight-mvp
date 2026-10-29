@@ -757,7 +757,8 @@ fun RoutesBlock(data: AppData) {
             modifier = Modifier.padding(vertical = 8.dp),
         )
         OutlinedTextField(
-            value = key, onValueChange = { key = it.trim() }, label = { Text("Ключ Google Maps (Routes API)") },
+            // Ключ сохраняется сразу, даже если проверка не прошла.
+            value = key, onValueChange = { key = it.trim(); R.setGoogleKey(ctx, key) }, label = { Text("Ключ Google Maps (Routes API)") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
@@ -769,14 +770,17 @@ fun RoutesBlock(data: AppData) {
                         runCatching { R.google(key, -34.6037 to -58.3816, -34.5757 to -58.4354, System.currentTimeMillis() + 3600_000) }
                     }
                     status = r.fold(
-                        { l -> if (l == null) "✗ Google не нашёл маршрут" else { R.setGoogleKey(ctx, key); "✓ Работает. Обелиск → Ministro Carranza: ${l.how}" } },
-                        { e -> "✗ ${e.message}. Проверьте, что Routes API включён и ключ скопирован целиком." },
+                        { l -> if (l == null) "✓ Ключ принят, но Google не нашёл маршрут на транспорте для пробной точки." else "✓ Работает. Обелиск → Ministro Carranza: ${l.how}" },
+                        { e -> "✗ " + R.explain(e.message.orEmpty()) + "\n\nОтвет Google: ${e.message}" },
                     )
                     busy = false
                 }
             }) { Text("Проверить") }
             if (R.googleKey(ctx).isNotBlank()) OutlinedButton(onClick = { R.setGoogleKey(ctx, ""); key = ""; status = "" }) { Text("Убрать") }
         }
-        if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+        if (status.isNotBlank()) androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+        }
+        if (R.googleKey(ctx).isNotBlank() && status.isBlank()) Text("Ключ сохранён. Нажмите «Проверить».", style = MaterialTheme.typography.bodySmall)
     }
 }

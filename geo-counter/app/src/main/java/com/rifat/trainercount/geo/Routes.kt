@@ -22,8 +22,11 @@ object Routes {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun googleKey(ctx: Context) = prefs(ctx).getString("google", "").orEmpty()
-    fun setGoogleKey(ctx: Context, key: String) =
-        prefs(ctx).edit().putString("google", key.trim()).apply { if (key.isBlank()) remove("google") }.commit().also { clearCache(ctx) }
+    fun setGoogleKey(ctx: Context, key: String) {
+        if (key.trim() == googleKey(ctx)) return
+        prefs(ctx).edit().putString("google", key.trim()).commit()
+        clearCache(ctx)
+    }
 
     fun clearCache(ctx: Context) {
         val p = prefs(ctx)
@@ -84,6 +87,22 @@ object Routes {
         val r = o.optJSONArray("routes")?.optJSONObject(0) ?: return null
         val min = (r.getDouble("duration") / 60).toInt().coerceAtLeast(1)
         return Leg(min, min, "пешком $min мин (${"%.1f".format(r.getDouble("distance") / 1000)} км)", true)
+    }
+
+    /** Понятная причина ошибки Google. */
+    fun explain(msg: String): String {
+        val m = msg.lowercase()
+        return when {
+            "billing" in m -> "В проекте Google не включена оплата. Откройте console.cloud.google.com/billing, привяжите карту к проекту " +
+                "(деньги не спишутся, пока не превышен бесплатный лимит) и через 5 минут нажмите «Проверить» снова."
+            "not been used" in m || "disabled" in m || "has not been enabled" in m ->
+                "Routes API не включён в этом проекте или включён только что. Включите его (APIs & Services → Library → Routes API → Enable) и подождите 5 минут."
+            "api key not valid" in m || "api_key_invalid" in m -> "Ключ скопирован не полностью или с лишним символом. Скопируйте его заново кнопкой копирования."
+            "blocked" in m || "not authorized" in m || "permission" in m || "restricted" in m ->
+                "Ключу запрещён Routes API. В настройках ключа (Credentials → ключ → API restrictions) отметьте Routes API или выберите «Don't restrict key»."
+            "unable to resolve host" in m || "timeout" in m || "failed to connect" in m -> "Нет интернета или Google недоступен."
+            else -> "Google вернул ошибку."
+        }
     }
 
     private fun place(p: LatLng) = JSONObject().put("location", JSONObject().put("latLng", JSONObject().put("latitude", p.first).put("longitude", p.second)))
