@@ -338,6 +338,8 @@ object Poller {
 class PollWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         Poller.run(applicationContext, manual = false)
+        Store.init(applicationContext)
+        Notifier.askEvents(applicationContext)
         return Result.success()
     }
 }

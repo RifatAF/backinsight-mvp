@@ -29,6 +29,7 @@ sealed interface Screen {
     data object Log : Screen
     data object Schedule : Screen
     data object FindWindow : Screen
+    data object Chat : Screen
 }
 
 class Nav(private val stack: SnapshotStateList<Screen>) {
@@ -74,6 +75,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Log -> LogScreen(nav)
                     Screen.Schedule -> ScheduleScreen(data, nav)
                     Screen.FindWindow -> FindWindowScreen(data, nav)
+                    Screen.Chat -> ChatScreen(data, nav)
                 }
             }
         }
@@ -116,5 +118,6 @@ class MainActivity : ComponentActivity() {
         Planner.refresh(this)
         com.rifat.trainercount.geo.BotService.sync(this)
         com.rifat.trainercount.geo.Bybit.checkSoon(this)
+        com.rifat.trainercount.geo.Notifier.askEvents(this)
     }
 }

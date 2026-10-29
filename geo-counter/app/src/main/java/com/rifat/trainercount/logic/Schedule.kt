@@ -449,6 +449,16 @@ fun familyText(d: AppData, now: Long, withAddress: Boolean, zone: ZoneId = ZoneI
     return dayText(d, date, now, withAddress, "План на завтра, ${fDow(t)} ${fDate(t)}", zone)
 }
 
+/** Прошедшие личные дела, про которые ещё не спросили «вы там были?» (за последние 3 дня). */
+fun eventsToAsk(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): List<Personal> =
+    d.events.filter { e ->
+        val end = epochMs(LocalDate.ofEpochDay(e.date), e.min + e.duration, zone)
+        e.went == null && end <= now && end > now - 3 * 24 * 3600_000L
+    }
+
+fun setWent(d: AppData, id: String, went: Boolean): AppData =
+    d.copy(events = d.events.map { if (it.id == id) it.copy(went = went) else it })
+
 /** План дня текстом: занятия, личные дела, начало, конец и перерывы. */
 fun dayText(d: AppData, date: LocalDate, now: Long, withAddress: Boolean, head: String, zone: ZoneId = ZoneId.systemDefault()): String {
     val plan = dayPlan(d, date, now, zone)

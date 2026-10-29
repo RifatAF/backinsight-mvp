@@ -207,5 +207,5 @@ data class Stay(
 
 data class Spot(val lat: Double, val lng: Double, val radius: Int = 150)
 
-/** Личное дело: date — день (epochDay), min — начало в минутах от полуночи. */
-data class Personal(val id: String, val date: Long, val min: Int, val duration: Int, val title: String)
+/** Личное дело: date — день (epochDay), min — начало в минутах от полуночи. went: был ли (null: ещё не спрашивали). */
+data class Personal(val id: String, val date: Long, val min: Int, val duration: Int, val title: String, val went: Boolean? = null)

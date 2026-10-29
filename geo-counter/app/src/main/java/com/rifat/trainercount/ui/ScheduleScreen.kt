@@ -317,8 +317,8 @@ private fun TimelineRow(data: AppData, item: PlanItem, onClick: () -> Unit) {
                 color = Color(0xFF8E8E93),
                 title = item.ev.title,
                 time = "${hhmm(item.from)}–${hhmm(item.to)}",
-                tags = listOf("личное"),
-                faded = false,
+                tags = listOf("личное") + when (item.ev.went) { true -> listOf("был ✓"); false -> listOf("не был"); null -> emptyList() },
+                faded = item.ev.went == false,
                 height = h,
                 onClick = onClick,
             )

@@ -40,6 +40,17 @@ object Gemini {
             .firstOrNull() ?: error("нет подходящей модели")
     }
 
+    /** Модель поумнее для помощника (не lite): лучше планирует. null: такой нет. */
+    fun pickSmart(key: String): String? {
+        val models = http(key, "models?pageSize=200", null).optJSONArray("models") ?: JSONArray()
+        return (0 until models.length()).map { models.getJSONObject(it) }
+            .filter { m -> m.optJSONArray("supportedGenerationMethods")?.toString()?.contains("generateContent") == true }
+            .map { it.getString("name").removePrefix("models/") }
+            .filter { "flash" in it && "lite" !in it && listOf("image", "tts", "live", "audio", "exp", "preview").none { w -> w in it } }
+            .sortedWith(compareByDescending<String> { it == "gemini-flash-latest" }.thenByDescending { it })
+            .firstOrNull()
+    }
+
     /** Отправить запрос, получить текст ответа. */
     fun ask(key: String, model: String, prompt: String): String {
         val body = JSONObject()

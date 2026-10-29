@@ -191,6 +191,8 @@ fun parseBot(text: String, today: LocalDate): BotCmd {
         remove -> if (date == null) BotCmd.Unknown("Какой день? Например: удали 30.10 стоматолог") else BotCmd.Remove(date, rest)
         free -> BotCmd.Free(date)
         week -> BotCmd.Week(date ?: today)
+        // Длинная фраза без ИИ: это не название дела, а просьба, которую шаблон не поймёт.
+        date != null && time != null && rest.split(' ').size > 6 -> BotCmd.Unknown("Слишком сложно для меня без ИИ. Подключите Gemini (Настройки → Telegram) или напишите коротко: 30.10 17:00 стоматолог")
         date != null && time != null && rest.isNotEmpty() ->
             BotCmd.Add(date, time.first, (time.second ?: 60).coerceIn(15, 12 * 60), rest.replaceFirstChar { it.uppercase() })
         date != null && time != null -> BotCmd.Unknown("Что записать на это время? Например: 30.10 17:00 стоматолог")

@@ -1,0 +1,85 @@
+package com.rifat.trainercount.geo
+
+import android.content.Context
+import android.location.Geocoder
+import com.rifat.trainercount.data.Store
+import com.rifat.trainercount.logic.AgentPlan
+import com.rifat.trainercount.logic.AppData
+import com.rifat.trainercount.logic.agentContext
+import com.rifat.trainercount.logic.agentPrompt
+import com.rifat.trainercount.logic.applyActions
+import com.rifat.trainercount.logic.findSlotsText
+import com.rifat.trainercount.logic.parseAgent
+import com.rifat.trainercount.logic.undoPlan
+import java.util.Locale
+
+/**
+ * ИИ-помощник по расписанию для чата в приложении и для бота. Думает в два шага: если нужно подобрать
+ * время новому клиенту, приложение само считает окна и дорогу и отдаёт их ИИ. Изменения выполняются
+ * только после подтверждения.
+ */
+object Assistant {
+    /** План, ждущий подтверждения: действия ИИ (выполняются заново на свежих данных). */
+    class Proposal(val plan: AgentPlan, val actions: List<Any?>)
+
+    @Volatile private var smart: String? = null
+
+    private fun ask(prompt: String): String? {
+        val s = Store.data.value.settings
+        if (s.aiKey.isBlank()) return null
+        // Сначала модель поумнее; если лимит бесплатного тарифа или её нет, обычная.
+        val m = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.also { smart = it }
+        if (m != null) runCatching { return Gemini.ask(s.aiKey, m, prompt) }
+        return runCatching { Gemini.ask(s.aiKey, s.aiModel.ifBlank { Gemini.pickModel(s.aiKey) }, prompt) }.getOrNull()
+    }
+
+    private fun geocode(ctx: Context, place: String): Pair<Double, Double>? {
+        if (place.isBlank() || !Geocoder.isPresent()) return null
+        return runCatching {
+            @Suppress("DEPRECATION")
+            Geocoder(ctx, Locale("es", "AR")).getFromLocationName(place, 1)?.firstOrNull()?.let { it.latitude to it.longitude }
+        }.getOrNull()
+    }
+
+    /** Уточнить координаты нового клиента по адресу: карта точнее, чем догадка ИИ. */
+    private fun refine(ctx: Context, actions: List<Any?>): List<Any?> = actions.map { a ->
+        val m = a as? Map<*, *> ?: return@map a
+        if (m["type"] != "add_client") return@map a
+        val at = geocode(ctx, (m["address"] as? String).orEmpty()) ?: return@map a
+        m.toMutableMap().apply { put("lat", at.first); put("lng", at.second) }
+    }
+
+    /** Подумать над сообщением. null: ИИ недоступен. status: где Рифат (для вопросов «где он»). */
+    fun think(ctx: Context, text: String, history: List<Pair<String, String>>, status: String): Proposal? {
+        val now = System.currentTimeMillis()
+        val d = Store.data.value
+        val context = agentContext(d, now, status)
+        var r = parseAgent(ask(agentPrompt(context, history, text)) ?: return null) ?: return null
+        r.query?.let { q0 ->
+            val at = geocode(ctx, q0.place)
+            val q = if (at != null) q0.copy(lat = at.first, lng = at.second) else q0
+            val slots = findSlotsText(d, q, now)
+            r = parseAgent(ask(agentPrompt(context, history, text, slots)) ?: return null) ?: r
+        }
+        val actions = refine(ctx, r.actions)
+        val (nd, steps) = applyActions(d, actions, now)
+        return Proposal(AgentPlan(r.reply.ifBlank { if (steps.isEmpty()) "Не понял, напишите подробнее." else "Вот что сделаю:" }, steps, nd), actions)
+    }
+
+    /** Выполнить план. Возвращает данные до изменения (для отмены) и итог. */
+    fun apply(ctx: Context, p: Proposal): Pair<AppData, String> {
+        val before = Store.data.value
+        var steps = emptyList<com.rifat.trainercount.logic.AgentStep>()
+        Store.update { d -> applyActions(d, p.actions, System.currentTimeMillis()).also { steps = it.second }.first }
+        Planner.refresh(ctx)
+        Diag.add(ctx, "Помощник: выполнено ${steps.count { it.ok }} действий")
+        val done = steps.filter { it.ok }.joinToString("\n") { "✓ " + it.text }
+        val fail = steps.filter { !it.ok }.joinToString("\n") { "✗ " + it.text }
+        return before to listOf("Готово.", done, fail).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    fun undo(ctx: Context, before: AppData) {
+        Store.update { undoPlan(it, before) }
+        Planner.refresh(ctx)
+    }
+}

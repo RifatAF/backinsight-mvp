@@ -1,0 +1,89 @@
+package com.rifat.trainercount.logic
+
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class AgentTest {
+    private val z = ZoneId.systemDefault()
+    private fun t(day: Int, h: Int, m: Int = 0) = LocalDateTime.of(2026, 10, day, h, m).atZone(z).toInstant().toEpochMilli()
+    private val thu = LocalDate.of(2026, 10, 29)
+
+    private fun data(): AppData {
+        var d = AppData(
+            clients = listOf(
+                Client("ig", "Игорь", lat = -34.58, lng = -58.43),
+                Client("pe", "Петр Мария", members = listOf("Петр", "Мария"), lat = -34.60, lng = -58.38),
+                Client("an", "Анна", lat = -34.575, lng = -58.435),
+            ),
+            settings = Settings(homeLat = -34.62, homeLng = -58.44, startMin = 9 * 60, endMin = 21 * 60),
+        )
+        d = addRule(d, "ig", 4, 13 * 60 + 30, null)
+        d = addRule(d, "pe", 4, 10 * 60, null)
+        d = addRule(d, "an", 2, 14 * 60, null)
+        return d
+    }
+
+    @Test fun onlyPetrToday() {
+        val now = t(29, 8)
+        val raw = """```json
+{"reply": "Понял: сегодня только Петр в 16:30.",
+ "actions": [{"type": "cancel", "client": "Игорь", "date": "2026-10-29"},
+             {"type": "move", "client": "Петр", "date": "2026-10-29", "to_date": "2026-10-29", "to_time": "16:30"}],
+ "query": null}
+```"""
+        val r = parseAgent(raw)!!
+        val (nd, steps) = applyActions(data(), r.actions, now, z)
+        assertTrue(steps.all { it.ok }, steps.toString())
+        val plan = dayPlan(nd, thu, now, z).filterIsInstance<PlanItem.Lesson>()
+        assertEquals(listOf("pe" to 16 * 60 + 30), plan.map { it.occ.clientId to it.from })
+        assertEquals("Перенести: Петр Мария, чт 29.10 10:00 → 16:30", steps[1].text)
+        // Отмена плана возвращает расписание.
+        val back = undoPlan(nd, data())
+        assertEquals(2, dayPlan(back, thu, now, z).filterIsInstance<PlanItem.Lesson>().size)
+    }
+
+    @Test fun newClientNearCarranza() {
+        val now = t(29, 8)
+        val q = parseAgent("""{"reply": "", "actions": [], "query": {"after": "14:00", "minutes": 60, "place": "Estación Ministro Carranza, Buenos Aires", "lat": -34.5752, "lng": -58.4349}}""")!!.query!!
+        assertEquals(14 * 60, q.after)
+        val slots = findSlotsText(data(), q, now, z)
+        // Вторник после Анны (живёт рядом с Каррансой) лучше всего: почти без лишней дороги.
+        val first = slots.lines().first()
+        assertTrue(first.startsWith("вт 03.11") && "до этого Анна до 15:00" in first && "с 15:30" in first, slots)
+        val raw = """{"reply": "Лучше всего вторник сразу после Анны: она в 600 м.",
+ "actions": [{"type": "add_client", "name": "Виталий", "address": "Estación Ministro Carranza, Buenos Aires", "lat": -34.5752, "lng": -58.4349},
+             {"type": "add_rule", "client": "Виталий", "day": 2, "time": "15:30"}]}"""
+        val (nd, steps) = applyActions(data(), parseAgent(raw)!!.actions, now, z)
+        assertTrue(steps.all { it.ok }, steps.toString())
+        val v = nd.clients.first { it.name == "Виталий" }
+        assertTrue(v.hasPlace)
+        assertTrue(nd.rules.any { it.clientId == v.id && it.day == 2 && it.min == 15 * 60 + 30 && it.manual })
+        assertEquals("Постоянно: Виталий, вт 15:30, с вт 03.11", steps[1].text)
+    }
+
+    @Test fun contextAndConfirm() {
+        val ctx = agentContext(data(), t(29, 8), "дома", z)
+        assertTrue("Игорь: " in ctx && "постоянно чт 13:30" in ctx && "Дата сегодня: 2026-10-29" in ctx, ctx)
+        assertTrue("13:30–14:30 Игорь" in ctx, ctx)
+        assertTrue(isYes("Да") && isYes("ок!") && !isYes("да, но Игоря оставь"))
+        assertTrue(isNo("нет"))
+        val bad = applyActions(data(), parseAgent("""{"reply":"","actions":[{"type":"cancel","client":"Вася","date":"2026-10-29"}]}""")!!.actions, t(29, 8), z).second
+        assertTrue(!bad.single().ok)
+        // Длинная просьба без ИИ не записывается делом.
+        assertTrue(parseBot("Смотри сегодня будет только Петр и в 16.30. Также у меня новый клиент Виталий после 14.00", thu) is BotCmd.Unknown)
+    }
+
+    @Test fun askAboutPastEvents() {
+        val ev = Personal("e", LocalDate.of(2026, 10, 28).toEpochDay(), 14 * 60, 60, "Апто медико")
+        val d = data().copy(events = listOf(ev))
+        assertTrue(eventsToAsk(d, t(28, 14, 30), z).isEmpty())
+        assertEquals(listOf("e"), eventsToAsk(d, t(29, 9), z).map { it.id })
+        val no = setWent(d, "e", false)
+        assertTrue(eventsToAsk(no, t(29, 9), z).isEmpty())
+        assertTrue("Апто медико (личное дело) [не был]" in agentContext(no, t(28, 8), "дома", z))
+    }
+}

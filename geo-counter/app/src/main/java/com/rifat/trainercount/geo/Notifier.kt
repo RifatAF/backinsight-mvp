@@ -150,6 +150,38 @@ object Notifier {
         NotificationManagerCompat.from(ctx).notify(id, n.build())
     }
 
+    /** Личное дело прошло: спросить, был ли там. */
+    @SuppressLint("MissingPermission")
+    fun askEvent(ctx: Context, e: com.rifat.trainercount.logic.Personal) {
+        if (!Perms.notifications(ctx)) return
+        val id = e.id.hashCode()
+        fun act(a: String) = PendingIntent.getBroadcast(
+            ctx, (a + e.id).hashCode(),
+            Intent(ctx, ActionReceiver::class.java).setAction(a).putExtra("eventId", e.id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val day = java.time.LocalDate.ofEpochDay(e.date)
+        val n = NotificationCompat.Builder(ctx, CH_ASK)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("Вы были: ${e.title}?")
+            .setContentText("${com.rifat.trainercount.logic.dayLabel(day)}, ${com.rifat.trainercount.logic.hhmm(e.min)}–${com.rifat.trainercount.logic.hhmm(e.min + e.duration)}")
+            .setContentIntent(openApp(ctx, id, null))
+            .setAutoCancel(true)
+            .addAction(0, "Был", act(ActionReceiver.EV_YES))
+            .addAction(0, "Не был", act(ActionReceiver.EV_NO))
+        NotificationManagerCompat.from(ctx).notify(id, n.build())
+    }
+
+    /** Спросить про все прошедшие дела, про которые ещё не спрашивали. */
+    fun askEvents(ctx: Context) {
+        val p = ctx.getSharedPreferences("events", Context.MODE_PRIVATE)
+        val asked = p.getStringSet("asked", emptySet())!!.toMutableSet()
+        com.rifat.trainercount.logic.eventsToAsk(Store.data.value, System.currentTimeMillis()).forEach { e ->
+            if (asked.add(e.id)) askEvent(ctx, e)
+        }
+        p.edit().putStringSet("asked", asked.toList().takeLast(200).toSet()).apply()
+    }
+
     /** Простое уведомление без привязки к клиенту. */
     @SuppressLint("MissingPermission")
     fun info(ctx: Context, title: String, text: String) {
@@ -255,10 +287,18 @@ class ActionReceiver : BroadcastReceiver() {
         const val STAY_IGNORE = "com.rifat.trainercount.STAY_IGNORE"
         const val TG_ALLOW = "com.rifat.trainercount.TG_ALLOW"
         const val PAID = "com.rifat.trainercount.PAID"
+        const val EV_YES = "com.rifat.trainercount.EV_YES"
+        const val EV_NO = "com.rifat.trainercount.EV_NO"
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
         Store.init(ctx)
+        if (intent.action == EV_YES || intent.action == EV_NO) {
+            val id = intent.getStringExtra("eventId") ?: return
+            Store.update { com.rifat.trainercount.logic.setWent(it, id, intent.action == EV_YES) }
+            Notifier.cancelId(ctx, id.hashCode())
+            return
+        }
         if (intent.action == TG_ALLOW) {
             val chat = intent.getStringExtra("chatId") ?: return
             Store.update { d -> d.copy(settings = d.settings.copy(tgAllowed = (d.settings.tgAllowed + chat).distinct())) }

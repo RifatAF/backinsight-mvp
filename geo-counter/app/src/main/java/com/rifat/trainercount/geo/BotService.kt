@@ -33,9 +33,6 @@ import com.rifat.trainercount.logic.RifatStatus
 import com.rifat.trainercount.logic.trackLesson
 import com.rifat.trainercount.logic.clientTrackText
 import com.rifat.trainercount.logic.aiPrompt
-import com.rifat.trainercount.logic.aiChatPrompt
-import com.rifat.trainercount.logic.aiContext
-import com.rifat.trainercount.logic.parseAiReply
 import com.rifat.trainercount.logic.parseAi
 import com.rifat.trainercount.logic.PlanItem
 import com.rifat.trainercount.logic.Status
@@ -46,6 +43,8 @@ import com.rifat.trainercount.logic.fTime
 import com.rifat.trainercount.logic.hhmm
 import com.rifat.trainercount.logic.minuteOf
 import com.rifat.trainercount.logic.parseBot
+import com.rifat.trainercount.logic.isYes
+import com.rifat.trainercount.logic.isNo
 import com.rifat.trainercount.logic.BOT_HELP
 import com.rifat.trainercount.logic.CLIENT_BUTTONS
 import com.rifat.trainercount.logic.OWNER_BUTTONS
@@ -186,15 +185,28 @@ class BotService : Service() {
             return
         }
         val now = System.currentTimeMillis()
+        // Ответ на предложенный план: «да» выполняет, «нет» отменяет.
+        proposals.remove(m.chat.id)?.let { p ->
+            if (isYes(m.text)) {
+                val (_, done) = Assistant.apply(this, p)
+                remember(m.chat.id, m.text, done)
+                Telegram.send(token, m.chat.id, done, OWNER_KB)
+                return
+            }
+            if (isNo(m.text)) { Telegram.send(token, m.chat.id, "Хорошо, ничего не меняю.", OWNER_KB); return }
+        }
         var cmd = parseBot(m.text, dayOf(now))
-        // С ключом Gemini на вопросы отвечает ИИ; записи, удаления, балансы и сводки приложение считает само, точно.
-        val exact = cmd is BotCmd.Add || cmd is BotCmd.Remove || cmd is BotCmd.Help ||
-            cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances || isButton(m.text, OWNER_BUTTONS)
+        // С ключом Gemini сообщение разбирает помощник; балансы, сводки и кнопки приложение считает само, точно.
+        val exact = cmd is BotCmd.Help || cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances ||
+            isButton(m.text, OWNER_BUTTONS)
         if (d0.settings.aiKey.isNotBlank() && !exact) {
-            val smart = smartReply(m.chat.id, m.text, now)
-            if (smart != null) {
-                Diag.add(this, "Бот (ИИ): «${m.text.take(40)}» от ${m.chat.name}")
-                Telegram.send(token, m.chat.id, smart, OWNER_KB)
+            val status = whereText(map = Regex("где|куда|адрес|встрет|подъех|забрать", RegexOption.IGNORE_CASE).containsMatchIn(m.text))
+            val p = Assistant.think(this, m.text, history[m.chat.id]?.toList().orEmpty(), status.replace("\n", "; "))
+            if (p != null) {
+                Diag.add(this, "Бот (помощник): «${m.text.take(40)}» от ${m.chat.name}")
+                val text = if (p.plan.hasChanges) { proposals[m.chat.id] = p; p.plan.text() + "\n\nСделать? Ответьте «да» или «нет»." } else p.plan.text()
+                remember(m.chat.id, m.text, text)
+                Telegram.send(token, m.chat.id, text, OWNER_KB)
                 return
             }
         }
@@ -246,26 +258,14 @@ class BotService : Service() {
     /** Клиенты, нажавшие «Написать Рифату»: их следующее сообщение передаётся как есть. */
     private val composing = mutableSetOf<String>()
 
+    /** Планы помощника, ждущие «да» в чате. */
+    private val proposals = mutableMapOf<String, Assistant.Proposal>()
+
+    private fun remember(chat: String, q: String, a: String) =
+        history.getOrPut(chat) { ArrayDeque() }.apply { addLast(q to a); while (size > 6) removeFirst() }
+
     /** Последние реплики по чатам: чтобы ИИ понимал «а где он закончит?» после предыдущего вопроса. */
     private val history = mutableMapOf<String, ArrayDeque<Pair<String, String>>>()
-
-    /** Живой ответ ИИ с расписанием и местом. null: ИИ недоступен, ответим по-простому. */
-    private fun smartReply(chatId: String, text: String, now: Long): String? {
-        val d = Store.data.value
-        val context = aiContext(d, now, whereText().replace("\n", "; "))
-        val past = history[chatId]?.toList().orEmpty()
-        val raw = gemini(aiChatPrompt(context, past, text)) ?: return null
-        val ai = parseAiReply(raw, dayOf(now)) ?: return null
-        var extra = ""
-        // Запись и удаление выполняет приложение: так видно, что именно сделано, и есть проверка пересечений.
-        listOfNotNull(ai.add, ai.remove).forEach { c ->
-            Store.update { dd -> botAnswer(dd, c, now, { "" }).also { extra += "\n" + it.second }.first }
-        }
-        if (extra.isNotEmpty()) Planner.refresh(this)
-        val reply = (ai.reply + extra).trim()
-        history.getOrPut(chatId) { ArrayDeque() }.apply { addLast(text to reply); while (size > 4) removeFirst() }
-        return reply
-    }
 
     /** Запрос к Gemini с подбором модели, если старую переименовали. */
     private fun gemini(prompt: String): String? {
@@ -306,7 +306,7 @@ class BotService : Service() {
         }.getOrNull() ?: runCatching { Tasks.await(fused.lastLocation, 5, TimeUnit.SECONDS) }.getOrNull()
     }
 
-    private fun whereText(): String {
+    private fun whereText(map: Boolean = true): String {
         val d = Store.data.value
         val now = System.currentTimeMillis()
         val lines = mutableListOf<String>()
@@ -332,7 +332,7 @@ class BotService : Service() {
             }
             lines += "Дальше: ${hhmm(next.from)} $what"
         }
-        if (!home) {
+        if (!home && map) {
             val l = currentFix()
             if (l != null) lines += "На карте (±${l.accuracy.toInt()} м, ${fTime(l.time)}): https://maps.google.com/?q=${l.latitude},${l.longitude}"
         }

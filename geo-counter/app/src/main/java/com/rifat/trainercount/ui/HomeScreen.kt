@@ -98,10 +98,16 @@ fun HomeScreen(data: AppData, nav: Nav) {
             item { StatusCard(data, now) }
             item { NextLessonsCard(data, now) { nav.go(Screen.Schedule) } }
             item {
-                androidx.compose.material3.FilledTonalButton(
-                    onClick = { nav.go(Screen.FindWindow) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Найти свободное окно") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.Button(
+                        onClick = { nav.go(Screen.Chat) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("💬 Помощник") }
+                    androidx.compose.material3.FilledTonalButton(
+                        onClick = { nav.go(Screen.FindWindow) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Свободное окно") }
+                }
             }
             val todayIso = java.time.LocalDate.now().dayOfWeek.value
             if (todayIso !in data.settings.days) item {

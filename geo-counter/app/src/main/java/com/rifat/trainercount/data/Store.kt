@@ -172,6 +172,7 @@ object Store {
             d.events.forEach { e ->
                 put(JSONObject().apply {
                     put("id", e.id); put("date", e.date); put("min", e.min); put("duration", e.duration); put("title", e.title)
+                    put("went", e.went ?: JSONObject.NULL)
                 })
             }
         })
@@ -263,7 +264,8 @@ object Store {
                 Stay(s.getDouble("lat"), s.getDouble("lng"), s.getLong("start"), s.getLong("last"), s.optBoolean("asked"), s.optBoolean("done"))
             },
             events = o.optJSONArray("events").list { e ->
-                Personal(e.getString("id"), e.getLong("date"), e.getInt("min"), e.optInt("duration", 60), e.optString("title"))
+                Personal(e.getString("id"), e.getLong("date"), e.getInt("min"), e.optInt("duration", 60), e.optString("title"),
+                    if (e.has("went") && !e.isNull("went")) e.getBoolean("went") else null)
             },
             ignored = o.optJSONArray("ignored").list { p -> Spot(p.getDouble("lat"), p.getDouble("lng"), p.optInt("radius", 150)) },
         )
