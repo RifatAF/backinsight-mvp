@@ -299,10 +299,10 @@ fun SettingsScreen(data: AppData, nav: Nav) {
             Card { Column(Modifier.padding(12.dp)) { HoursBlock(data) } }
             SectionTitle("Напоминания и будильник")
             Card { Column(Modifier.padding(12.dp)) { RemindersBlock(data) } }
+            SectionTitle("Маршруты: ключ Google Maps")
+            Card { Column(Modifier.padding(12.dp)) { RoutesBlock(data) } }
             SectionTitle("Telegram: план на завтра")
             Card { Column(Modifier.padding(12.dp)) { TelegramBlock(data) } }
-            SectionTitle("Дорога между клиентами")
-            Card { Column(Modifier.padding(12.dp)) { RoutesBlock(data) } }
             SectionTitle("Bybit: автоподтверждение оплат")
             Card { Column(Modifier.padding(12.dp)) { BybitBlock() } }
             SectionTitle("Общие места")
@@ -393,8 +393,8 @@ fun RemindersBlock(data: AppData) {
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Дорога между клиентами")
-                Text("Запас при поиске свободного окна", style = MaterialTheme.typography.bodySmall)
+                Text("Дорога, если маршрута нет")
+                Text("Для клиентов без места на карте. Маршруты и ключ Google: раздел ниже", style = MaterialTheme.typography.bodySmall)
             }
             Stepper(s.travelMin, { v -> save { it.copy(travelMin = v) } }, 0..90, 15) { "$it мин" }
         }
