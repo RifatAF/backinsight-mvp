@@ -22,5 +22,12 @@ fun Leg.text() = if (exact) how else "$how (примерно)"
 fun needMin(s: Settings, @Suppress("UNUSED_PARAMETER") leg: Leg?) = s.travelMin
 
 /** Предупреждение, если по маршруту с запасом не успеть за gap минут. null: успевает или маршрута нет. */
-fun routeWarn(s: Settings, leg: Leg?, gap: Int): String? =
-    if (leg != null && leg.min + s.travelExtra > gap) "по маршруту ${leg.text()}, с запасом ${s.travelExtra} мин нужно ${leg.min + s.travelExtra} мин, а есть $gap" else null
+fun routeWarn(@Suppress("UNUSED_PARAMETER") s: Settings, leg: Leg?, gap: Int): String? =
+    // Только когда по маршруту реально не успеть; запас — на усмотрение Рифата.
+    if (leg != null && leg.min > gap) "ехать ~${leg.short()}, а между занятиями $gap мин" else null
+
+/** Коротко: «51 мин (автобус 39, автобус 2)» или «20 мин пешком». */
+fun Leg.short(): String {
+    val rides = Regex("(метро линия \\w|метро [^ ]+|автобус [^ ]+|поезд [^ ]+|трамвай [^ ]+|линия \\w)").findAll(how).map { it.value }.distinct().toList()
+    return if (rides.isEmpty()) "$min мин пешком" else "$min мин (${rides.joinToString(", ")})"
+}

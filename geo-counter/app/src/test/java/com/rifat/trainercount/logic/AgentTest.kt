@@ -107,7 +107,11 @@ class AgentTest {
         // Дорога по умолчанию 30 мин, маршрут проверяет: от Игоря 40 мин на метро + 10 запас, к 15:00 не успеть, к 15:30 успеть.
         val slow = Router { _, _, _ -> Leg(40, 12, "40 мин: пешком 5 мин → метро D 28 мин → пешком 7 мин", true) }
         val why = clashText(d, "vi", thu, 15 * 60, now, z, slow)!!
-        assertTrue("метро D" in why && "нужно 50 мин, а есть 30" in why, why)
+        assertEquals("от «Игорь» (до 14:30) ехать ~40 мин (метро D), а между занятиями 30 мин", why)
+        // Маршрут 51 мин при часе между занятиями: успевает, запас на усмотрение Рифата, без предупреждения.
+        val bus = Router { _, _, _ -> Leg(51, 6, "51 мин: пешком 2 мин → автобус 39 23 мин → пешком 2 мин → автобус 2 5 мин", true) }
+        assertEquals(null, clashText(d, "vi", thu, 15 * 60 + 30, now, z, bus))
+        assertEquals("51 мин (автобус 39, автобус 2)", bus.leg(0.0 to 0.0, 0.0 to 0.0, 0)!!.short())
         assertEquals(null, clashText(d, "vi", thu, 15 * 60 + 30, now, z, slow))
         val r = parseAgent("""{"reply":"","actions":[],"routes":[{"from":"Игорь","to":"Анна"},{"from":"дом","to":"Вася"}]}""")!!
         val txt = routesText(d, r.routes, now, slow)

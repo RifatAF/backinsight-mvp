@@ -94,7 +94,7 @@ object Assistant {
         Store.update { d -> applyActions(d, p.actions, System.currentTimeMillis(), router = router).also { steps = it.second }.first }
         Planner.refresh(ctx)
         Diag.add(ctx, "Помощник: выполнено ${steps.count { it.ok }} действий")
-        val done = steps.filter { it.ok }.joinToString("\n") { "✓ " + it.text }
+        val done = steps.filter { it.ok }.joinToString("\n") { "✓ " + it.text.substringBefore("\n   ⚠") }
         val fail = steps.filter { !it.ok }.joinToString("\n") { "✗ " + it.text }
         return before to listOf("Готово.", done, fail).filter { it.isNotBlank() }.joinToString("\n")
     }
