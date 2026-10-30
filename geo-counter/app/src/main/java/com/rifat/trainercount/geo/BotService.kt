@@ -141,7 +141,11 @@ class BotService : Service() {
                     prefs.edit().putLong("offset", offset).apply()
                     if (m.chat.id.isBlank() || m.text.isBlank()) continue
                     Telegram.remember(this, m.chat)
-                    handle(s.tgToken, m)
+                    // Ошибка в одном сообщении не должна останавливать бота и выглядеть как «нет связи».
+                    try { handle(s.tgToken, m) } catch (e: InterruptedException) { throw e } catch (e: Exception) {
+                        Diag.add(this, "✗ Бот: ошибка при ответе (${e.javaClass.simpleName}: ${e.message})")
+                        runCatching { Telegram.send(s.tgToken, m.chat.id, "Не получилось ответить, попробуйте ещё раз.") }
+                    }
                 }
             } catch (e: InterruptedException) {
                 break

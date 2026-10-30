@@ -35,7 +35,11 @@ object Store {
     fun init(ctx: Context) {
         if (loaded) return
         file = File(ctx.filesDir, "data.json")
-        _data.value = runCatching { fromJson(JSONObject(file.readText())) }.getOrDefault(AppData())
+        _data.value = if (!file.exists()) AppData() else runCatching { fromJson(JSONObject(file.readText())) }.getOrElse {
+            // Файл не читается: сохраняем его копию, чтобы следующее сохранение не стёрло данные насовсем.
+            runCatching { file.copyTo(File(file.parentFile, "data.broken-${System.currentTimeMillis()}.json"), overwrite = true) }
+            AppData()
+        }
         loaded = true
     }
 
@@ -55,6 +59,8 @@ object Store {
 
     fun importJson(text: String) {
         val d = fromJson(JSONObject(text))
+        // Перед заменой всех данных копия текущих: если выбрали не тот файл, можно вернуть.
+        runCatching { file.copyTo(File(file.parentFile, "data.before-import.json"), overwrite = true) }
         update { d }
     }
 
