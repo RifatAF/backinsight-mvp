@@ -179,4 +179,17 @@ class BotTest {
         assertTrue("Рифат уже рядом" in clientTrackText(data, ira, l, Triple(-34.601, -58.40, t(15, 55)), t(15, 55)))
         assertTrue("За 30 минут" in clientWhereText(data, ira, t(12, 0), RifatStatus.Home))
     }
+
+    @Test fun quickWithoutAi() {
+        val z = ZoneId.systemDefault()
+        val now = LocalDateTime.of(2026, 10, 27, 20, 0).atZone(z).toInstant().toEpochMilli()
+        var data = AppData(clients = listOf(Client("er", "Ерлан и Рита", lat = 1.0, lng = 1.0)))
+        data = addRule(data, "er", 3, 16 * 60, null)
+        assertTrue(quickAnswer(data, "что у меня завтра", now)!!.contains("Ерлан и Рита"))
+        assertTrue(quickAnswer(data, "кто должен?", now) != null)
+        assertTrue(quickAnswer(data, "свободно в четверг?", now) != null)
+        assertEquals(null, quickAnswer(data, "Виталия в среду в 16.00 и в вс 15.30", now))
+        assertEquals(null, quickAnswer(data, "перенеси Ерлана на завтра", now))
+        assertEquals(null, quickAnswer(data, "Анна в 17.30 в вс. заканчиваю в 16.30 час на дорогу все ок", now))
+    }
 }

@@ -739,3 +739,17 @@ fun parseClientAi(json: String): Pair<String, Boolean>? {
         ?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: return null
     return reply to Regex("\"forward\"\\s*:\\s*true").containsMatchIn(json)
 }
+
+/**
+ * Простой вопрос, на который приложение отвечает само и сразу, без ИИ: «что у меня завтра», «неделя»,
+ * «свободно в четверг?», «кто должен», «сводка». null: вопрос сложнее, нужен помощник.
+ */
+fun quickAnswer(d: AppData, text: String, now: Long, zone: ZoneId = ZoneId.systemDefault()): String? {
+    val t = text.lowercase()
+    if (t.split(Regex("\\s+")).size > 8) return null
+    if (Regex("запиш|перенес|отмен|удал|постав|добав|клиент|поменя|замени|сдвин|подбер|найди").containsMatchIn(t)) return null
+    val cmd = parseBot(text, dayOf(now, zone))
+    if (cmd !is BotCmd.Plan && cmd !is BotCmd.Week && cmd !is BotCmd.Free && cmd !is BotCmd.Balances &&
+        cmd !is BotCmd.Summary && cmd !is BotCmd.Report) return null
+    return botAnswer(d, cmd, now, { "" }, zone).second
+}

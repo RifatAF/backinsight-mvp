@@ -45,6 +45,7 @@ import com.rifat.trainercount.logic.minuteOf
 import com.rifat.trainercount.logic.parseBot
 import com.rifat.trainercount.logic.isYes
 import com.rifat.trainercount.logic.isNo
+import com.rifat.trainercount.logic.quickAnswer
 import com.rifat.trainercount.logic.BOT_HELP
 import com.rifat.trainercount.logic.CLIENT_BUTTONS
 import com.rifat.trainercount.logic.OWNER_BUTTONS
@@ -202,7 +203,7 @@ class BotService : Service() {
         var cmd = parseBot(m.text, dayOf(now))
         // С ключом Gemini сообщение разбирает помощник; балансы, сводки и кнопки приложение считает само, точно.
         val exact = cmd is BotCmd.Help || cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances ||
-            isButton(m.text, OWNER_BUTTONS)
+            isButton(m.text, OWNER_BUTTONS) || quickAnswer(d0, m.text, now) != null
         if (d0.settings.aiKey.isNotBlank() && !exact) {
             val status = whereText(map = Regex("где|куда|адрес|встрет|подъех|забрать", RegexOption.IGNORE_CASE).containsMatchIn(m.text))
             val p = Assistant.think(this, m.text, history[m.chat.id]?.toList().orEmpty(), status.replace("\n", "; "))

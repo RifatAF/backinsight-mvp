@@ -40,23 +40,29 @@ object Gemini {
             .firstOrNull() ?: error("нет подходящей модели")
     }
 
-    /** Модели для помощника от самой умной: Pro, затем Flash. Пустой список: таких нет. */
+    /** Модели для помощника: Flash, затем Pro про запас. Пустой список: таких нет. */
     fun pickSmart(key: String): List<String> {
         val models = http(key, "models?pageSize=200", null).optJSONArray("models") ?: JSONArray()
         return (0 until models.length()).map { models.getJSONObject(it) }
             .filter { m -> m.optJSONArray("supportedGenerationMethods")?.toString()?.contains("generateContent") == true }
             .map { it.getString("name").removePrefix("models/") }
             .filter { ("flash" in it || "pro" in it) && "lite" !in it && listOf("image", "tts", "live", "audio", "exp", "preview", "vision", "embedding").none { w -> w in it } }
-            .sortedWith(compareByDescending<String> { "pro" in it }.thenByDescending { it.endsWith("-latest") }.thenByDescending { it })
-            .let { all -> all.filter { "pro" in it }.take(2) + all.filter { "flash" in it }.take(1) }
+            .sortedWith(compareByDescending<String> { it.endsWith("-latest") }.thenByDescending { it })
+            // Flash быстрый и умный; Pro заметно медленнее, только запасной.
+            .let { all -> all.filter { "flash" in it }.take(1) + all.filter { "pro" in it }.take(1) }
     }
 
     /** Отправить запрос, получить текст ответа. */
-    fun ask(key: String, model: String, prompt: String): String {
-        val body = JSONObject()
+    /** think: сколько модели «думать» (токенов); 0: отвечать сразу, null: как решит модель. */
+    fun ask(key: String, model: String, prompt: String, think: Int? = null): String {
+        fun body(withThink: Boolean) = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0))
-        val o = http(key, "models/$model:generateContent", body)
+            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0).apply {
+                if (withThink && think != null) put("thinkingConfig", JSONObject().put("thinkingBudget", think))
+            })
+        // Не все модели понимают настройку «думать»: тогда без неё.
+        val o = runCatching { http(key, "models/$model:generateContent", body(true)) }
+            .getOrElse { e -> if (think != null && "think" in (e.message ?: "").lowercase()) http(key, "models/$model:generateContent", body(false)) else throw e }
         return o.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
             ?.optJSONObject(0)?.optString("text").orEmpty()
     }

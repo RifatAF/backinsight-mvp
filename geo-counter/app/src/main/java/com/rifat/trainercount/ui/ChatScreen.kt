@@ -90,6 +90,10 @@ object ChatLog {
         val app = ctx.applicationContext
         val history = history()
         add(app, Msg(true, t))
+        // Простой вопрос: ответ сразу, без ИИ.
+        com.rifat.trainercount.logic.quickAnswer(com.rifat.trainercount.data.Store.data.value, t, System.currentTimeMillis())?.let {
+            add(app, Msg(false, it)); return
+        }
         busy = true
         scope.launch {
             val p = withContext(Dispatchers.IO) {

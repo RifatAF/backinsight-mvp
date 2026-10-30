@@ -25,13 +25,13 @@ object Assistant {
 
     @Volatile private var smart: List<String>? = null
 
-    private fun ask(prompt: String): String? {
+    private fun ask(prompt: String, think: Int = 0): String? {
         val s = Store.data.value.settings
         if (s.aiKey.isBlank()) return null
-        // Сначала Gemini Pro (умнее всех, но лимит бесплатного тарифа меньше), потом Flash, потом обычная.
+        // Flash с коротким «обдумыванием»: отвечает за секунды. Pro и обычная модель про запас.
         val models = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.also { smart = it }.orEmpty()
         for (m in models + s.aiModel.ifBlank { null }.let { listOfNotNull(it) }) {
-            runCatching { Gemini.ask(s.aiKey, m, prompt) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+            runCatching { Gemini.ask(s.aiKey, m, prompt, think) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
         }
         return runCatching { Gemini.ask(s.aiKey, Gemini.pickModel(s.aiKey), prompt) }.getOrNull()
     }
@@ -57,7 +57,7 @@ object Assistant {
         val now = System.currentTimeMillis()
         val d = Store.data.value
         val context = agentContext(d, now, status)
-        var r = parseAgent(ask(agentPrompt(context, history, text)) ?: return null) ?: return null
+        var r = parseAgent(ask(agentPrompt(context, history, text), think = 512) ?: return null) ?: return null
         val router = Routes.router(ctx)
         // ИИ попросил окна или маршруты: считаем сами и отдаём ему.
         if (r.query != null || r.routes.isNotEmpty()) {
@@ -69,7 +69,7 @@ object Assistant {
                 }
                 if (r.routes.isNotEmpty()) add("Маршруты:\n" + routesText(d, r.routes, now, router))
             }.joinToString("\n\n")
-            r = parseAgent(ask(agentPrompt(context, history, text, info)) ?: return null) ?: r
+            r = parseAgent(ask(agentPrompt(context, history, text, info), think = 1024) ?: return null) ?: r
         }
         var actions = refine(ctx, r.actions)
         var (nd, steps) = applyActions(d, actions, now, router = router)
