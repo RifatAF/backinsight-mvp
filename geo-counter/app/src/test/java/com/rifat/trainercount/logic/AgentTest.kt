@@ -94,7 +94,8 @@ class AgentTest {
         assertTrue(clashText(d, "vi", thu, 14 * 60 + 30, now, z)!!.contains("Игорь"))
         assertEquals(null, clashText(d, "vi", thu, 15 * 60, now, z))
         val (_, steps) = applyActions(d, Json.parse("""{"actions":[{"type":"add_rule","client":"Виталий","day":4,"time":"13:00"}]}""").list("actions"), now, z)
-        assertTrue(!steps.single().ok && "Игорь" in steps.single().text, steps.toString())
+        // Время назвал Рифат: ставится, о пересечении только предупреждение.
+        assertTrue(steps.single().ok && "⚠" in steps.single().text && "Игорь" in steps.single().text, steps.toString())
         val ctx = agentContext(d, now, "дома", z)
         assertTrue("Свободные окна на 14 дней" in ctx, ctx)
         println(ctx.substringAfter("Свободные окна").take(400))
@@ -103,10 +104,10 @@ class AgentTest {
     @Test fun usesRoutes() {
         val now = t(29, 8)
         val d = data().copy(clients = data().clients + Client("vi", "Виталий", lat = -34.575, lng = -58.435))
-        // Маршрут от Игоря 40 мин на метро: с запасом 10 мин Виталий в 15:00 уже не успевает, в 15:30 успевает.
+        // Дорога по умолчанию 30 мин, маршрут проверяет: от Игоря 40 мин на метро + 10 запас, к 15:00 не успеть, к 15:30 успеть.
         val slow = Router { _, _, _ -> Leg(40, 12, "40 мин: пешком 5 мин → метро D 28 мин → пешком 7 мин", true) }
         val why = clashText(d, "vi", thu, 15 * 60, now, z, slow)!!
-        assertTrue("метро D" in why && "+ 10 мин запас" in why, why)
+        assertTrue("метро D" in why && "нужно 50 мин, а есть 30" in why, why)
         assertEquals(null, clashText(d, "vi", thu, 15 * 60 + 30, now, z, slow))
         val r = parseAgent("""{"reply":"","actions":[],"routes":[{"from":"Игорь","to":"Анна"},{"from":"дом","to":"Вася"}]}""")!!
         val txt = routesText(d, r.routes, now, slow)

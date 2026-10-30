@@ -114,15 +114,16 @@ fun agentPrompt(
 
 Как устроено приложение (соблюдай всегда):
 • У каждого клиента своя длительность занятия (указана в списке клиентов). Занятие с 15:30 на 60 мин заканчивается в 16:30.
-• Между занятиями у разных клиентов нужна дорога: следующее занятие можно начать не раньше конца предыдущего плюс
-  время маршрута на метро и пешком плюс запас (указан в сведениях). Сколько ехать, ты не угадываешь:
-  спроси приложение через routes, оно построит маршрут и скажет, сколько ехать и сколько идти пешком.
+• Между занятиями у разных клиентов закладывается дорога из настроек (указана в сведениях, обычно 30 мин).
+  Маршрут на метро и пешком приложение считает только для проверки и предупреждает, если не успеть.
+  Сколько ехать, ты не угадываешь: спроси приложение через routes.
 • Рабочие дни бывают и в выходные (смотри сведения), их тоже рассматривай.
 • У клиента не больше одного занятия в день. Занятия только в рабочее время и рабочие дни.
 • «Через неделю» значит чередование недель: такое занятие бывает не каждую неделю (смотри расписание на 14 дней).
-• Новое время (move, extra, add_rule) выбирай ТОЛЬКО из «Свободных окон» ниже, никогда не придумывай сам.
-  Для постоянного занятия время должно быть свободно в этот день на обеих ближайших неделях.
-• Приложение само проверит каждое действие и отклонит то, что не помещается.
+• ГЛАВНОЕ: если Рифат сам назвал день и время («ставь среду 16:00 и вс 15:30»), ставь РОВНО это время, не меняй,
+  не спорь и не предлагай другое. Приложение само покажет предупреждение, если что-то пересекается.
+• Когда Рифат просит подобрать время, выбирай его из «Свободных окон» или из ответа приложения на query.
+  Учитывай ограничения клиента (например, «только после 14:00») во всех вариантах.
 
 Правила:
 1. Сообщение с несколькими просьбами разбери на все действия сразу.
@@ -142,7 +143,7 @@ fun agentPrompt(
    или перекрёсток, прежде чем считать дорогу. Можно сразу предложить ближайшую станцию метро как ориентир.
 6c. Варианты из «Ответа приложения» переписывай точно: те же дни, время, минуты дороги и пешком. Ничего не округляй и не выдумывай.
    Если просят N раз в неделю, в query укажи per_week, и предложи пары из «Лучших пар дней».
-6. Имена клиентов пиши точно как в списке. Время только :00 или :30. Даты в формате ГГГГ-ММ-ДД.
+6. Имена клиентов пиши точно как в списке. Время, которое назвал Рифат, пиши как есть (15:45 так 15:45). Даты в формате ГГГГ-ММ-ДД.
 7. Если непонятно, о ком или о каком дне речь, задай один короткий вопрос в reply и не делай actions.
 8. Вопросы (что завтра, сколько осталось у Анны, когда свободен) просто отвечай по сведениям, без actions.
 9. reply по-русски, коротко и по делу, без повторения плана: приложение само покажет список действий и спросит подтверждение.
@@ -222,7 +223,7 @@ fun findSlotsText(d: AppData, q: SlotQuery, now: Long, zone: ZoneId = ZoneId.sys
     fun leg(a: LatLng?, b: LatLng?, depart: Long): Leg? = if (a == null || b == null) null else router?.leg(a, b, depart) ?: estimateLeg(a, b)
     data class Opt(val date: LocalDate, val start: Int, val text: String, val cost: Int)
     val opts = mutableListOf<Opt>()
-    // Окна без общего запаса: дорогу до соседей считаем по настоящему маршруту.
+    // Окна без общего запаса: дорогу до соседей добавляем ниже (из настроек, маршрут для проверки).
     val ws = findWindows(d, today.plusDays(1), q.days, q.minutes, 0, now, zone)
     for (w in ws) {
         val plan = dayPlan(d, w.date, now, zone).filter { it is PlanItem.Lesson || (it is PlanItem.Event && it.ev.went != false) }
@@ -257,8 +258,12 @@ fun findSlotsText(d: AppData, q: SlotQuery, now: Long, zone: ZoneId = ZoneId.sys
         // Простой между занятиями тоже неудобен: считаем его в стоимость.
         val idle = if (prev != null) start - endOf(prev) - (legIn?.min ?: 0) else 0
         val idleText = if (prev != null && idle >= 30) "; ждать на месте ${fDur(idle.toLong())}" else ""
+        val warn = listOfNotNull(
+            if (prev is PlanItem.Lesson) routeWarn(s, legIn, start - endOf(prev))?.let { "⚠ до него: $it" } else null,
+            if (next is PlanItem.Lesson) routeWarn(s, legOut, next.from - start - q.minutes)?.let { "⚠ после: $it" } else null,
+        ).joinToString("") { "; $it" }
         val cost = (legIn?.min ?: 0) + (legOut?.min ?: 0) + idle / 2
-        opts += Opt(w.date, start, "${dayLabel(w.date)} (день ${w.date.dayOfWeek.value}): начать можно $range; $before$idleText; $after; запас ${s.travelExtra} мин к дороге учтён", cost)
+        opts += Opt(w.date, start, "${dayLabel(w.date)} (день ${w.date.dayOfWeek.value}): начать можно $range; $before$idleText; $after$warn", cost)
     }
     if (opts.isEmpty()) return "Подходящих окон нет в ближайшие ${q.days} дней."
     val loc = if (target == null) "Координаты клиента неизвестны, дорогу посчитать не получилось.\n" else ""
@@ -302,14 +307,14 @@ fun applyActions(
                 val toDate = dateOf(a.str("to_date")) ?: date
                 if (c == null || date == null || to == null || toDate == null) { bad("Перенести: не понял клиента «$who» или время"); continue }
                 val occ = if (type == "move") occurrences(nd, date).firstOrNull { it.clientId == c.id } else null
-                val clash = clashText(nd, c.id, toDate, to, now, zone, router)
-                if (clash != null) { bad("${c.name} ${dayLabel(toDate)} ${hhmm(to)}: $clash"); continue }
+                // Время назвал Рифат: ставим как есть, о пересечении только предупреждаем.
+                val warn = clashText(nd, c.id, toDate, to, now, zone, router)?.let { "\n   ⚠ $it" } ?: ""
                 if (occ != null) {
                     nd = moveOnce(nd, occ, date, toDate, to)
-                    ok("Перенести: ${c.name}, ${dayLabel(date)} ${hhmm(occ.min)} → " + (if (toDate != date) dayLabel(toDate) + " " else "") + hhmm(to))
+                    ok("Перенести: ${c.name}, ${dayLabel(date)} ${hhmm(occ.min)} → " + (if (toDate != date) dayLabel(toDate) + " " else "") + hhmm(to) + warn)
                 } else {
                     nd = addExtra(nd, c.id, toDate, to)
-                    ok("Разовое занятие: ${c.name}, ${dayLabel(toDate)} ${hhmm(to)}")
+                    ok("Разовое занятие: ${c.name}, ${dayLabel(toDate)} ${hhmm(to)}" + warn)
                 }
             }
             "add_event" -> {
@@ -348,10 +353,10 @@ fun applyActions(
                 val first = (0..6).map { today.plusDays(it.toLong()) }.first { it.dayOfWeek.value == day }
                 val parity = if (a.bool("biweekly")) parityOf(first) else null
                 val step = if (parity != null) 14L else 7L
-                val clash = listOf(first, first.plusDays(step)).firstNotNullOfOrNull { dt -> clashText(nd, c.id, dt, t, now, zone, router)?.let { dayLabel(dt) + ": " + it } }
-                if (clash != null) { bad("Постоянно ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}: $clash"); continue }
+                val warn = listOf(first, first.plusDays(step)).firstNotNullOfOrNull { dt -> clashText(nd, c.id, dt, t, now, zone, router)?.let { dayLabel(dt) + ": " + it } }
+                    ?.let { "\n   ⚠ $it" } ?: ""
                 nd = addRule(nd, c.id, day, t, parity)
-                ok("Постоянно: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}" + (if (parity != null) " через неделю" else "") + ", с ${dayLabel(first)}")
+                ok("Постоянно: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(t)}" + (if (parity != null) " через неделю" else "") + ", с ${dayLabel(first)}" + warn)
             }
             "set_rule" -> {
                 // Поправить время постоянного занятия в этот день (Рифат уточнил, как на самом деле).
@@ -359,8 +364,8 @@ fun applyActions(
                 val t = timeOf(a.str("time"))
                 val rule = nd.rules.firstOrNull { c != null && it.clientId == c.id && it.day == day && !it.off }
                 if (c == null || day == null || t == null || rule == null) { bad("Поправить время «$who»: не нашёл постоянное занятие в этот день"); continue }
-                nd = editRule(nd, rule, day, roundSlot(t), rule.parity)
-                ok("Поправить: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(rule.min)} → ${hhmm(roundSlot(t))}")
+                nd = editRule(nd, rule, day, t, rule.parity)
+                ok("Поправить: ${c.name}, ${DOW_SHORT[day - 1]} ${hhmm(rule.min)} → ${hhmm(t)}")
             }
             "set_length" -> {
                 val m = a.num("minutes")?.toInt()?.coerceIn(30, 300)
@@ -407,12 +412,16 @@ fun clashText(
             (if (before) router?.leg(there, here, epochMs(date, it.to, zone)) else router?.leg(here, there, epochMs(date, end, zone)))
                 ?: estimateLeg(if (before) there else here, if (before) here else there)
         else null
-        val gap = if (it is PlanItem.Lesson) needMin(s, leg) else 0
+        val gap = if (it is PlanItem.Lesson) s.travelMin else 0
         val itTo = realEnd(d, it, date, zone)
+        val what = other?.name ?: (it as? PlanItem.Event)?.ev?.title ?: "занятием"
         if (min < itTo + gap && end > it.from - gap) {
-            val what = other?.name ?: (it as? PlanItem.Event)?.ev?.title ?: "занятием"
-            return "занятие ${hhmm(min)}–${hhmm(end)} не помещается рядом с «$what» ${hhmm(it.from)}–${hhmm(itTo)}" +
-                if (it is PlanItem.Lesson) " (дорога: " + (leg?.text()?.let { t -> "$t + ${s.travelExtra} мин запас" } ?: "${s.travelMin} мин") + ")" else ""
+            return "пересекается с «$what» ${hhmm(it.from)}–${hhmm(itTo)}" + if (it is PlanItem.Lesson) " (с дорогой ${s.travelMin} мин)" else ""
+        }
+        // По времени влезает; маршрут проверяет, хватит ли этих минут на самом деле.
+        if (it is PlanItem.Lesson) {
+            val free = if (before) min - itTo else it.from - end
+            if (free < 120) routeWarn(s, leg, free)?.let { w -> return "рядом «$what»: $w" }
         }
     }
     return null

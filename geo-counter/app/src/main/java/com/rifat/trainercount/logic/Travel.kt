@@ -18,5 +18,9 @@ fun estimateLeg(from: LatLng, to: LatLng): Leg = subteLeg(from, to)
 
 fun Leg.text() = if (exact) how else "$how (примерно)"
 
-/** Сколько минут закладывать между занятиями: дорога + запас. Без координат: дорога из настроек. */
-fun needMin(s: Settings, leg: Leg?) = if (leg == null) s.travelMin else leg.min + s.travelExtra
+/** Между занятиями закладывается дорога из настроек (по умолчанию 30 мин). Маршрут только для проверки. */
+fun needMin(s: Settings, @Suppress("UNUSED_PARAMETER") leg: Leg?) = s.travelMin
+
+/** Предупреждение, если по маршруту с запасом не успеть за gap минут. null: успевает или маршрута нет. */
+fun routeWarn(s: Settings, leg: Leg?, gap: Int): String? =
+    if (leg != null && leg.min + s.travelExtra > gap) "по маршруту ${leg.text()}, с запасом ${s.travelExtra} мин нужно ${leg.min + s.travelExtra} мин, а есть $gap" else null
