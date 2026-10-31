@@ -14,7 +14,7 @@ git checkout ccr-bcd12257-71rrmp
 
 **macOS / Linux:**
 ```bash
-bash laptop/setup.sh                     # окружение, зависимости, проверка доступа, 4 счёта по 10 000
+bash laptop/setup.sh                     # окружение, зависимости, проверка доступа, 12 счетов по 100 USDT
 ```
 **Windows:** двойной щелчок по `install_windows.bat` (установка + автозапуск сразу, подробно в `INSTALL_WINDOWS.md`).
 

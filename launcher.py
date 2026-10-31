@@ -57,7 +57,7 @@ def first_run():
             return False
         print(f"{alt} работает, использую её.")
         ex = alt
-    cap = ask("Виртуальный капитал каждой модели, USDT", "10000")
+    cap = ask("Виртуальный капитал каждой из 12 стратегий, USDT", "100")
     coins = ask("Монеты через запятую", "BTC,ETH").upper().replace(" ", "")
     run("init", "--exchange", ex, "--capital", cap, "--coins", coins)
     print()
@@ -106,7 +106,7 @@ def open_path(p):
 def menu():
     while True:
         print("\n" + "=" * 60)
-        print("backinsight: A/B-тест 4 моделей, виртуальные деньги, живые данные")
+        print("backinsight: A/B-тест 12 стратегий (4 модели × обычная, плечо x3, лонг+шорт), виртуальные деньги")
         status_task()
         print("""
  1  Статус: дни, пропуски, капитал моделей

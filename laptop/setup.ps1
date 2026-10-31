@@ -1,6 +1,6 @@
 ﻿# Установка на Windows. Обычно запускается из install_windows.bat.
-#   powershell -ExecutionPolicy Bypass -File laptop\setup.ps1 [-Capital 10000] [-Coins BTC,ETH] [-Exchange bybit]
-param([int]$Capital = 10000, [string]$Coins = "BTC,ETH", [string]$Exchange = "bybit")
+#   powershell -ExecutionPolicy Bypass -File laptop\setup.ps1 [-Capital 100] [-Coins BTC,ETH] [-Exchange bybit]
+param([double]$Capital = 100, [string]$Coins = "BTC,ETH", [string]$Exchange = "bybit")
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 function Find-Python {

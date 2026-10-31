@@ -40,7 +40,17 @@ import system as S
 FEE = 0.001            # тейкер спот Bybit
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
 THRESHOLD = 0.02       # ребаланс, если вес ушёл больше чем на 2%
-MODELS = ["M1", "M2", "M3", "M4"]
+BASE_MODELS = ["M1", "M2", "M3", "M4"]
+# _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
+MODELS = BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
+MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
+DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
+
+
+def model_spec(m):
+    """(базовая модель, плечо, разрешён шорт)."""
+    base, _, var = m.partition("_")
+    return base, (3.0 if var == "x3" else 1.0), var == "ls"
 DAY = 86400000
 M4_HORIZON = 7
 M4_HALF_LIFE = None    # без забывания: в проверке 2018-2026 веса «свежее важнее» ухудшали результат
@@ -69,7 +79,7 @@ def code_version():
     except Exception:
         pass
     v = Path(__file__).parent / "VERSION"           # архив без .git: версия записана при сборке
-    return v.read_text().strip() if v.exists() else "unknown"
+    return v.read_text(encoding="utf-8").strip() if v.exists() else "unknown"
 
 
 CODE_VERSION = code_version()
@@ -312,8 +322,14 @@ class M4Online:
                     base_rate=float(np.average(y, weights=w)))
 
 
-def decide(model, ctx, mstate, equity_hist):
-    """Целевые веса (доля всего капитала модели) по монетам и объяснение решения. None = не трогать позицию."""
+def short_signal(d):
+    """Зеркало тренда R3: BTC за 30 дней падает и RSI монеты < 50."""
+    return float(pd.notna(d.btc_mom) and pd.notna(d.rsi) and d.btc_mom < 0 and d.rsi < 50)
+
+
+def decide(model, ctx, mstate, equity_hist, short=False):
+    """Целевые веса (доля всего капитала модели, минус = шорт) и объяснение решения. None = не трогать позицию.
+    short=True: те же модели, но вместо «вне рынка» могут открывать шорт по зеркальному сигналу."""
     coins, closes, layers, feats, day = ctx["coins"], ctx["closes"], ctx["layers"], ctx["feats"], ctx["day"]
     n, btc = len(coins), ctx["btc"]
     targets, diag = {}, {}
@@ -323,22 +339,36 @@ def decide(model, ctx, mstate, equity_hist):
             d = S.coin_position(closes[k].loc[:day], btc.loc[:day], layers, p, detail=True).iloc[-1]
             pos = float(np.nan_to_num(d.pos))
             info = {kk: (float(v) if pd.notna(v) else None) for kk, v in d.items()}
+            ssig = short_signal(d) if short else 0.0
+            if short and pos == 0 and ssig:
+                pos = -float(np.nan_to_num(d.vol_size))    # шорт с размером по волатильности
+                info["short"] = True
             if model == "M2":
                 st = mstate.setdefault(k, {"peak": None, "stopped": False})
+                st.setdefault("trough", None)
+                st.setdefault("stop_side", 1)
                 px = float(closes[k].loc[day])
                 if st["stopped"]:
-                    if d.trend == 0:
+                    if (d.trend if st["stop_side"] > 0 else ssig) == 0:
                         st["stopped"] = False          # сигнал сбросился, можно снова входить
                     pos = 0.0
                     info["stop"] = "ждём сброса сигнала после стопа"
                 elif pos > 0:
                     st["peak"] = max(st["peak"] or px, px)
                     if px < st["peak"] * 0.75:
-                        st.update(stopped=True, peak=None)
+                        st.update(stopped=True, peak=None, stop_side=1)
                         pos = 0.0
                         info["stop"] = "трейлинг-стоп 25% от максимума"
-                else:
+                elif pos < 0:
+                    st["trough"] = min(st["trough"] or px, px)
+                    if px > st["trough"] * 1.25:
+                        st.update(stopped=True, trough=None, stop_side=-1)
+                        pos = 0.0
+                        info["stop"] = "трейлинг-стоп шорта 25% от минимума"
+                if pos <= 0:
                     st["peak"] = None
+                if pos >= 0:
+                    st["trough"] = None
             targets[k] = pos / n
             diag[k] = info
         if model == "M2" and equity_hist:
@@ -350,6 +380,29 @@ def decide(model, ctx, mstate, equity_hist):
     elif model == "M3":
         for k in coins:
             st = mstate.setdefault(k, {"entered": False, "entry_day": None, "reason": None})
+            if short:
+                # держать лонг после входа, но в зоне перегрева (MVRV монеты > 3 или MVRV BTC в верхних 10%
+                # истории) при падающем тренде переворачиваться в шорт
+                dd = S.coin_position(closes[k].loc[:day], btc.loc[:day], layers, S.Params(mode="A"), detail=True).iloc[-1]
+                mvrv = ctx["coin_mvrv"].get(k)
+                mv = float(mvrv.loc[:day].iloc[-1]) if mvrv is not None and len(mvrv.loc[:day]) else np.nan
+                lay = layers.loc[:day]
+                mp = float(lay.mvrv_pct.iloc[-1]) if len(lay) else np.nan
+                p200w = ctx["coin_sma1400_ratio"].get(k)
+                r200 = float(p200w.loc[:day].iloc[-1]) if p200w is not None and len(p200w.loc[:day]) else np.nan
+                hot = (mv > 3) or (mp >= 0.9)
+                if not st["entered"]:
+                    reason = ("MVRV < 1" if mv < 1 else "цена ниже 200-недельной средней" if r200 < 1
+                              else "трендовый сигнал" if dd.trend == 1 else None)
+                    if reason:
+                        st.update(entered=True, entry_day=str(day.date()), reason=reason)
+                if hot and short_signal(dd):
+                    targets[k] = -1.0 / n
+                else:
+                    targets[k] = (1.0 / n) if st["entered"] else 0.0
+                diag[k] = {"mvrv": mv, "btc_mvrv_pct": mp, "hot": bool(hot), "short_sig": short_signal(dd),
+                           "entered": st["entered"], "target": targets[k]}
+                continue
             if st["entered"]:
                 targets[k] = None
                 diag[k] = {"hold": True, "entry_day": st["entry_day"], "reason": st["reason"]}
@@ -369,7 +422,11 @@ def decide(model, ctx, mstate, equity_hist):
                 targets[k] = 0.0
             diag[k] = {"mvrv": mv, "price_to_200w": r200, "trend": float(trend), "entry": reason}
     elif model == "M4":
-        res = M4Online().fit_predict({k: feats[k] for k in coins}, closes, day)
+        cache = ctx.setdefault("_m4", {})            # одна подгонка в день на все клоны M4
+        if day not in cache:
+            cache.clear()
+            cache[day] = M4Online().fit_predict({k: feats[k] for k in coins}, closes, day)
+        res = cache[day]
         for k in coins:
             prob = None if res is None else res["prob"][k]
             ema = mstate.get(f"ema_{k}")
@@ -377,7 +434,8 @@ def decide(model, ctx, mstate, equity_hist):
                 ema = prob if ema is None else ema + 2 / (M4_SMOOTH + 1) * (prob - ema)
                 mstate[f"ema_{k}"] = ema
             vol = float(feats[k].loc[day, "vol30"])
-            size = 0.0 if ema is None else float(np.clip((ema - 0.5) / 0.1, 0, 1) * min(1, 0.5 / max(vol, 1e-6)))
+            size = 0.0 if ema is None else float(np.clip((ema - 0.5) / 0.1, -1 if short else 0, 1)
+                                                 * min(1, 0.5 / max(vol, 1e-6)))
             targets[k] = size / n
             diag[k] = {"prob_up_7d": prob, "prob_smoothed": ema, "vol30": vol, "size": size}
         if res:
@@ -406,22 +464,35 @@ def fill_price(side, notional, book, ref):
     return notional / qty, used
 
 
-def execute(acct, targets, prices, books, model, day, rec):
+def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=False):
+    """Ребаланс к целевым весам. lev > 1 или шорт: маржинальный счёт (cash может быть < 0, units < 0),
+    сумма позиций не больше lev × капитал."""
     equity = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
+    if equity <= 0:
+        return []
+    margin = lev > 1 or allow_short
     fills = []
     order = sorted(targets, key=lambda k: -1 if targets[k] is None else targets[k] - acct["units"].get(k, 0) * prices[k] / equity)
     for k in order:
         if targets[k] is None:
             continue
-        cur_w = acct["units"].get(k, 0) * prices[k] / equity
+        cur_val = acct["units"].get(k, 0) * prices[k]
+        cur_w = cur_val / equity
         diff = targets[k] - cur_w
-        if abs(diff) <= THRESHOLD and not (targets[k] == 0 and cur_w > 0.0005):
+        if abs(diff) <= THRESHOLD and not (targets[k] == 0 and abs(cur_w) > 0.0005):
             continue
         side = "buy" if diff > 0 else "sell"
-        notional = abs(diff) * equity if not (targets[k] == 0) else acct["units"].get(k, 0) * prices[k]
-        if side == "buy":
+        notional = abs(diff) * equity if targets[k] != 0 else abs(cur_val)
+        if not margin and side == "buy":
             notional = min(notional, acct["cash"] / (1 + FEE))
-        if notional < 5:
+        if margin:
+            others = sum(abs(acct["units"].get(j, 0) * prices[j]) for j in prices if j != k)
+            room = max(0.0, lev * equity - others)          # сколько может занять эта монета
+            new_val = cur_val + (notional if side == "buy" else -notional)
+            if abs(new_val) > room and abs(new_val) > abs(cur_val):
+                lim = max(room, abs(cur_val)) * np.sign(new_val)
+                notional = abs(lim - cur_val)
+        if notional < 1:
             continue
         book = (books or {}).get(k)
         px, used = fill_price(side, notional, book, prices[k])
@@ -431,7 +502,8 @@ def execute(acct, targets, prices, books, model, day, rec):
             acct["cash"] -= notional * (1 + FEE)
             acct["units"][k] = acct["units"].get(k, 0) + qty
         else:
-            qty = min(qty, acct["units"].get(k, 0))
+            if not allow_short:
+                qty = min(qty, max(acct["units"].get(k, 0), 0))
             acct["cash"] += qty * px * (1 - FEE)
             acct["units"][k] = acct["units"].get(k, 0) - qty
         f = dict(ts=now_utc().isoformat(), day=str(day.date()), model=model, coin=k, side=side, qty=qty, vwap=px,
@@ -442,6 +514,49 @@ def execute(acct, targets, prices, books, model, day, rec):
         if rec:
             rec.append_csv("orders/fills.csv", f)
     return fills
+
+
+def apply_funding(acct, prices, funding):
+    """Плата за удержание позиций с плечом/шортом за сутки (3 периода funding по 8 ч): лонг платит при
+    положительной ставке, шорт получает. Возвращает уплаченную сумму (минус = получено)."""
+    paid = 0.0
+    for k, u in acct["units"].items():
+        r = funding.get(k)
+        r = DEFAULT_FUNDING if r is None else r
+        paid += u * prices[k] * r * 3
+    acct["cash"] -= paid
+    return paid
+
+
+def check_liquidation(acct, lows, highs):
+    """Ликвидация по худшей цене дня (минимум для лонга, максимум для шорта)."""
+    worst = {k: (lows[k] if u > 0 else highs[k]) for k, u in acct["units"].items() if u and k in lows}
+    if not worst:
+        return None
+    eq = acct["cash"] + sum(acct["units"][k] * p for k, p in worst.items())
+    gross = sum(abs(acct["units"][k]) * p for k, p in worst.items())
+    if gross > 0 and eq < MAINT_MARGIN * gross:
+        info = {"equity_at_worst": eq, "gross": gross, "prices": worst}
+        acct["cash"] = max(0.0, eq - FEE * gross)
+        acct["units"] = {}
+        return info
+    return None
+
+
+def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows, highs):
+    """Один день одной модели: ликвидация по диапазону дня, funding, решение, сделки."""
+    base, lev, short = model_spec(m)
+    margin = lev > 1 or short
+    liq = check_liquidation(acct, lows, highs) if margin and lows else None
+    paid = apply_funding(acct, prices, funding) if margin else 0.0
+    targets, diag = decide(base, ctx, ms, eq_hist, short=short)
+    if lev != 1:
+        targets = {k: (None if v is None else v * lev) for k, v in targets.items()}
+    if liq:
+        diag["_liquidation"] = liq
+    fills = execute(acct, targets, prices, books, m, day, rec, lev=lev, allow_short=short)
+    eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
+    return targets, diag, fills, eq, paid, liq
 
 
 # ====================================================================================== запись данных
@@ -558,7 +673,12 @@ def load_state(a):
     p = state_path(a)
     if not p.exists():
         raise SystemExit(f"нет {p}: сначала python abtest.py init --capital 10000 --coins BTC,ETH")
-    return json.loads(p.read_text())
+    st = json.loads(p.read_text(encoding="utf-8"))
+    for m in MODELS:                                   # счета, добавленные в новой версии
+        if m not in st["accounts"]:
+            st["accounts"][m] = {"cash": st["capital"], "units": {}}
+            st["model_state"][m], st["equity_hist"][m] = {}, {}
+    return st
 
 
 def save_state(a, st):
@@ -578,7 +698,7 @@ def cmd_init(a):
               accounts={m: {"cash": a.capital, "units": {}} for m in MODELS},
               model_state={m: {} for m in MODELS}, equity_hist={m: {} for m in MODELS})
     save_state(a, st)
-    log(f"создано 4 виртуальных счёта по {a.capital:,.0f} {a.exchange} {coins}, папка {a.dir}")
+    log(f"создано {len(MODELS)} виртуальных счетов по {a.capital:,.0f} {a.exchange} {coins}, папка {a.dir}")
 
 
 def cmd_snapshot(a, feed=None, st=None):
@@ -590,6 +710,9 @@ def cmd_snapshot(a, feed=None, st=None):
         s = feed.snapshot(k)
         rec.append_jsonl(f"market/snapshots/{s['ts'][:10]}.jsonl", s)
         books[k] = s.get("orderbook")
+        fr = (s.get("funding") or {}).get("fundingRate")
+        if fr is not None:
+            st.setdefault("funding", {})[k] = float(fr)
         log(f"снимок {k}: last {((s.get('ticker') or {}).get('last'))}, спред {s.get('spread_bps', float('nan')):.1f} bps, "
             f"funding {((s.get('funding') or {}).get('fundingRate'))}")
     return books
@@ -624,6 +747,8 @@ def cmd_cycle(a):
     layers = S.market_layers(oc, S.Params())
     rec.upsert_csv("market/onchain_daily.csv", oc)
     ctx = build_context(closes, ocf, oc, layers, coins, todo[-1])
+    ctx["lows"] = {k: v.low for k, v in closes_df.items()}
+    ctx["highs"] = {k: v.high for k, v in closes_df.items()}
     for day in todo:
         live = day == latest
         books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
@@ -642,17 +767,24 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
     lay = ctx["layers"].reindex([day]).iloc[0].to_dict()
     rec.append_jsonl(f"features/{day.date()}.jsonl", {"day": str(day.date()), "catchup": catchup, "prices": prices,
                                                       "features": feat_rows, "layers": lay})
+    lows = {k: float(ctx["lows"][k].get(day, prices[k])) for k in coins} if ctx.get("lows") else None
+    highs = {k: float(ctx["highs"][k].get(day, prices[k])) for k in coins} if ctx.get("highs") else None
+    funding = st.get("funding", {})
     for m in MODELS:
         acct, ms = st["accounts"][m], st["model_state"][m]
-        targets, diag = decide(m, ctx, ms, list(st["equity_hist"][m].values()))
-        fills = execute(acct, targets, prices, books, m, day, rec)
-        eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in coins)
+        targets, diag, fills, eq, paid, liq = step_model(m, acct, ms, list(st["equity_hist"][m].values()), ctx, day,
+                                                         prices, books, rec, funding, lows, highs)
+        if liq:
+            log(f"{day.date()} {m}: ЛИКВИДАЦИЯ, капитал при худшей цене дня {liq['equity_at_worst']:,.2f}", "warning")
         st["equity_hist"][m][str(day.date())] = eq
         rec.append_jsonl(f"decisions/{day.date()}.jsonl", {"day": str(day.date()), "model": m, "catchup": catchup,
                                                            "targets": targets, "diag": diag, "n_fills": len(fills)})
+        gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in coins)
         rec.append_csv("equity/equity.csv", dict(day=str(day.date()), ts=now_utc().isoformat(), model=m, equity=eq,
-                                                 cash=acct["cash"], catchup=catchup,
-                                                 **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq for k in coins}))
+                                                 cash=acct["cash"], catchup=catchup, leverage=gross / eq if eq > 0 else 0,
+                                                 funding_paid=paid, liquidated=bool(liq),
+                                                 **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq if eq > 0 else 0
+                                                    for k in coins}))
         if m == "M4":
             for k in coins:
                 rec.append_csv("models/m4_predictions.csv", dict(day=str(day.date()), coin=k,
@@ -736,11 +868,12 @@ def compare(E, capital):
 def cmd_report(a):
     st = load_state(a)
     rec = Recorder(Path(a.dir) / "data_lake")
-    E = pd.DataFrame({m: pd.Series(st["equity_hist"][m]) for m in MODELS})
+    E = pd.DataFrame({m: pd.Series(st["equity_hist"][m]) for m in MODELS if st["equity_hist"].get(m)})
     if E.empty:
         print("пока нет данных: запустите cycle")
         return
     E.index = pd.to_datetime(E.index)
+    E = E.sort_index().dropna()
     print(f"A/B-тест с {E.index[0].date()} по {E.index[-1].date()} ({len(E)} дней), старт {st['capital']:,.0f}")
     print(compare(E, st["capital"]).to_string(formatters={"ret": "{:+.1%}".format, "cagr": "{:+.0%}".format,
                                                          "sharpe": "{:.2f}".format, "dd": "{:+.1%}".format}))
@@ -767,7 +900,8 @@ def cmd_replay(a):
     if "BTC" not in coins:
         coins = ["BTC"] + coins
     Path(a.dir).mkdir(parents=True, exist_ok=True)
-    closes = {k: feed.daily(k, days=a.days + 1500).close for k in coins}
+    dfs = {k: feed.daily(k, days=a.days + 1500) for k in coins}
+    closes = {k: v.close for k, v in dfs.items()}
     oc = onchain(a.dir)
     ocf = onchain_features(oc)
     layers = S.market_layers(oc, S.Params())
@@ -777,14 +911,19 @@ def cmd_replay(a):
     mstate = {m: {} for m in MODELS}
     eqh = {m: {} for m in MODELS}
     ctx = build_context(closes, ocf, oc, layers, coins, days[0])
+    liqs = {m: 0 for m in MODELS}
     m4_rows, nfills = [], {m: 0 for m in MODELS}
     for i, day in enumerate(days):
         ctx["day"] = day
         prices = {k: float(closes[k].loc[day]) for k in coins}
+        lows = {k: float(dfs[k].low.get(day, prices[k])) for k in coins}
+        highs = {k: float(dfs[k].high.get(day, prices[k])) for k in coins}
         for m in MODELS:
-            targets, diag = decide(m, ctx, mstate[m], list(eqh[m].values()))
-            nfills[m] += len(execute(accts[m], targets, prices, None, m, day, None))
-            eqh[m][day] = accts[m]["cash"] + sum(accts[m]["units"].get(k, 0) * prices[k] for k in coins)
+            targets, diag, fills, eq, paid, liq = step_model(m, accts[m], mstate[m], list(eqh[m].values()), ctx, day,
+                                                             prices, None, None, {}, lows, highs)
+            nfills[m] += len(fills)
+            liqs[m] += bool(liq)
+            eqh[m][day] = eq
             if m == "M4":
                 for k in coins:
                     m4_rows.append(dict(day=day, coin=k, prob=diag[k]["prob_up_7d"]))
@@ -796,6 +935,7 @@ def cmd_replay(a):
     print(f"\nReplay {days[0].date()} .. {days[-1].date()} ({len(days)} дней), монеты {coins}, данные {feed.name}")
     t = compare(E[MODELS + ["держать поровну"]], a.capital)
     t["сделок"] = pd.Series(nfills)
+    t["ликвидаций"] = pd.Series(liqs)
     print(t.to_string(formatters={"ret": "{:+.0%}".format, "cagr": "{:+.0%}".format, "sharpe": "{:.2f}".format,
                                   "dd": "{:+.0%}".format}))
     yearly = E.groupby(E.index.year).apply(lambda s: s.iloc[-1] / s.iloc[0] - 1)
@@ -944,7 +1084,7 @@ def main():
                                     "health", "export"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
-    ap.add_argument("--capital", type=float, default=10000)
+    ap.add_argument("--capital", type=float, default=100)
     ap.add_argument("--days", type=int, default=1095)
     ap.add_argument("--dir", default="abtest")
     ap.add_argument("--force", action="store_true")

@@ -26,11 +26,14 @@ jobs:
       - name: Smoke test exe
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory t | Out-Null
           Copy-Item dist\backinsight.exe t\
           Set-Location t
           .\backinsight.exe doctor --exchange okx
           .\backinsight.exe init --exchange okx
+          if ((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties.Count -ne 12) { throw "need 12 accounts" }
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe export
