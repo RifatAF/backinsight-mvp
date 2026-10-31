@@ -4,3 +4,4 @@ __pycache__/
 results_*.csv
 results_coins.csv
 results_risk.csv
+paper/
