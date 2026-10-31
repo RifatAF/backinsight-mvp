@@ -36,6 +36,9 @@ import numpy as np
 import pandas as pd
 
 import system as S
+for _s in (sys.stdout, sys.stderr):              # Windows: cp1252 в перенаправленном выводе не умеет кириллицу
+    if _s is not None and hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
 
 FEE = 0.001            # тейкер спот Bybit
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)

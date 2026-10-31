@@ -10,6 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+for _s in (sys.stdout, sys.stderr):              # Windows: cp1252 в перенаправленном выводе не умеет кириллицу
+    if _s is not None and hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
 FROZEN = getattr(sys, "frozen", False)
 HOME = Path(sys.executable).parent if FROZEN else Path(__file__).parent
 BUNDLE = Path(getattr(sys, "_MEIPASS", HOME))
