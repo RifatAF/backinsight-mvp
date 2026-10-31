@@ -9,9 +9,15 @@
   python paper_bot.py replay --days 365               # прогнать бота по прошлым дням тем же кодом (проверка)
 
 Режимы:
-  --mode paper    (по умолчанию) сделки только в локальном файле, цены с биржи, комиссия и проскальзывание учитываются
-  --mode testnet  рыночные ордера на тестнете Bybit (testnet.bybit.com); ключи тестнета в BYBIT_TESTNET_KEY и
-                  BYBIT_TESTNET_SECRET. Основной счёт программа не использует ни в каком режиме.
+  --mode paper    (по умолчанию) сделки только в локальном файле, цены с обычного Bybit, комиссия и проскальзывание
+  --mode testnet  ордера на тестнете Bybit; ключи в BYBIT_TESTNET_KEY и BYBIT_TESTNET_SECRET
+  --mode live     реальные ордера на основном счёте Bybit (спот, без плеча); ключи в BYBIT_API_KEY и BYBIT_API_SECRET.
+                  Бот распоряжается только бюджетом из reset --capital, а не всем счётом. Без --confirm-live
+                  ордера только показываются (пробный прогон). Файл STOP в папке бота останавливает торговлю.
+
+  python paper_bot.py reset --mode live --capital 300 --dir live     # выделить боту 300 USDT (проверит баланс)
+  python paper_bot.py run --mode live --dir live                     # пробный прогон: какие ордера отправил бы
+  python paper_bot.py run --mode live --dir live --confirm-live      # реальные ордера
 
 Опции: --coins BTC,ETH  --system A|B  --exchange bybit  --threshold 0.02  --dir paper
 """
@@ -40,7 +46,7 @@ def log(msg):
 
 # ---------- данные ----------
 
-def make_exchange(name, testnet=False):
+def make_exchange(name, testnet=False, live=False):
     import ccxt
     ex = getattr(ccxt, name)({"enableRateLimit": True, "options": {"defaultType": "spot"}})
     ca = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
@@ -54,6 +60,13 @@ def make_exchange(name, testnet=False):
         ex.secret = os.environ.get("BYBIT_TESTNET_SECRET")
         if not ex.apiKey or not ex.secret:
             raise SystemExit("Задайте BYBIT_TESTNET_KEY и BYBIT_TESTNET_SECRET (ключи с testnet.bybit.com)")
+    if live:
+        if name != "bybit":
+            raise SystemExit("live поддерживается только для bybit")
+        ex.apiKey = os.environ.get("BYBIT_API_KEY")
+        ex.secret = os.environ.get("BYBIT_API_SECRET")
+        if not ex.apiKey or not ex.secret:
+            raise SystemExit("Задайте BYBIT_API_KEY и BYBIT_API_SECRET (ключ только с правом спот-торговли, без вывода)")
     return ex
 
 
@@ -207,14 +220,104 @@ def rebalance_testnet(ex, coins, targets, threshold):
     return done, equity
 
 
+MAX_SLIP = 0.003      # лимит IOC: не дороже/дешевле цены тикера на 0.3%
+MAX_GAP = 0.15        # не торговать, если тикер ушёл от закрытия свечи больше чем на 15%
+
+
+def rebalance_live(ex, st, coins, targets, closes, threshold, send, acct):
+    """Реальные лимитные IOC-ордера в пределах бюджета бота. Состояние обновляется по фактическому исполнению."""
+    q = quote_for(ex.id)
+    ex.load_markets()
+    bal = ex.fetch_balance()
+    total = lambda a: float(bal.get(a, {}).get("free", 0) or 0)
+    tick = {}
+    for k in coins:
+        t = ex.fetch_ticker(f"{k}/{q}")
+        tick[k] = float(t["last"])
+        gap = abs(tick[k] / float(closes[k].iloc[-1]) - 1)
+        if gap > MAX_GAP:
+            raise SystemExit(f"{k}: цена {tick[k]} ушла от закрытия свечи на {gap:.0%} (> {MAX_GAP:.0%}); торговля пропущена")
+    equity = st["cash"] + sum(st["units"].get(k, 0) * tick[k] for k in coins)
+    log(f"live: капитал бота {equity:,.2f} {q} (кэш {st['cash']:,.2f}); свободно на бирже {total(q):,.2f} {q}")
+    plan = []
+    avail = min(st["cash"], total(q)) * 0.995    # кэш под покупки; выручка от продаж учтётся на следующем цикле
+    for k in sorted(coins, key=lambda k: targets[k] - st["units"].get(k, 0) * tick[k] / equity):
+        cur_w = st["units"].get(k, 0) * tick[k] / equity
+        diff = targets[k] - cur_w
+        if abs(diff) <= threshold and not (targets[k] == 0 and cur_w > 0.001):
+            continue
+        sym = f"{k}/{q}"
+        m = ex.market(sym)
+        side = "buy" if diff > 0 else "sell"
+        if side == "buy":
+            price = tick[k] * (1 + MAX_SLIP)
+            usd = max(0.0, min(diff * equity, avail))
+            qty = usd / price                         # объём по худшей цене лимита: не выйти за бюджет
+            avail -= usd
+        else:
+            qty = min(-diff * equity / tick[k], st["units"].get(k, 0), total(k))
+            if targets[k] == 0:
+                qty = min(st["units"].get(k, 0), total(k))   # полный выход
+            price = tick[k] * (1 - MAX_SLIP)
+        min_cost = (m.get("limits", {}).get("cost", {}) or {}).get("min") or 5
+        min_amt = (m.get("limits", {}).get("amount", {}) or {}).get("min") or 0
+        amt = float(ex.amount_to_precision(sym, qty)) if qty > 0 else 0
+        if amt <= 0 or amt < min_amt or amt * tick[k] < min_cost:
+            log(f"{k}: {side} {qty:.8f} меньше минимального ордера, пропуск")
+            continue
+        plan.append((k, sym, side, amt, float(ex.price_to_precision(sym, price)), cur_w))
+    if not plan:
+        log("live: изменений нет")
+        return []
+    for k, sym, side, amt, price, cur_w in plan:
+        log(f"{'ОТПРАВКА' if send else 'ПРОБНЫЙ ПРОГОН'}: {side} {amt} {sym} лимит {price} IOC "
+            f"(~{amt * tick[k]:,.2f} {q}, вес {cur_w:.0%} -> {targets[k]:.0%})")
+    if not send:
+        log("ордера не отправлены. Для реальной торговли добавьте --confirm-live")
+        return []
+    done = []
+    for k, sym, side, amt, price, cur_w in plan:
+        o = ex.create_order(sym, "limit", side, amt, price, {"timeInForce": "IOC"})
+        time.sleep(1)
+        o = ex.fetch_order(o["id"], sym) if o.get("status") != "closed" else o
+        filled, cost = float(o.get("filled") or 0), float(o.get("cost") or 0)
+        fee = o.get("fee") or {}
+        fee_cost, fee_cur = float(fee.get("cost") or 0), fee.get("currency")
+        if filled <= 0:
+            log(f"{sym}: ордер не исполнился (IOC), повтор на следующем цикле")
+            continue
+        base_fee = fee_cost if fee_cur == k else 0.0
+        quote_fee = fee_cost if fee_cur == q else 0.0
+        if side == "buy":
+            st["units"][k] = st["units"].get(k, 0) + filled - base_fee
+            st["cash"] -= cost + quote_fee
+        else:
+            st["units"][k] = st["units"].get(k, 0) - filled - base_fee
+            st["cash"] += cost - quote_fee
+        t = dict(date=str(datetime.now(timezone.utc).date()), coin=k, side=side, qty=filled,
+                 price=cost / filled, notional=cost, fee=fee_cost, fee_currency=fee_cur, order_id=o.get("id"),
+                 target_w=round(targets[k], 4), prev_w=round(cur_w, 4))
+        acct.log_trade(t)
+        acct.save(st)
+        done.append(t)
+        log(f"исполнено {side} {filled} {k} по {cost / filled:,.2f}, комиссия {fee_cost} {fee_cur}")
+    return done
+
+
 # ---------- команды ----------
 
 def cmd_reset(a):
     acct = PaperAccount(a.dir)
+    if a.mode == "live":
+        ex = make_exchange("bybit", live=True)
+        free = float(ex.fetch_balance().get("USDT", {}).get("free", 0) or 0)
+        if free < a.capital:
+            raise SystemExit(f"на споте свободно {free:,.2f} USDT, меньше бюджета {a.capital:,.2f}")
+        log(f"live: бюджет бота {a.capital:,.2f} USDT из свободных {free:,.2f}")
     for f in ("state.json", "trades.csv", "equity.csv"):
         (acct.dir / f).unlink(missing_ok=True)
     st = dict(created=datetime.now(timezone.utc).isoformat(), capital=a.capital, cash=a.capital, units={},
-              coins=a.coins.split(","), system=a.system, last_run=None, hold_units=None)
+              coins=a.coins.split(","), system=a.system, last_run=None, hold_units=None, mode=a.mode)
     acct.save(st)
     log(f"бумажный счёт создан: {a.capital:,.0f} USDT, монеты {a.coins}, система {a.system}, папка {a.dir}")
 
@@ -246,6 +349,12 @@ def cmd_run(a):
     st = acct.load()
     coins, p = st["coins"], S.Params(mode=st["system"])
     tex = make_exchange("bybit", testnet=True) if a.mode == "testnet" else None   # ключи проверяются сразу
+    lex = make_exchange("bybit", live=True) if a.mode == "live" else None
+    if a.mode == "live" and st.get("mode") != "live":
+        raise SystemExit("эта папка создана не для live: сначала reset --mode live --capital <бюджет> --dir <папка>")
+    if (Path(a.dir) / "STOP").exists():
+        log(f"найден файл {Path(a.dir) / 'STOP'}: торговля остановлена")
+        return
     ex = make_exchange(a.exchange)
     closes, btc, layers, detail = compute_targets(ex, coins, p, a.dir)
     candle = max(c.index[-1] for c in closes.values())
@@ -255,6 +364,19 @@ def cmd_run(a):
     targets = {k: float(np.nan_to_num(detail[k].pos.iloc[-1])) / len(coins) for k in coins}
     prices = {k: float(closes[k].iloc[-1]) for k in coins}
     print_signals(detail, coins)
+    if a.mode == "live":
+        today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+        if candle < today - pd.Timedelta(days=1):
+            raise SystemExit(f"последняя закрытая свеча {candle.date()} устарела; торговля пропущена")
+        done = rebalance_live(lex, st, coins, targets, closes, a.threshold, a.confirm_live, acct)
+        if a.confirm_live:
+            st["last_run"] = str(candle.date())
+            acct.save(st)
+            tick = {k: float(lex.fetch_ticker(f"{k}/USDT")["last"]) for k in coins}
+            eq = st["cash"] + sum(st["units"].get(k, 0) * tick[k] for k in coins)
+            acct.log_equity(dict(date=str(candle.date()), equity=round(eq, 2), cash=round(st["cash"], 2), mode="live"))
+            log(f"live: сделок {len(done)}, капитал бота {eq:,.2f} ({eq / st['capital'] - 1:+.1%})")
+        return
     if a.mode == "testnet":
         done, equity = rebalance_testnet(tex, coins, targets, a.threshold)
         st["last_run"] = str(candle.date())
@@ -284,12 +406,13 @@ def cmd_status(a):
     print(f"Кэш: {st['cash']:,.2f}; позиции: " + ", ".join(f"{k} {v:.6f}" for k, v in st["units"].items() if v > 0))
     if eqf.exists():
         e = pd.read_csv(eqf)
-        e = e[e.get("mode", pd.Series(["paper"] * len(e))).fillna("paper") != "testnet"] if "mode" in e else e
+        e = e[e["mode"].fillna("paper") != "testnet"] if "mode" in e else e
         if len(e):
             last = e.iloc[-1]
             dd = (e.equity / e.equity.cummax() - 1).min()
-            print(f"На {last.date}: капитал {last.equity:,.2f} ({last.equity / st['capital'] - 1:+.1%}), "
-                  f"держание {last.hold / st['capital'] - 1:+.1%}, макс. просадка {dd:.1%}, дней {len(e)}")
+            hold = f", держание {last.hold / st['capital'] - 1:+.1%}" if "hold" in e and pd.notna(last.get("hold")) else ""
+            print(f"На {last.date}: капитал {last.equity:,.2f} ({last.equity / st['capital'] - 1:+.1%}){hold}, "
+                  f"макс. просадка {dd:.1%}, дней {len(e)}")
     tf = acct.dir / "trades.csv"
     if tf.exists():
         t = pd.read_csv(tf)
@@ -347,7 +470,8 @@ def cmd_loop(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["reset", "signals", "run", "loop", "status", "replay"])
-    ap.add_argument("--mode", choices=["paper", "testnet"], default="paper")
+    ap.add_argument("--mode", choices=["paper", "testnet", "live"], default="paper")
+    ap.add_argument("--confirm-live", action="store_true", help="live: реально отправлять ордера (иначе пробный прогон)")
     ap.add_argument("--exchange", default="bybit", help="откуда брать цены (bybit; для проверки можно coinbase)")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--system", choices=["A", "B"], default="A", help="A: бык -> чистый тренд; B: бык -> тренд × волатильность")
