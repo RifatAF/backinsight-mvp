@@ -43,6 +43,7 @@ for _s in (sys.stdout, sys.stderr):              # Windows: cp1252 в перен
 FEE = 0.001            # тейкер спот Bybit
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
 THRESHOLD = 0.02       # ребаланс, если вес ушёл больше чем на 2%
+COMPOUND_STEP = 20.0   # реинвест ступенями: база для расчёта позиций = старт + 20 × целое число шагов прибыли/убытка
 MIN_ORDER = 5.0        # минимальная сумма ордера на Bybit (спот и перпетуалы), USDT
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
@@ -559,8 +560,16 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
     targets, diag = decide(base, ctx, ms, eq_hist, short=short)
-    if lev != 1:
-        targets = {k: (None if v is None else v * lev) for k, v in targets.items()}
+    eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
+    start = acct.setdefault("start", acct.get("base", eq0))
+    old = acct.get("base", start)
+    sizing = max(0.0, start + COMPOUND_STEP * math.floor((eq0 - start) / COMPOUND_STEP))   # всегда <= капитала
+    acct["base"] = sizing
+    if sizing != old:
+        diag["_compound"] = {"from": old, "to": sizing, "equity": eq0}
+    scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
+    if scale != 1:
+        targets = {k: (None if v is None else v * scale) for k, v in targets.items()}
     if liq:
         diag["_liquidation"] = liq
     fills = execute(acct, targets, prices, books, m, day, rec, lev=lev, allow_short=short)
@@ -681,12 +690,13 @@ def state_path(a):
 def load_state(a):
     p = state_path(a)
     if not p.exists():
-        raise SystemExit(f"нет {p}: сначала python abtest.py init --capital 10000 --coins BTC,ETH")
+        raise SystemExit(f"нет {p}: сначала python abtest.py init --capital 100 --coins BTC,ETH")
     st = json.loads(p.read_text(encoding="utf-8"))
     for m in MODELS:                                   # счета, добавленные в новой версии
         if m not in st["accounts"]:
-            st["accounts"][m] = {"cash": st["capital"], "units": {}}
+            st["accounts"][m] = {"cash": st["capital"], "units": {}, "start": st["capital"], "base": st["capital"]}
             st["model_state"][m], st["equity_hist"][m] = {}, {}
+        st["accounts"][m].setdefault("start", st["capital"])
     return st
 
 
@@ -704,7 +714,7 @@ def cmd_init(a):
     if "BTC" not in coins:
         coins = ["BTC"] + coins
     st = dict(created=now_utc().isoformat(), capital=a.capital, coins=coins, exchange=a.exchange, last_cycle=None,
-              accounts={m: {"cash": a.capital, "units": {}} for m in MODELS},
+              accounts={m: {"cash": a.capital, "units": {}, "start": a.capital, "base": a.capital} for m in MODELS},
               model_state={m: {} for m in MODELS}, equity_hist={m: {} for m in MODELS})
     save_state(a, st)
     log(f"создано {len(MODELS)} виртуальных счетов по {a.capital:,.0f} {a.exchange} {coins}, папка {a.dir}")
@@ -783,6 +793,9 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
         acct, ms = st["accounts"][m], st["model_state"][m]
         targets, diag, fills, eq, paid, liq = step_model(m, acct, ms, list(st["equity_hist"][m].values()), ctx, day,
                                                          prices, books, rec, funding, lows, highs)
+        if "_compound" in diag:
+            c = diag["_compound"]
+            log(f"{day.date()} {m}: база для расчёта позиций {c['from']:,.0f} -> {c['to']:,.0f} (капитал {c['equity']:,.2f})")
         if liq:
             log(f"{day.date()} {m}: ЛИКВИДАЦИЯ, капитал при худшей цене дня {liq['equity_at_worst']:,.2f}", "warning")
         st["equity_hist"][m][str(day.date())] = eq
@@ -791,7 +804,7 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
         gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in coins)
         rec.append_csv("equity/equity.csv", dict(day=str(day.date()), ts=now_utc().isoformat(), model=m, equity=eq,
                                                  cash=acct["cash"], catchup=catchup, leverage=gross / eq if eq > 0 else 0,
-                                                 funding_paid=paid, liquidated=bool(liq),
+                                                 funding_paid=paid, liquidated=bool(liq), sizing_base=acct.get("base"),
                                                  **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq if eq > 0 else 0
                                                     for k in coins}))
         if m == "M4":
@@ -916,7 +929,7 @@ def cmd_replay(a):
     layers = S.market_layers(oc, S.Params())
     common = sorted(set.intersection(*[set(c.index) for c in closes.values()]))
     days = common[-a.days:]
-    accts = {m: {"cash": a.capital, "units": {}} for m in MODELS}
+    accts = {m: {"cash": a.capital, "units": {}, "start": a.capital, "base": a.capital} for m in MODELS}
     mstate = {m: {} for m in MODELS}
     eqh = {m: {} for m in MODELS}
     ctx = build_context(closes, ocf, oc, layers, coins, days[0])
