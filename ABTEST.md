@@ -11,6 +11,9 @@
 
 ## Запуск
 
+Полная инструкция для ноутбука (установка, автозапуск, логи, экспорт через 3 месяца) в `LAPTOP.md`.
+
+
 ```bash
 pip install pandas numpy ccxt
 python abtest.py init --capital 10000 --coins BTC,ETH       # BTC обязателен (на нём режим рынка)

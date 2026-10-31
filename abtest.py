@@ -8,6 +8,9 @@
   python abtest.py report                                    # сравнение моделей, статистика различий, точность M4
   python abtest.py replay --days 1095 --exchange coinbase    # те же 4 модели по истории (проверка до запуска)
   python abtest.py dataset                                   # обучающая таблица: признаки + фактические исходы
+  python abtest.py doctor                                    # доступны ли биржа и источники с этого компьютера
+  python abtest.py health                                    # полнота данных: пропуски, снимки, ошибки
+  python abtest.py export                                    # один zip со всеми данными, логами и манифестом
 
 Модели:
   M1  система как построена: переключатель режима A (в быке чистый тренд, иначе 4 слоя)          system.py
@@ -49,8 +52,50 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
-def log(msg):
-    print(f"[{now_utc():%Y-%m-%d %H:%M:%S} UTC] {msg}", flush=True)
+SCHEMA_VERSION = 1
+RUN_ID = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{os.getpid()}"
+_logger = None
+
+
+def code_version():
+    try:
+        import subprocess
+        h = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent, capture_output=True,
+                           text=True, timeout=5).stdout.strip()
+        return h or "unknown"
+    except Exception:
+        return "unknown"
+
+
+CODE_VERSION = code_version()
+
+
+def setup_logging(base_dir):
+    """Консоль + logs/abtest.log (ротация в полночь, 200 дней) + logs/errors.log (только ошибки)."""
+    import logging
+    from logging.handlers import TimedRotatingFileHandler
+    global _logger
+    d = Path(base_dir) / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    lg = logging.getLogger("abtest")
+    lg.setLevel(logging.INFO)
+    lg.handlers.clear()
+    fmt = logging.Formatter("%(asctime)s UTC %(levelname)s [" + RUN_ID + "] %(message)s", "%Y-%m-%d %H:%M:%S")
+    fmt.converter = time.gmtime
+    for h, lvl in ((logging.StreamHandler(sys.stdout), logging.INFO),
+                   (TimedRotatingFileHandler(d / "abtest.log", when="midnight", backupCount=200, utc=True, encoding="utf-8"), logging.INFO),
+                   (logging.FileHandler(d / "errors.log", encoding="utf-8"), logging.WARNING)):
+        h.setLevel(lvl)
+        h.setFormatter(fmt)
+        lg.addHandler(h)
+    _logger = lg
+
+
+def log(msg, level="info"):
+    if _logger is None:
+        print(f"[{now_utc():%Y-%m-%d %H:%M:%S} UTC] {msg}", flush=True)
+    else:
+        getattr(_logger, level)(msg)
 
 
 def today_utc():
@@ -86,7 +131,7 @@ class Feed:
             except Exception as e:
                 if attempt == 3:
                     raise
-                log(f"повтор {getattr(fn, '__name__', fn)}: {str(e)[:120]}")
+                log(f"повтор {getattr(fn, '__name__', fn)}: {str(e)[:120]}", "warning")
                 time.sleep(2 ** attempt)
 
     def daily(self, coin, days=1800):
@@ -386,7 +431,7 @@ def execute(acct, targets, prices, books, model, day, rec):
         f = dict(ts=now_utc().isoformat(), day=str(day.date()), model=model, coin=k, side=side, qty=qty, vwap=px,
                  mid=mid, slippage_bps=(px / mid - 1) * 1e4 * (1 if side == "buy" else -1), notional=qty * px,
                  fee=qty * px * FEE, book_levels_used=used, target_w=targets[k], prev_w=cur_w,
-                 book_source="live" if book else "fallback")
+                 book_source="live" if book else "fallback (catchup или нет стакана)")
         fills.append(f)
         if rec:
             rec.append_csv("orders/fills.csv", f)
@@ -404,20 +449,61 @@ class Recorder:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
+    @staticmethod
+    def _clean(x):
+        if isinstance(x, dict):
+            return {k: Recorder._clean(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return [Recorder._clean(v) for v in x]
+        if isinstance(x, (np.floating, float)):
+            return None if math.isnan(float(x)) or math.isinf(float(x)) else float(x)
+        if isinstance(x, np.integer):
+            return int(x)
+        if isinstance(x, (pd.Timestamp, datetime)):
+            return x.isoformat()
+        return x
+
     def append_jsonl(self, rel, obj):
+        rec = {"_schema": SCHEMA_VERSION, "_run": RUN_ID, "_code": CODE_VERSION, "_written": now_utc().isoformat(),
+               **self._clean(obj)}
         with open(self.path(rel), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(obj, ensure_ascii=False, default=lambda x: None if x is None or (isinstance(x, float) and math.isnan(x)) else str(x)) + "\n")
+            fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
     def append_csv(self, rel, row):
         p = self.path(rel)
-        pd.DataFrame([row]).to_csv(p, mode="a", header=not p.exists(), index=False)
+        row = {**row, "_run": RUN_ID, "_code": CODE_VERSION}
+        if p.exists():   # одинаковый порядок и набор колонок, новые поля не ломают файл
+            cols = list(pd.read_csv(p, nrows=0).columns)
+            extra = [c for c in row if c not in cols]
+            if extra:
+                old = pd.read_csv(p)
+                for c in extra:
+                    old[c] = np.nan
+                atomic_write(p, old.to_csv(index=False))
+                cols += extra
+            pd.DataFrame([row]).reindex(columns=cols).to_csv(p, mode="a", header=False, index=False)
+        else:
+            pd.DataFrame([row]).to_csv(p, index=False)
 
     def upsert_csv(self, rel, df):
         p = self.path(rel)
         if p.exists():
             old = pd.read_csv(p, index_col=0, parse_dates=True)
             df = pd.concat([old[~old.index.isin(df.index)], df]).sort_index()
-        df.to_csv(p)
+        atomic_write(p, df.to_csv())
+
+
+def atomic_write(path, text):
+    """Запись через временный файл и переименование: при сбое питания файл не окажется наполовину записан."""
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 # ====================================================================================== контекст дня
@@ -453,7 +539,7 @@ def label_m4_predictions(rec, closes):
             d.loc[i, "realized_ret"] = ret
             d.loc[i, "realized_up"] = float(ret > 0)
             d.loc[i, "correct"] = float((r.prob_up_7d > 0.5) == (ret > 0)) if pd.notna(r.prob_up_7d) else np.nan
-    d.to_csv(p, index=False)
+    atomic_write(p, d.to_csv(index=False))
 
 
 # ====================================================================================== команды
@@ -470,7 +556,11 @@ def load_state(a):
 
 
 def save_state(a, st):
-    state_path(a).write_text(json.dumps(st, indent=2, ensure_ascii=False))
+    st["code_version"] = CODE_VERSION
+    atomic_write(state_path(a), json.dumps(st, indent=2, ensure_ascii=False, default=str))
+    b = Path(a.dir) / "state_backups" / f"state_{now_utc():%Y-%m-%d}.json"
+    b.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(b, json.dumps(st, indent=2, ensure_ascii=False, default=str))
 
 
 def cmd_init(a):
@@ -506,44 +596,66 @@ def cmd_cycle(a):
     coins = st["coins"]
     closes_df = {k: feed.daily(k) for k in coins}
     closes = {k: v.close for k, v in closes_df.items()}
-    day = max(c.index[-1] for c in closes.values())
-    if st["last_cycle"] == str(day.date()) and not a.force:
-        log(f"цикл за свечу {day.date()} уже выполнен")
+    latest = max(c.index[-1] for c in closes.values())
+    common = sorted(set.intersection(*[set(c.index) for c in closes.values()]))
+    last = pd.Timestamp(st["last_cycle"]) if st["last_cycle"] else None
+    todo = [d for d in common if last is None or d > last]
+    if last is None:
+        todo = todo[-1:]                               # первый запуск: только последняя свеча
+    if a.force and not todo:
+        todo = [latest]
+    if not todo:
+        log(f"цикл за свечу {latest.date()} уже выполнен")
         return
+    if len(todo) > 1:
+        log(f"ноутбук был выключен или спал: догоняю {len(todo)} дней {todo[0].date()} .. {todo[-1].date()} "
+            f"(пропущенные дни исполняются по цене закрытия и помечаются catchup)", "warning")
+        rec.append_jsonl("meta/gaps.jsonl", {"from": str(todo[0].date()), "to": str(todo[-1].date()), "days": len(todo)})
     for k, v in closes_df.items():
         rec.upsert_csv(f"market/ohlcv_1d/{k}.csv", v)
     oc = onchain(a.dir)
     ocf = onchain_features(oc)
     layers = S.market_layers(oc, S.Params())
     rec.upsert_csv("market/onchain_daily.csv", oc)
-    books = cmd_snapshot(a, feed, st)                 # живой стакан для исполнения
-    ctx = build_context(closes, ocf, oc, layers, coins, day)
-    prices = {k: float(((books.get(k) or {}).get("bids") or [[closes[k].iloc[-1]]])[0][0]) for k in coins}
-    feat_rows = {k: ctx["feats"][k].loc[day].to_dict() for k in coins}
-    rec.append_jsonl(f"features/{day.date()}.jsonl", {"day": str(day.date()), "features": feat_rows,
-                                                      "layers": layers.reindex([day]).iloc[0].to_dict()})
+    ctx = build_context(closes, ocf, oc, layers, coins, todo[-1])
+    for day in todo:
+        live = day == latest
+        books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
+        prices = ({k: float(((books.get(k) or {}).get("bids") or [[closes[k].loc[day]]])[0][0]) for k in coins}
+                  if live else {k: float(closes[k].loc[day]) for k in coins})
+        process_day(st, rec, ctx, day, prices, books, catchup=not live)
+        st["last_cycle"] = str(day.date())
+        save_state(a, st)
     label_m4_predictions(rec, closes)
+
+
+def process_day(st, rec, ctx, day, prices, books, catchup):
+    coins = st["coins"]
+    ctx["day"] = day
+    feat_rows = {k: ctx["feats"][k].loc[day].to_dict() for k in coins}
+    lay = ctx["layers"].reindex([day]).iloc[0].to_dict()
+    rec.append_jsonl(f"features/{day.date()}.jsonl", {"day": str(day.date()), "catchup": catchup, "prices": prices,
+                                                      "features": feat_rows, "layers": lay})
     for m in MODELS:
         acct, ms = st["accounts"][m], st["model_state"][m]
         targets, diag = decide(m, ctx, ms, list(st["equity_hist"][m].values()))
         fills = execute(acct, targets, prices, books, m, day, rec)
         eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in coins)
         st["equity_hist"][m][str(day.date())] = eq
-        rec.append_jsonl(f"decisions/{day.date()}.jsonl", {"day": str(day.date()), "model": m, "targets": targets,
-                                                           "diag": diag, "n_fills": len(fills)})
+        rec.append_jsonl(f"decisions/{day.date()}.jsonl", {"day": str(day.date()), "model": m, "catchup": catchup,
+                                                           "targets": targets, "diag": diag, "n_fills": len(fills)})
         rec.append_csv("equity/equity.csv", dict(day=str(day.date()), ts=now_utc().isoformat(), model=m, equity=eq,
-                                                 cash=acct["cash"], **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq for k in coins}))
+                                                 cash=acct["cash"], catchup=catchup,
+                                                 **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq for k in coins}))
         if m == "M4":
             for k in coins:
                 rec.append_csv("models/m4_predictions.csv", dict(day=str(day.date()), coin=k,
                                prob_up_7d=diag[k]["prob_up_7d"], prob_smoothed=diag[k]["prob_smoothed"],
-                               size=diag[k]["size"], realized_ret=np.nan,
-                               realized_up=np.nan, correct=np.nan))
+                               size=diag[k]["size"], realized_ret=np.nan, realized_up=np.nan, correct=np.nan))
             if "_model" in diag:
                 rec.append_jsonl("models/m4_versions.jsonl", {"day": str(day.date()), **diag["_model"]})
-        log(f"{m}: сделок {len(fills)}, капитал {eq:,.2f} ({eq / st['capital'] - 1:+.2%})")
-    st["last_cycle"] = str(day.date())
-    save_state(a, st)
+        log(f"{day.date()} {m}: сделок {len(fills)}, капитал {eq:,.2f} ({eq / st['capital'] - 1:+.2%})"
+            f"{' [catchup]' if catchup else ''}")
 
 
 def cmd_loop(a):
@@ -554,12 +666,16 @@ def cmd_loop(a):
             n = now_utc()
             if st["last_cycle"] != str((n - timedelta(days=1)).date()) and (n.hour > 0 or n.minute >= 5):
                 cmd_cycle(a)                       # вчерашняя свеча закрыта и ещё не обработана (догоняет пропуски)
+                month = f"{n:%Y%m}"
+                if not list((Path(a.dir) / "exports").glob(f"abtest_export_{month}*.zip")):
+                    cmd_export(a)                  # резервный архив раз в месяц
             else:
                 cmd_snapshot(a)
         except SystemExit:
             raise
         except Exception as e:
-            log(f"ошибка: {e}")
+            import traceback
+            log(f"ошибка: {e}\n{traceback.format_exc()}", "error")
         n = now_utc()
         nxt = (n + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
         time.sleep(max(30, (nxt - n).total_seconds()))
@@ -695,9 +811,108 @@ def cmd_dataset(a):
     print(f"{len(d)} строк, {d.day.min().date()} .. {d.day.max().date()}, с метками 7д: {d.fwd_ret_7d.notna().sum()} -> {out}")
 
 
+def cmd_doctor(a):
+    """Проверка: доступны ли биржа и источники данных с этого компьютера, и точны ли часы."""
+    ok = True
+    print(f"Python {sys.version.split()[0]}, pandas {pd.__version__}, numpy {np.__version__}, код {CODE_VERSION}")
+    for name in ([a.exchange] + (["okx"] if a.exchange != "okx" else [])):
+        try:
+            f = Feed(name)
+            t0 = time.time()
+            srv = f.spot.fetch_time()
+            lag = abs(srv / 1000 - time.time())
+            snap = f.snapshot("BTC")
+            got = [k for k in ("ticker", "orderbook", "funding", "open_interest", "long_short") if snap.get(k)]
+            print(f"[{'OK' if snap.get('orderbook') else 'ПЛОХО'}] {name}: {', '.join(got)}; "
+                  f"ответ {time.time() - t0:.1f} с; расхождение часов {lag:.1f} с")
+            if lag > 5:
+                print("   часы компьютера расходятся с биржей больше 5 с: включите автосинхронизацию времени")
+            if snap.get("errors"):
+                print(f"   не отдано: {list(snap['errors'])}")
+        except Exception as e:
+            ok = ok and name != a.exchange
+            print(f"[НЕДОСТУПНО] {name}: {str(e)[:160]}")
+    for name, url in (("Coin Metrics", "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?assets=btc&metrics=PriceUSD&page_size=1"),
+                      ("DefiLlama", "https://stablecoins.llama.fi/stablecoincharts/all?stablecoin=1")):
+        try:
+            S._get_json(url)
+            print(f"[OK] {name}")
+        except Exception as e:
+            print(f"[НЕДОСТУПНО] {name}: {str(e)[:160]}")
+    free = __import__("shutil").disk_usage(Path(a.dir).resolve().parent if not Path(a.dir).exists() else a.dir).free / 1e9
+    print(f"Свободно на диске: {free:.1f} ГБ (за 3 месяца данных набирается около 0.3–1 ГБ)")
+    if not ok:
+        print(f"\nБиржа {a.exchange} недоступна. Если okx выше OK, создайте счета с --exchange okx")
+
+
+def cmd_health(a):
+    """Полнота данных: сколько циклов и снимков записано, где пропуски, сколько ошибок."""
+    st = load_state(a)
+    root = Path(a.dir) / "data_lake"
+    start = pd.Timestamp(st["created"][:10])
+    days = pd.date_range(start, today_utc() - pd.Timedelta(days=1))
+    eq = pd.read_csv(root / "equity/equity.csv") if (root / "equity/equity.csv").exists() else pd.DataFrame(columns=["day", "catchup"])
+    cyc = set(eq.day) if len(eq) else set()
+    catch = set(eq[eq.catchup == True].day) if "catchup" in eq and len(eq) else set()
+    snaps = {}
+    for f in sorted((root / "market/snapshots").glob("*.jsonl")):
+        n = sum(1 for _ in open(f, encoding="utf-8"))
+        snaps[f.stem] = n / max(len(st["coins"]), 1)
+    print(f"Тест с {start.date()}, монеты {st['coins']}, биржа {st['exchange']}, код {st.get('code_version')}")
+    print(f"Дней с начала: {len(days)}; обработано циклом: {len(cyc)} (из них догнано после сна/выключения: {len(catch)})")
+    miss = [str(d.date()) for d in days if str(d.date()) not in cyc]
+    print(f"Дни без цикла: {len(miss)} {miss[-10:] if miss else ''}")
+    if snaps:
+        sv = pd.Series(snaps)
+        print(f"Часовые снимки: в среднем {sv.mean():.1f} в день из 24, полных дней (≥20) {(sv >= 20).sum()} из {len(sv)}")
+        print("Последние 7 дней (снимков в день): " + ", ".join(f"{k[5:]}={v:.0f}" for k, v in sv.tail(7).items()))
+    err = Path(a.dir) / "logs/errors.log"
+    if err.exists():
+        lines = err.read_text(encoding="utf-8", errors="ignore").splitlines()
+        print(f"Предупреждений и ошибок в логе: {sum(1 for l in lines if ' WARNING ' in l)} / {sum(1 for l in lines if ' ERROR ' in l)}")
+        last_err = [l for l in lines if " ERROR " in l][-3:]
+        for l in last_err:
+            print("   " + l[:200])
+    runs = root / "meta/runs.jsonl"
+    if runs.exists():
+        r = pd.read_json(runs, lines=True)
+        print(f"Запусков: {len(r)}, с ошибкой: {(r.status != 'ok').sum()}, последний: {r.iloc[-1]._written} ({r.iloc[-1].cmd}, {r.iloc[-1].status})")
+
+
+def cmd_export(a):
+    """Один архив со всем для анализа: данные, состояние, бэкапы, логи, манифест с контрольными суммами."""
+    import hashlib
+    import zipfile
+    base = Path(a.dir)
+    st = load_state(a)
+    files = [p for p in base.rglob("*") if p.is_file() and p.suffix not in (".tmp", ".zip") and "exports" not in p.parts]
+    manifest = {"exported": now_utc().isoformat(), "code_version": CODE_VERSION, "schema_version": SCHEMA_VERSION,
+                "test_started": st["created"], "coins": st["coins"], "exchange": st["exchange"], "capital": st["capital"],
+                "last_cycle": st["last_cycle"], "files": []}
+    for p in files:
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        rows = None
+        if p.suffix in (".csv", ".jsonl", ".log"):
+            rows = sum(1 for _ in open(p, encoding="utf-8", errors="ignore"))
+        manifest["files"].append({"path": str(p.relative_to(base)), "bytes": p.stat().st_size, "sha256": h, "lines": rows})
+    out = base / "exports" / f"abtest_export_{now_utc():%Y%m%d_%H%M}.zip"
+    out.parent.mkdir(exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in files:
+            z.write(p, p.relative_to(base))
+        z.writestr("MANIFEST.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        for doc in ("DATA_SCHEMA.md", "ABTEST.md"):
+            src = Path(__file__).parent / doc
+            if src.exists():
+                z.write(src, doc)
+    print(f"Архив {out} ({out.stat().st_size / 1e6:.1f} МБ, файлов {len(files)}). Его и нужно передать для анализа.")
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset"])
+    ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
+                                    "health", "export"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=10000)
@@ -705,8 +920,29 @@ def main():
     ap.add_argument("--dir", default="abtest")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
-    {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
-     "replay": cmd_replay, "dataset": cmd_dataset}[a.cmd](a)
+    setup_logging(a.dir)
+    fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
+          "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
+          "export": cmd_export}[a.cmd]
+    if a.cmd in ("report", "doctor", "health", "export", "replay"):
+        return fn(a)
+    t0, status, err = time.time(), "ok", None
+    try:
+        fn(a)
+    except SystemExit as e:
+        status, err = ("ok" if not e.code else "stopped"), str(e.code) if e.code else None
+        if e.code:
+            log(str(e.code), "warning")
+    except Exception as e:
+        import traceback
+        status, err = "error", traceback.format_exc()
+        log(f"ошибка {a.cmd}: {e}\n{err}", "error")
+        raise
+    finally:
+        if Path(a.dir).exists():
+            Recorder(Path(a.dir) / "data_lake").append_jsonl("meta/runs.jsonl", {
+                "cmd": a.cmd, "status": status, "seconds": round(time.time() - t0, 1), "error": err,
+                "python": sys.version.split()[0], "platform": sys.platform})
 
 
 if __name__ == "__main__":
