@@ -62,9 +62,12 @@ def code_version():
         import subprocess
         h = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent, capture_output=True,
                            text=True, timeout=5).stdout.strip()
-        return h or "unknown"
+        if h:
+            return h
     except Exception:
-        return "unknown"
+        pass
+    v = Path(__file__).parent / "VERSION"           # архив без .git: версия записана при сборке
+    return v.read_text().strip() if v.exists() else "unknown"
 
 
 CODE_VERSION = code_version()
