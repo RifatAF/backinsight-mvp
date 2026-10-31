@@ -40,6 +40,7 @@ import system as S
 FEE = 0.001            # тейкер спот Bybit
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
 THRESHOLD = 0.02       # ребаланс, если вес ушёл больше чем на 2%
+MIN_ORDER = 5.0        # минимальная сумма ордера на Bybit (спот и перпетуалы), USDT
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
@@ -492,7 +493,12 @@ def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=
             if abs(new_val) > room and abs(new_val) > abs(cur_val):
                 lim = max(room, abs(cur_val)) * np.sign(new_val)
                 notional = abs(lim - cur_val)
-        if notional < 1:
+        if notional < MIN_ORDER and not (margin and targets[k] == 0):
+            # меньше минимума Bybit ордер не пройдёт (закрыть позицию целиком с плечом/шортом можно: reduce-only)
+            if rec and notional >= 0.01:
+                rec.append_csv("orders/skipped.csv", dict(ts=now_utc().isoformat(), day=str(day.date()), model=model,
+                               coin=k, side=side, notional=notional, target_w=targets[k], prev_w=cur_w,
+                               reason=f"меньше минимума {MIN_ORDER:g} USDT"))
             continue
         book = (books or {}).get(k)
         px, used = fill_price(side, notional, book, prices[k])
