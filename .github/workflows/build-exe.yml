@@ -33,7 +33,9 @@ jobs:
           Set-Location t
           .\backinsight.exe doctor --exchange okx
           .\backinsight.exe init --exchange okx
-          if ((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties.Count -ne 12) { throw "need 12 accounts" }
+          $n = @((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties).Count
+          Write-Host "accounts: $n"
+          if ($n -ne 12) { throw "need 12 accounts, got $n" }
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe export
