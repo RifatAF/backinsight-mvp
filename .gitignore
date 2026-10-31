@@ -1,3 +1,4 @@
 data/
 results.csv
 __pycache__/
+results_*.csv
