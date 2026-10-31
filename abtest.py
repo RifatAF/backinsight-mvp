@@ -1103,7 +1103,7 @@ def main():
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
           "export": cmd_export}[a.cmd]
     if a.cmd in ("report", "doctor", "health", "export", "replay"):
-        return fn(a)
+        return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:
         fn(a)
