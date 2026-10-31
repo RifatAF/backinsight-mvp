@@ -82,9 +82,10 @@ def setup_logging(base_dir):
     lg.handlers.clear()
     fmt = logging.Formatter("%(asctime)s UTC %(levelname)s [" + RUN_ID + "] %(message)s", "%Y-%m-%d %H:%M:%S")
     fmt.converter = time.gmtime
-    for h, lvl in ((logging.StreamHandler(sys.stdout), logging.INFO),
+    handlers = [(logging.StreamHandler(sys.stdout), logging.INFO)] if sys.stdout else []   # pythonw: консоли нет
+    for h, lvl in handlers + [
                    (TimedRotatingFileHandler(d / "abtest.log", when="midnight", backupCount=200, utc=True, encoding="utf-8"), logging.INFO),
-                   (logging.FileHandler(d / "errors.log", encoding="utf-8"), logging.WARNING)):
+                   (logging.FileHandler(d / "errors.log", encoding="utf-8"), logging.WARNING)]:
         h.setLevel(lvl)
         h.setFormatter(fmt)
         lg.addHandler(h)
@@ -658,7 +659,29 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
             f"{' [catchup]' if catchup else ''}")
 
 
+_LOCK = None
+
+
+def single_instance(base_dir):
+    """Не даёт запустить второй loop на тех же данных (автозапуск + ручной запуск)."""
+    global _LOCK
+    Path(base_dir).mkdir(parents=True, exist_ok=True)
+    _LOCK = open(Path(base_dir) / "loop.lock", "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            _LOCK.seek(0)
+            msvcrt.locking(_LOCK.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("loop уже запущен другим процессом, выхожу", "warning")
+        sys.exit(0)
+
+
 def cmd_loop(a):
+    single_instance(a.dir)
     log("loop: снимок рынка каждый час, дневной цикл в 00:05 UTC. Ctrl+C для остановки")
     while True:
         try:
@@ -676,9 +699,9 @@ def cmd_loop(a):
         except Exception as e:
             import traceback
             log(f"ошибка: {e}\n{traceback.format_exc()}", "error")
-        n = now_utc()
-        nxt = (n + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
-        time.sleep(max(30, (nxt - n).total_seconds()))
+        nxt = (now_utc() + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
+        while now_utc() < nxt:                     # короткие паузы: после сна/гибернации проснётся сразу
+            time.sleep(30)
 
 
 def stats(eq):

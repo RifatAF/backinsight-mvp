@@ -16,10 +16,7 @@ git checkout ccr-bcd12257-71rrmp
 ```bash
 bash laptop/setup.sh                     # окружение, зависимости, проверка доступа, 4 счёта по 10 000
 ```
-**Windows (PowerShell):**
-```powershell
-powershell -ExecutionPolicy Bypass -File laptop\setup.ps1
-```
+**Windows:** двойной щелчок по `install_windows.bat` (установка + автозапуск сразу, подробно в `INSTALL_WINDOWS.md`).
 
 Скрипт сам вызывает `doctor`. Если в выводе `[НЕДОСТУПНО] bybit`, а `okx` в порядке, удалите папку `abtest` и запустите установку с OKX: `EXCHANGE=okx bash laptop/setup.sh` или `setup.ps1 -Exchange okx`.
 
@@ -29,7 +26,7 @@ powershell -ExecutionPolicy Bypass -File laptop\setup.ps1
 |---|---|---|
 | macOS | `bash laptop/autostart_mac.sh` | запуск при входе, перезапуск при падении, не даёт системе уснуть, пока ноутбук включён |
 | Linux | `bash laptop/autostart_linux.sh` | systemd-сервис, запуск при включении, перезапуск при падении |
-| Windows | `powershell -ExecutionPolicy Bypass -File laptop\autostart_windows.ps1` | задача планировщика при входе, перезапуск при сбое, без окна |
+| Windows | `install_windows.bat` (или `laptop\autostart_windows.ps1`) | старт при включении даже без входа, сторож каждые 10 минут, пробуждение в 00:03 UTC, перезапуск при сбое, от сети не засыпает |
 
 Без автозапуска можно запустить вручную в терминале: `bash laptop/start.sh`.
 
