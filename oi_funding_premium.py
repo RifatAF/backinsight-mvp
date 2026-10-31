@@ -37,6 +37,22 @@ def signals(df, n, k, pk):
         p = S[name]
         S[f"{name} + премия"] = np.where((p == 1) & confirm_long, 1, np.where((p == -1) & confirm_short, -1, 0))
     S["только премия"] = np.where(confirm_long, 1, np.where(confirm_short, -1, 0))
+
+    # long/short ratio: толпа (аккаунты) против, топ-трейдеры по направлению
+    lz, tz = z(np.log(df.ls_ratio), 60), z(np.log(df.top_ls_ratio), 60)
+    valid &= lz.notna() & tz.notna()
+    crowd_short, crowd_long = lz < -k, lz > k          # толпа перегружена шортами или лонгами
+    top_long, top_short = tz > 0, tz < 0
+    S["LS толпа против"] = np.where(crowd_short, 1, np.where(crowd_long, -1, 0))
+    S["LS топы по направлению"] = np.where(tz > k, 1, np.where(tz < -k, -1, 0))
+    S["squeeze + премия + LS толпа"] = np.where((S["squeeze + премия"] == 1) & ~crowd_long, 1,
+                                                np.where((S["squeeze + премия"] == -1) & ~crowd_short, -1, 0))
+    S["OI+funding сквиз + LS толпа"] = np.where((oi > 0) & (fz < -k) & crowd_short, 1,
+                                                np.where((oi > 0) & (fz > k) & crowd_long, -1, 0))
+    S["премия + LS толпа не в лонгах"] = np.where(confirm_long & ~crowd_long, 1, np.where(confirm_short & ~crowd_short, -1, 0))
+    S["премия + LS топы согласны"] = np.where(confirm_long & top_long, 1, np.where(confirm_short & top_short, -1, 0))
+    S["премия + топы + толпа против"] = np.where(confirm_long & top_long & ~crowd_long, 1,
+                                                 np.where(confirm_short & top_short & ~crowd_short, -1, 0))
     out = {}
     for name, p in S.items():
         p = np.where(valid, p.astype(float), np.nan)
