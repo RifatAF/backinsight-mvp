@@ -59,6 +59,8 @@ _logger = None
 
 def code_version():
     try:
+        if getattr(sys, "frozen", False):
+            raise RuntimeError("exe: версия из файла VERSION")
         import subprocess
         h = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent, capture_output=True,
                            text=True, timeout=5).stdout.strip()
@@ -869,6 +871,7 @@ def cmd_doctor(a):
     print(f"Свободно на диске: {free:.1f} ГБ (за 3 месяца данных набирается около 0.3–1 ГБ)")
     if not ok:
         print(f"\nБиржа {a.exchange} недоступна. Если okx выше OK, создайте счета с --exchange okx")
+    return ok
 
 
 def cmd_health(a):

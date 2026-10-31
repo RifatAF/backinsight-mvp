@@ -1,0 +1,64 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches: [ccr-bcd12257-71rrmp]
+    paths: ["abtest.py", "system.py", "launcher.py", "laptop/**", "requirements.txt", ".github/workflows/build-exe.yml"]
+  workflow_dispatch:
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build backinsight.exe
+        shell: pwsh
+        run: |
+          python -m pip install -q -r requirements.txt pyinstaller
+          git rev-parse --short HEAD | Out-File -Encoding ascii VERSION
+          pyinstaller -y --onefile --name backinsight `
+            --add-data "laptop/autostart_windows.ps1;laptop" --add-data "DATA_SCHEMA.md;." `
+            --add-data "ABTEST.md;." --add-data "VERSION;." launcher.py
+      - name: Smoke test exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory t | Out-Null
+          Copy-Item dist\backinsight.exe t\
+          Set-Location t
+          .\backinsight.exe doctor --exchange okx
+          .\backinsight.exe init --exchange okx
+          .\backinsight.exe cycle --exchange okx
+          .\backinsight.exe health
+          .\backinsight.exe export
+          if (-not (Test-Path abtest\exports\*.zip)) { throw "export failed" }
+      - name: Test autostart task from exe (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $d = (Resolve-Path t).Path
+          powershell -NoProfile -ExecutionPolicy Bypass -File laptop\autostart_windows.ps1 -Exe "$d\backinsight.exe" -WorkDir $d -NoPower -Quiet
+          Get-ScheduledTask -TaskName backinsight-abtest | Format-List TaskName, State
+          (Get-ScheduledTask -TaskName backinsight-abtest).Triggers | Format-Table -AutoSize
+          (Get-ScheduledTask -TaskName backinsight-abtest).Principal | Format-List UserId, LogonType
+          Start-Sleep 60
+          $info = Get-ScheduledTaskInfo -TaskName backinsight-abtest
+          $info | Format-List LastRunTime, LastTaskResult
+          Get-Content "$d\abtest\logs\abtest.log" -Tail 8 -Encoding UTF8
+          if ((Get-ScheduledTask -TaskName backinsight-abtest).State -ne "Running") { throw "task not running" }
+          Select-String -Path "$d\abtest\logs\abtest.log" -Pattern "loop:" | Select-Object -Last 1
+          Stop-ScheduledTask -TaskName backinsight-abtest
+          Unregister-ScheduledTask -TaskName backinsight-abtest -Confirm:$false
+      - name: Test script install (setup.ps1)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File laptop\setup.ps1 -Exchange okx
+          if ($LASTEXITCODE -ne 0) { throw "setup.ps1 failed" }
+          if (-not (Test-Path abtest\state.json)) { throw "no state" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backinsight-exe
+          path: dist/backinsight.exe
+          retention-days: 90

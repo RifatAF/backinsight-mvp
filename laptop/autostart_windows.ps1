@@ -6,24 +6,31 @@
 #   - будит ноутбук из сна в 00:03 UTC, чтобы дневной цикл прошёл по живому стакану;
 #   - на питании от сети отключает сон и действие при закрытии крышки (флаг -NoPower, чтобы не трогать).
 # Удалить: Unregister-ScheduledTask -TaskName backinsight-abtest -Confirm:$false
-param([switch]$NoPower)
+param([switch]$NoPower, [string]$Exe = "", [string]$WorkDir = "", [switch]$Quiet)
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) {
     $a = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($NoPower) { $a += " -NoPower" }
+    if ($Exe) { $a += " -Exe `"$Exe`" -WorkDir `"$WorkDir`"" }
+    if ($Quiet) { $a += " -Quiet" }
     Start-Process powershell -Verb RunAs -ArgumentList $a -Wait
     exit
 }
 
-$dir = Split-Path $PSScriptRoot -Parent
-$py = Join-Path $dir ".venv\Scripts\pythonw.exe"
-if (-not (Test-Path $py)) { Write-Host "Сначала установка: laptop\setup.ps1"; Read-Host "Enter"; exit 1 }
+if ($Exe) {                                             # запуск из backinsight.exe
+    $dir = $WorkDir
+    $action = New-ScheduledTaskAction -Execute $Exe -Argument "loop" -WorkingDirectory $dir
+} else {
+    $dir = Split-Path $PSScriptRoot -Parent
+    $py = Join-Path $dir ".venv\Scripts\pythonw.exe"
+    if (-not (Test-Path $py)) { Write-Host "Сначала установка: laptop\setup.ps1"; Read-Host "Enter"; exit 1 }
+    $action = New-ScheduledTaskAction -Execute $py -Argument "`"$dir\abtest.py`" loop" -WorkingDirectory $dir
+}
 $name = "backinsight-abtest"
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-$action = New-ScheduledTaskAction -Execute $py -Argument "`"$dir\abtest.py`" loop" -WorkingDirectory $dir
 
 $boot = New-ScheduledTaskTrigger -AtStartup
 $boot.Delay = "PT1M"                                   # подождать сеть после включения
@@ -65,4 +72,4 @@ Start-Sleep 5
 $info = Get-ScheduledTask -TaskName $name
 Write-Host "Состояние задачи: $($info.State)"
 Write-Host "Лог: $dir\abtest\logs\abtest.log"
-Read-Host "Готово. Enter, чтобы закрыть"
+if (-not $Quiet) { Read-Host "Готово. Enter, чтобы закрыть" } else { Start-Sleep 3 }
