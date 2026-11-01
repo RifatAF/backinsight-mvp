@@ -332,12 +332,20 @@ def short_signal(d):
     return float(pd.notna(d.btc_mom) and pd.notna(d.rsi) and d.btc_mom < 0 and d.rsi < 50)
 
 
-def decide(model, ctx, mstate, equity_hist, short=False):
+def btc_bear(btc, day):
+    """Подтверждённый медвежий рынок: BTC ниже SMA200 и SMA200 ниже, чем 30 дней назад."""
+    b = btc.loc[:day]
+    sma = b.rolling(200).mean()
+    return bool(len(b) > 231 and b.iloc[-1] < sma.iloc[-1] and sma.iloc[-1] < sma.iloc[-31])
+
+
+def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
     """Целевые веса (доля всего капитала модели, минус = шорт) и объяснение решения. None = не трогать позицию.
     short=True: те же модели, но вместо «вне рынка» могут открывать шорт по зеркальному сигналу."""
     coins, closes, layers, feats, day = ctx["coins"], ctx["closes"], ctx["layers"], ctx["feats"], ctx["day"]
     n, btc = len(coins), ctx["btc"]
     targets, diag = {}, {}
+    can_short = short and (not bear_only or btc_bear(btc, day))   # bear_only: шорт только в медвежьем рынке
     if model in ("M1", "M2"):
         p = S.Params(mode="A" if model == "M1" else "B")
         for k in coins:
@@ -345,7 +353,7 @@ def decide(model, ctx, mstate, equity_hist, short=False):
             pos = float(np.nan_to_num(d.pos))
             info = {kk: (float(v) if pd.notna(v) else None) for kk, v in d.items()}
             ssig = short_signal(d) if short else 0.0
-            if short and pos == 0 and ssig:
+            if can_short and pos == 0 and ssig:
                 pos = -float(np.nan_to_num(d.vol_size))    # шорт с размером по волатильности
                 info["short"] = True
             if model == "M2":
@@ -401,7 +409,7 @@ def decide(model, ctx, mstate, equity_hist, short=False):
                               else "трендовый сигнал" if dd.trend == 1 else None)
                     if reason:
                         st.update(entered=True, entry_day=str(day.date()), reason=reason)
-                if hot and short_signal(dd):
+                if can_short and hot and short_signal(dd):
                     targets[k] = -1.0 / n
                 else:
                     targets[k] = (1.0 / n) if st["entered"] else 0.0
@@ -439,7 +447,7 @@ def decide(model, ctx, mstate, equity_hist, short=False):
                 ema = prob if ema is None else ema + 2 / (M4_SMOOTH + 1) * (prob - ema)
                 mstate[f"ema_{k}"] = ema
             vol = float(feats[k].loc[day, "vol30"])
-            size = 0.0 if ema is None else float(np.clip((ema - 0.5) / 0.1, -1 if short else 0, 1)
+            size = 0.0 if ema is None else float(np.clip((ema - 0.5) / 0.1, -1 if can_short else 0, 1)
                                                  * min(1, 0.5 / max(vol, 1e-6)))
             targets[k] = size / n
             diag[k] = {"prob_up_7d": prob, "prob_smoothed": ema, "vol30": vol, "size": size}
