@@ -40,7 +40,13 @@ for _s in (sys.stdout, sys.stderr):              # Windows: cp1252 в перен
     if _s is not None and hasattr(_s, "reconfigure"):
         _s.reconfigure(encoding="utf-8", errors="replace")
 
-FEE = 0.001            # тейкер спот Bybit
+FEE = 0.001            # тейкер спот Bybit (VIP0)
+PERP_FEE = 0.00055     # тейкер перпетуалов Bybit (VIP0): по ним торгуют клоны с плечом и шортом
+VOL_TARGET = 0.6       # _x3: плечо до 3 по волатильности, целевая годовая волатильность портфеля 60%
+MAX_LEV = 3.0
+CARRY_SHARE = 0.9      # carry: доля «устойчиво свободных» денег в связке спот BTC + шорт перпа BTC
+CARRY_DAYS = 7         # «устойчиво свободные» = минимум свободной доли за 7 дней
+CARRY_MIN_CHANGE = 0.10
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
 THRESHOLD = 0.02       # ребаланс, если вес ушёл больше чем на 2%
 COMPOUND_STEP = 0.0    # 0 = ежедневный реинвест (позиции от текущего капитала); >0 = ступенями по столько USDT
@@ -477,13 +483,14 @@ def fill_price(side, notional, book, ref):
     return notional / qty, used
 
 
-def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=False):
+def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=False, fee=None):
     """Ребаланс к целевым весам. lev > 1 или шорт: маржинальный счёт (cash может быть < 0, units < 0),
     сумма позиций не больше lev × капитал."""
     equity = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
     if equity <= 0:
         return []
     margin = lev > 1 or allow_short
+    fee = FEE if fee is None else fee
     fills = []
     order = sorted(targets, key=lambda k: -1 if targets[k] is None else targets[k] - acct["units"].get(k, 0) * prices[k] / equity)
     for k in order:
@@ -497,7 +504,7 @@ def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=
         side = "buy" if diff > 0 else "sell"
         notional = abs(diff) * equity if targets[k] != 0 else abs(cur_val)
         if not margin and side == "buy":
-            notional = min(notional, acct["cash"] / (1 + FEE))
+            notional = min(notional, acct["cash"] / (1 + fee))
         if margin:
             others = sum(abs(acct["units"].get(j, 0) * prices[j]) for j in prices if j != k)
             room = max(0.0, lev * equity - others)          # сколько может занять эта монета
@@ -517,16 +524,16 @@ def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=
         mid = (book["bids"][0][0] + book["asks"][0][0]) / 2 if book and book.get("bids") and book.get("asks") else prices[k]
         qty = notional / px
         if side == "buy":
-            acct["cash"] -= notional * (1 + FEE)
+            acct["cash"] -= notional * (1 + fee)
             acct["units"][k] = acct["units"].get(k, 0) + qty
         else:
             if not allow_short:
                 qty = min(qty, max(acct["units"].get(k, 0), 0))
-            acct["cash"] += qty * px * (1 - FEE)
+            acct["cash"] += qty * px * (1 - fee)
             acct["units"][k] = acct["units"].get(k, 0) - qty
         f = dict(ts=now_utc().isoformat(), day=str(day.date()), model=model, coin=k, side=side, qty=qty, vwap=px,
                  mid=mid, slippage_bps=(px / mid - 1) * 1e4 * (1 if side == "buy" else -1), notional=qty * px,
-                 fee=qty * px * FEE, book_levels_used=used, target_w=targets[k], prev_w=cur_w,
+                 fee=qty * px * fee, market="perp" if margin else "spot", book_levels_used=used, target_w=targets[k], prev_w=cur_w,
                  book_source="live" if book else "fallback (catchup или нет стакана)")
         fills.append(f)
         if rec:
@@ -561,13 +568,55 @@ def check_liquidation(acct, lows, highs):
     return None
 
 
+def port_vol(targets, closes, day, n=30):
+    """Годовая волатильность портфеля с весами targets по дневным доходностям за n дней."""
+    ks = [k for k, w in targets.items() if w]
+    if not ks:
+        return 0.0
+    r = pd.DataFrame({k: closes[k].loc[:day].pct_change().iloc[-n:] for k in ks}).fillna(0)
+    w = np.array([targets[k] for k in ks])
+    return float(np.sqrt(max(w @ r.cov().values @ w, 0) * 365))
+
+
+def carry_step(acct, funding, eq):
+    """Свободные деньги счёта без плеча стоят в связке «спот BTC + шорт перпа BTC» (без риска цены) и получают
+    funding. Включено, если средний funding BTC за прошлые дни > 0. Размер = 90% минимальной свободной доли
+    за 7 дней; смена размера больше 10% капитала оплачивается комиссией обеих ног."""
+    fr = funding.get("BTC")
+    fr = DEFAULT_FUNDING if fr is None else fr
+    pnl = acct.get("carry", 0.0) * fr * 3                 # funding за прошедшие сутки на открытую связку
+    acct["cash"] += pnl
+    hist = acct.setdefault("fund_hist", [])
+    sig = (np.mean(hist[-7:]) if hist else fr) > 0
+    hist.append(fr)
+    del hist[:-30]
+    return pnl, sig
+
+
+def carry_rebalance(acct, sig, idle_frac, eq):
+    ih = acct.setdefault("idle_hist", [])
+    ih.append(idle_frac)
+    del ih[:-CARRY_DAYS]
+    cur = acct.get("carry", 0.0)
+    tgt = CARRY_SHARE * min(ih) * eq if sig and eq > 0 else 0.0
+    tgt = min(tgt, CARRY_SHARE * idle_frac * eq)          # стратегия зашла в рынок: связку уменьшить сразу
+    cost = 0.0
+    must_cut = cur > CARRY_SHARE * idle_frac * eq + 1e-9   # свободных денег стало меньше, чем в связке
+    if abs(tgt - cur) > CARRY_MIN_CHANGE * eq or (tgt == 0 and cur > 0) or must_cut:
+        cost = abs(tgt - cur) * (FEE + PERP_FEE)
+        acct["cash"] -= cost
+        acct["carry"] = tgt
+    return cost
+
+
 def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows, highs):
-    """Один день одной модели: ликвидация по диапазону дня, funding, решение, сделки."""
+    """Один день одной модели: ликвидация по диапазону дня, funding, carry, решение, сделки."""
     base, lev, short = model_spec(m)
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    targets, diag = decide(base, ctx, ms, eq_hist, short=short)
+    carry_pnl, carry_sig = carry_step(acct, funding, None) if lev == 1 else (0.0, False)
+    targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
     start = acct.setdefault("start", acct.get("base", eq0))
     old = acct.get("base", start)
@@ -578,13 +627,23 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     acct["base"] = sizing
     if COMPOUND_STEP > 0 and sizing != old:
         diag["_compound"] = {"from": old, "to": sizing, "equity": eq0}
+    if lev > 1:                                          # плечо по волатильности: спокойный рынок больше, бурный меньше
+        lev = min(MAX_LEV, VOL_TARGET / pv) if (pv := port_vol({k: (v or 0.0) for k, v in targets.items()},
+                                                                ctx["closes"], day)) > 0 else 1.0
+        diag["_leverage"] = {"port_vol_unlevered": pv, "leverage": lev}
     scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
     if scale != 1:
         targets = {k: (None if v is None else v * scale) for k, v in targets.items()}
     if liq:
         diag["_liquidation"] = liq
-    fills = execute(acct, targets, prices, books, m, day, rec, lev=lev, allow_short=short)
+    fills = execute(acct, targets, prices, books, m, day, rec, lev=MAX_LEV if margin and not short else 1.0,
+                    allow_short=short, fee=PERP_FEE if margin else FEE)
     eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
+    if model_spec(m)[1] == 1:
+        gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
+        cost = carry_rebalance(acct, carry_sig, max(0.0, (eq - gross) / eq) if eq > 0 else 0.0, eq)
+        eq -= cost
+        diag["_carry"] = {"notional": acct.get("carry", 0.0), "pnl": carry_pnl, "cost": cost, "on": bool(carry_sig)}
     return targets, diag, fills, eq, paid, liq
 
 
@@ -816,6 +875,8 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
         rec.append_csv("equity/equity.csv", dict(day=str(day.date()), ts=now_utc().isoformat(), model=m, equity=eq,
                                                  cash=acct["cash"], catchup=catchup, leverage=gross / eq if eq > 0 else 0,
                                                  funding_paid=paid, liquidated=bool(liq), sizing_base=acct.get("base"),
+                                                 carry_notional=acct.get("carry", 0.0),
+                                                 carry_pnl=(diag.get("_carry") or {}).get("pnl", 0.0),
                                                  **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq if eq > 0 else 0
                                                     for k in coins}))
         if m == "M4":

@@ -52,7 +52,7 @@ def port_vol(targets, closes, day, n=30):
     return float(np.sqrt(w @ r.cov().values @ w * 365))
 
 
-def run(models, coins, start, fee_margin, vt_target=None, label=""):
+def run(models, coins, start, fee_margin, vt_target=None, label="", final=False):
     dfs = {k: load(k) for k in coins}
     closes = {k: v.close for k, v in dfs.items()}
     common = sorted(set.intersection(*[set(c.index) for c in closes.values()]))
@@ -74,6 +74,18 @@ def run(models, coins, start, fee_margin, vt_target=None, label=""):
         highs = {k: float(dfs[k].high.loc[day]) for k in coins}
         f8 = {k: float(fund[k].loc[day]) / 3 for k in coins}
         for m in models:
+            if final:                                  # внедрённая версия: ровно код abtest.step_model
+                acct = accts[m]
+                targets, diag, fills, eq, paid, liq = A.step_model(m, acct, ms[m], list(eqh[m].values()), ctx, day,
+                                                                   prices, None, None, f8, lows, highs)
+                eqh[m][day] = eq
+                gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
+                idle[m][day] = 0.0
+                s = stats[m]
+                s["fills"] += len(fills); s["liq"] += bool(liq); s["fees"] += sum(f["fee"] for f in fills)
+                s["funding"] += paid
+                s["carry"] = s.get("carry", 0.0) + (diag.get("_carry") or {}).get("pnl", 0.0)
+                continue
             base, var = m.split("_")[0], (m.split("_")[1] if "_" in m else "")
             lev = 3.0 if var in ("x3", "vt") else 1.0
             short = var in ("ls", "lsb")
@@ -154,7 +166,7 @@ def halves(E, split="2024-01-01"):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="base", choices=["base", "perpfee", "maker", "vt", "bear"])
+    ap.add_argument("--run", default="base", choices=["base", "perpfee", "maker", "vt", "bear", "final"])
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--start", default="2021-06-01")
     ap.add_argument("--vt", default="0.4,0.6,0.8")
@@ -170,6 +182,8 @@ def main():
         fee_margin = PERP_TAKER if a.run == "perpfee" else PERP_MAKER
     elif a.run == "bear":
         models = [f"{m}_lsb" for m in B]
+    elif a.run == "final":
+        models = list(A.MODELS)
     res = {}
     if a.run == "vt":
         for tv in [float(x) for x in a.vt.split(",")]:
@@ -180,7 +194,9 @@ def main():
         stats = {f"{k}{tv}": v for tv, r in res.items() for k, v in r[1].items()}
         I = None
     else:
-        E, I, stats, fund = run(models, coins, a.start, fee_margin, label=a.run)
+        E, I, stats, fund = run(models, coins, a.start, fee_margin, label=a.run, final=a.run == "final")
+        if a.run == "final":
+            I = None
     tag = f"{a.run}_{len(coins)}c"
     Path(a.out).mkdir(exist_ok=True)
     E.to_csv(f"{a.out}/{tag}_equity.csv")
