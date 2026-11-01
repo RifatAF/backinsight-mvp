@@ -60,13 +60,41 @@ def first_run():
             return False
         print(f"{alt} работает, использую её.")
         ex = alt
-    cap = ask("Виртуальный капитал каждой из 12 стратегий, USDT", "100")
+    cap = ask("Виртуальный капитал каждой из 15 стратегий, USDT", "100")
     coins = ask("Монеты через запятую", "BTC,ETH").upper().replace(" ", "")
     run("init", "--exchange", ex, "--capital", cap, "--coins", coins)
     print()
     if os.name == "nt" and ask("Включить автозапуск (запуск при включении ноутбука, без окна)? y/n", "y").lower() == "y":
         autostart_on()
+    panel_shortcut()
+    open_panel()
     return True
+
+
+def open_panel():
+    """Пересобрать и открыть панель в браузере."""
+    run("dashboard")
+    p = DATA / "dashboard.html"
+    if p.exists():
+        if os.name == "nt":
+            os.startfile(str(p))
+        else:
+            print(f"Панель: {p}")
+
+
+def panel_shortcut():
+    """Ярлык «backinsight панель» на рабочем столе (Windows)."""
+    if os.name != "nt":
+        return
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"],
+                           capture_output=True, text=True)
+        desk = Path(r.stdout.strip())
+        url = (DATA / "dashboard.html").resolve().as_uri()
+        (desk / "backinsight панель.url").write_text(f"[InternetShortcut]\r\nURL={url}\r\n", encoding="utf-8")
+        print(f"На рабочем столе ярлык «backinsight панель».")
+    except Exception as e:
+        print(f"Ярлык не создан: {e}")
 
 
 def autostart_on():
@@ -109,10 +137,11 @@ def open_path(p):
 def menu():
     while True:
         print("\n" + "=" * 60)
-        print("backinsight: A/B-тест 12 стратегий (4 модели × обычная, плечо x3, лонг+шорт), виртуальные деньги")
+        print("backinsight: A/B-тест 15 стратегий, виртуальные деньги, живые данные")
         status_task()
         print("""
- 1  Статус: дни, пропуски, капитал моделей
+ 1  Открыть панель (графики и позиции всех стратегий)
+ 8  Статус в этом окне: дни, пропуски, капитал моделей
  2  Включить автозапуск
  3  Выключить автозапуск
  4  Экспорт данных для анализа (через 3 месяца прислать zip)
@@ -122,6 +151,8 @@ def menu():
  0  Выход""")
         c = input("> ").strip()
         if c == "1":
+            open_panel()
+        elif c == "8":
             run("health")
             run("report")
         elif c == "2":

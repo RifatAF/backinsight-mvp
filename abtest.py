@@ -53,15 +53,35 @@ COMPOUND_STEP = 0.0    # 0 = ежедневный реинвест (позици
 MIN_ORDER = 5.0        # минимальная сумма ордера на Bybit (спот и перпетуалы), USDT
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
-MODELS = BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
+MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
+          + ["M1_x5", "ROT3", "EXP"])
+# ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
+ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
+                "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
+ROT_K, ROT_LOOKBACK, ROT_MIN_HISTORY = 3, 90, 250
+# EXP: покупка паники внутри бычьего рынка (против толпы и ортогонально тренду), плечо 2
+EXP_Z, EXP_HOLD, EXP_TAKE, EXP_LEV = -1.0, 14, 0.05, 2.0
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
 
 def model_spec(m):
-    """(базовая модель, плечо, разрешён шорт)."""
+    """(базовая модель, максимальное плечо, разрешён шорт)."""
     base, _, var = m.partition("_")
-    return base, (3.0 if var == "x3" else 1.0), var == "ls"
+    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else 1.0)
+    return base, lev, var == "ls"
+
+
+def lev_mode(m):
+    """Плечо: vol = по волатильности до максимума (цель, максимум), fixed = постоянное, none = без плеча."""
+    var = m.partition("_")[2]
+    if var == "x3":
+        return "vol", 0.6
+    if var == "x5":
+        return "vol", 1.0
+    if m == "EXP":
+        return "fixed", None
+    return "none", None
 DAY = 86400000
 M4_HORIZON = 7
 M4_HALF_LIFE = None    # без забывания: в проверке 2018-2026 веса «свежее важнее» ухудшали результат
@@ -459,6 +479,47 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
             diag[k] = {"prob_up_7d": prob, "prob_smoothed": ema, "vol30": vol, "size": size}
         if res:
             diag["_model"] = {"coef": res["coef"], "n_train": res["n_train"], "base_rate": res["base_rate"]}
+    elif model == "ROT3":
+        uni = ctx.get("uni") or {}
+        st = mstate
+        if st.get("last") is None or (day - pd.Timestamp(st["last"])).days >= 7:
+            score = {}
+            for k, c in uni.items():
+                c = c.loc[:day]
+                if len(c) < ROT_MIN_HISTORY or c.index[-1] != day:
+                    continue
+                p = S.coin_position(c, btc.loc[:day], layers, S.Params(mode="A")).iloc[-1]
+                if pd.notna(p) and p > 0:
+                    score[k] = float(np.log(c.iloc[-1] / c.iloc[-1 - ROT_LOOKBACK]))
+            st["pick"] = sorted(score, key=lambda k: -score[k])[:ROT_K]
+            st["last"] = str(day.date())
+            st["scores"] = {k: round(v, 4) for k, v in sorted(score.items(), key=lambda x: -x[1])}
+        targets = {k: 0.0 for k in uni}
+        for k in st.get("pick", []):
+            c = uni[k].loc[:day]
+            p = S.coin_position(c, btc.loc[:day], layers, S.Params(mode="A")).iloc[-1]
+            targets[k] = float(np.nan_to_num(p)) / ROT_K      # сигнал пропал внутри недели: выходим
+        diag["_rotation"] = {"pick": st.get("pick", []), "since": st.get("last"), "scores": st.get("scores", {})}
+    elif model == "EXP":
+        # Покупка паники в бычьем рынке: BTC выше растущей SMA200, а монета за 7 дней упала сильнее обычного
+        # (z-оценка 7-дневной доходности за год < -1). Держим до 14 дней или до +5% за 7 дней. Толпа в этот
+        # момент продаёт по трендовым сигналам, а исторически такие просадки в быке выкупались.
+        b = btc.loc[:day]
+        sma = b.rolling(200).mean()
+        bull = bool(len(b) > 231 and b.iloc[-1] > sma.iloc[-1] and sma.iloc[-1] > sma.iloc[-31])
+        for k in [c for c in coins if c in ("BTC", "ETH")]:
+            c = closes[k].loc[:day]
+            r7 = np.log(c).diff(7)
+            z = float((r7.iloc[-1] - r7.iloc[-365:].mean()) / (r7.iloc[-365:].std() + 1e-12)) if len(c) > 380 else np.nan
+            st = mstate.setdefault(k, {"left": 0})
+            if bull and z < EXP_Z:
+                st["left"] = EXP_HOLD
+            if st["left"] > 0 and r7.iloc[-1] > EXP_TAKE:
+                st["left"] = 0
+            on = st["left"] > 0
+            st["left"] = max(0, st["left"] - 1)
+            targets[k] = (1.0 / 2) if on else 0.0
+            diag[k] = {"bull": bull, "z7": z, "ret7": float(r7.iloc[-1]), "days_left": st["left"], "on": on}
     return targets, diag
 
 
@@ -491,6 +552,7 @@ def execute(acct, targets, prices, books, model, day, rec, lev=1.0, allow_short=
         return []
     margin = lev > 1 or allow_short
     fee = FEE if fee is None else fee
+    targets = {k: v for k, v in targets.items() if k in prices}   # монета ещё не торгуется или нет цены за день
     fills = []
     order = sorted(targets, key=lambda k: -1 if targets[k] is None else targets[k] - acct["units"].get(k, 0) * prices[k] / equity)
     for k in order:
@@ -615,7 +677,8 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    carry_pnl, carry_sig = carry_step(acct, funding, None) if lev == 1 else (0.0, False)
+    carry_on = lev == 1 or base == "EXP"                 # EXP большую часть времени вне рынка
+    carry_pnl, carry_sig = carry_step(acct, funding, None) if carry_on else (0.0, False)
     targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
     start = acct.setdefault("start", acct.get("base", eq0))
@@ -627,19 +690,20 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     acct["base"] = sizing
     if COMPOUND_STEP > 0 and sizing != old:
         diag["_compound"] = {"from": old, "to": sizing, "equity": eq0}
-    if lev > 1:                                          # плечо по волатильности: спокойный рынок больше, бурный меньше
-        lev = min(MAX_LEV, VOL_TARGET / pv) if (pv := port_vol({k: (v or 0.0) for k, v in targets.items()},
-                                                                ctx["closes"], day)) > 0 else 1.0
+    mode, tv = lev_mode(m)
+    if mode == "vol":                                    # плечо по волатильности: спокойный рынок больше, бурный меньше
+        pv = port_vol({k: (v or 0.0) for k, v in targets.items()}, ctx["closes"], day)
+        lev = min(model_spec(m)[1], tv / pv) if pv > 0 else 1.0
         diag["_leverage"] = {"port_vol_unlevered": pv, "leverage": lev}
     scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
     if scale != 1:
         targets = {k: (None if v is None else v * scale) for k, v in targets.items()}
     if liq:
         diag["_liquidation"] = liq
-    fills = execute(acct, targets, prices, books, m, day, rec, lev=MAX_LEV if margin and not short else 1.0,
+    fills = execute(acct, targets, prices, books, m, day, rec, lev=model_spec(m)[1] if margin and not short else 1.0,
                     allow_short=short, fee=PERP_FEE if margin else FEE)
     eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
-    if model_spec(m)[1] == 1:
+    if carry_on:
         gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
         cost = carry_rebalance(acct, carry_sig, max(0.0, (eq - gross) / eq) if eq > 0 else 0.0, eq)
         eq -= cost
@@ -829,24 +893,51 @@ def cmd_cycle(a):
         log(f"ноутбук был выключен или спал: догоняю {len(todo)} дней {todo[0].date()} .. {todo[-1].date()} "
             f"(пропущенные дни исполняются по цене закрытия и помечаются catchup)", "warning")
         rec.append_jsonl("meta/gaps.jsonl", {"from": str(todo[0].date()), "to": str(todo[-1].date()), "days": len(todo)})
-    for k, v in closes_df.items():
+    uni_df = {}
+    for k in ROT_UNIVERSE:                             # для ROT3: свечи всех монет списка
+        if k in closes_df:
+            uni_df[k] = closes_df[k]
+            continue
+        try:
+            uni_df[k] = feed.daily(k, days=600)
+        except Exception as e:
+            log(f"ROT3: нет данных по {k}: {str(e)[:100]}", "warning")
+    for k, v in uni_df.items():
         rec.upsert_csv(f"market/ohlcv_1d/{k}.csv", v)
     oc = onchain(a.dir)
     ocf = onchain_features(oc)
     layers = S.market_layers(oc, S.Params())
     rec.upsert_csv("market/onchain_daily.csv", oc)
     ctx = build_context(closes, ocf, oc, layers, coins, todo[-1])
-    ctx["lows"] = {k: v.low for k, v in closes_df.items()}
-    ctx["highs"] = {k: v.high for k, v in closes_df.items()}
+    ctx["uni"] = {k: v.close for k, v in uni_df.items()}
+    ctx["lows"] = {k: v.low for k, v in uni_df.items()}
+    ctx["highs"] = {k: v.high for k, v in uni_df.items()}
     for day in todo:
         live = day == latest
         books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
-        prices = ({k: float(((books.get(k) or {}).get("bids") or [[closes[k].loc[day]]])[0][0]) for k in coins}
-                  if live else {k: float(closes[k].loc[day]) for k in coins})
+        if live:
+            for k in uni_df:                           # стаканы остальных монет списка (для сделок ROT3)
+                if k not in books:
+                    try:
+                        ob = feed.spot.fetch_order_book(feed.sym(k), 50)
+                        books[k] = {"bids": [[float(x[0]), float(x[1])] for x in ob["bids"]],
+                                    "asks": [[float(x[0]), float(x[1])] for x in ob["asks"]]}
+                    except Exception:
+                        books[k] = None
+        prices = {}
+        for k, v in uni_df.items():
+            if day not in v.index:
+                continue
+            bid = ((books or {}).get(k) or {}).get("bids") if live else None
+            prices[k] = float(bid[0][0]) if bid else float(v.close.loc[day])
         process_day(st, rec, ctx, day, prices, books, catchup=not live)
         st["last_cycle"] = str(day.date())
         save_state(a, st)
     label_m4_predictions(rec, closes)
+    try:
+        cmd_dashboard(a, st)
+    except Exception as e:
+        log(f"панель не обновлена: {e}", "warning")
 
 
 def process_day(st, rec, ctx, day, prices, books, catchup):
@@ -856,8 +947,8 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
     lay = ctx["layers"].reindex([day]).iloc[0].to_dict()
     rec.append_jsonl(f"features/{day.date()}.jsonl", {"day": str(day.date()), "catchup": catchup, "prices": prices,
                                                       "features": feat_rows, "layers": lay})
-    lows = {k: float(ctx["lows"][k].get(day, prices[k])) for k in coins} if ctx.get("lows") else None
-    highs = {k: float(ctx["highs"][k].get(day, prices[k])) for k in coins} if ctx.get("highs") else None
+    lows = {k: float(ctx["lows"][k].get(day, prices[k])) for k in prices if k in ctx["lows"]} if ctx.get("lows") else None
+    highs = {k: float(ctx["highs"][k].get(day, prices[k])) for k in prices if k in ctx["highs"]} if ctx.get("highs") else None
     funding = st.get("funding", {})
     for m in MODELS:
         acct, ms = st["accounts"][m], st["model_state"][m]
@@ -871,14 +962,17 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
         st["equity_hist"][m][str(day.date())] = eq
         rec.append_jsonl(f"decisions/{day.date()}.jsonl", {"day": str(day.date()), "model": m, "catchup": catchup,
                                                            "targets": targets, "diag": diag, "n_fills": len(fills)})
-        gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in coins)
+        gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
         rec.append_csv("equity/equity.csv", dict(day=str(day.date()), ts=now_utc().isoformat(), model=m, equity=eq,
                                                  cash=acct["cash"], catchup=catchup, leverage=gross / eq if eq > 0 else 0,
                                                  funding_paid=paid, liquidated=bool(liq), sizing_base=acct.get("base"),
                                                  carry_notional=acct.get("carry", 0.0),
                                                  carry_pnl=(diag.get("_carry") or {}).get("pnl", 0.0),
                                                  **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq if eq > 0 else 0
-                                                    for k in coins}))
+                                                    for k in coins},
+                                                 positions=json.dumps({k: round(u * prices[k] / eq, 4) for k, u in
+                                                                       acct["units"].items() if u and k in prices
+                                                                       and eq > 0})))
         if m == "M4":
             for k in coins:
                 rec.append_csv("models/m4_predictions.csv", dict(day=str(day.date()), coin=k,
@@ -889,6 +983,133 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
         log(f"{day.date()} {m}: сделок {len(fills)}, капитал {eq:,.2f} ({eq / st['capital'] - 1:+.2%})"
             f"{' [catchup]' if catchup else ''}")
 
+
+
+MODEL_INFO = {
+    "M1": ("Базовые", "Тренд + 4 слоя (система как построена)"),
+    "M2": ("Базовые", "Размер по волатильности + стоп 25% + тормоз по просадке"),
+    "M3": ("Базовые", "Один вход в лучший момент, дальше держать"),
+    "M4": ("Базовые", "Онлайн-ML, дообучается каждый день"),
+    "M1_x3": ("Плечо до x3", "M1, плечо по волатильности"),
+    "M2_x3": ("Плечо до x3", "M2, плечо по волатильности"),
+    "M3_x3": ("Плечо до x3", "M3, плечо по волатильности"),
+    "M4_x3": ("Плечо до x3", "M4, плечо по волатильности"),
+    "M1_ls": ("Лонг + шорт", "M1, шорт в медвежьем рынке"),
+    "M2_ls": ("Лонг + шорт", "M2, шорт в медвежьем рынке"),
+    "M3_ls": ("Лонг + шорт", "M3, шорт на перегреве"),
+    "M4_ls": ("Лонг + шорт", "M4, шорт в медвежьем рынке"),
+    "M1_x5": ("Эксперименты", "M1, плечо по волатильности до x5"),
+    "ROT3": ("Эксперименты", "Ротация: 3 сильнейшие монеты из 19"),
+    "EXP": ("Эксперименты", "Эксперт: покупка паники в бычьем рынке, x2"),
+}
+PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b"]
+
+
+def cmd_dashboard(a, st=None):
+    """abtest/dashboard.html: одна страница для наблюдения, обновляется сама (данные пересобирает loop)."""
+    import html
+    st = st or load_state(a)
+    root = Path(a.dir)
+    E = pd.DataFrame({m: pd.Series(st["equity_hist"].get(m, {})) for m in MODELS})
+    E.index = pd.to_datetime(E.index)
+    E = E.sort_index()
+    pos = {}
+    f = root / "data_lake/equity/equity.csv"
+    if f.exists():
+        try:
+            last = pd.read_csv(f).groupby("model").tail(1).set_index("model")
+            for m, r in last.iterrows():
+                p = json.loads(r["positions"]) if isinstance(r.get("positions"), str) else {}
+                pos[m] = (p, r.get("leverage", 0.0), r.get("carry_notional", 0.0), r.get("equity", np.nan))
+        except Exception as e:
+            log(f"панель: не прочитал equity.csv: {e}", "warning")
+    cap = st["capital"]
+    rows, legend, lines = [], [], []
+    n = len(E)
+    W, H, PAD = 900, 300, 40
+    if n >= 2:
+        norm = E / cap * 100
+        lo, hi = float(np.nanmin(norm.values)), float(np.nanmax(norm.values))
+        lo, hi = min(lo, 95), max(hi, 105)
+        X = lambda i: PAD + i * (W - 2 * PAD) / (n - 1)
+        Y = lambda v: H - PAD - (v - lo) * (H - 2 * PAD) / (hi - lo)
+        lines.append(f'<line x1="{PAD}" x2="{W - PAD}" y1="{Y(100):.1f}" y2="{Y(100):.1f}" class="base"/>')
+        for t in np.linspace(lo, hi, 5):
+            lines.append(f'<text x="4" y="{Y(t) + 4:.1f}" class="ax">{t:.0f}</text>')
+        for j, m in enumerate(MODELS):
+            s_ = norm[m].dropna()
+            if len(s_) < 2:
+                continue
+            pts = " ".join(f"{X(norm.index.get_loc(d)):.1f},{Y(v):.1f}" for d, v in s_.items())
+            lines.append(f'<polyline points="{pts}" fill="none" stroke="{PALETTE[j]}" stroke-width="1.6" data-m="{m}"/>')
+        lines.append(f'<text x="{PAD}" y="{H - 8}" class="ax">{E.index[0].date()}</text>')
+        lines.append(f'<text x="{W - PAD - 70}" y="{H - 8}" class="ax">{E.index[-1].date()}</text>')
+    group = None
+    ranked = sorted(MODELS, key=lambda m: -(E[m].dropna().iloc[-1] if E[m].notna().any() else cap))
+    best = ranked[0] if n else None
+    for j, m in enumerate(MODELS):
+        g, desc = MODEL_INFO.get(m, ("", ""))
+        if g != group:
+            rows.append(f'<tr class="grp"><td colspan="7">{html.escape(g)}</td></tr>')
+            group = g
+        e = E[m].dropna()
+        eq = float(e.iloc[-1]) if len(e) else cap
+        ret = eq / cap - 1
+        dd = float((e / e.cummax() - 1).min()) if len(e) else 0.0
+        day = float(e.iloc[-1] / e.iloc[-2] - 1) if len(e) > 1 else 0.0
+        p, levv, carry, _ = pos.get(m, ({}, 0.0, 0.0, eq))
+        ptxt = ", ".join(f"{k} {'шорт ' if v < 0 else ''}{abs(v):.0%}" for k, v in sorted(p.items(), key=lambda x: -abs(x[1]))) or "вне рынка"
+        if carry and carry > 0.01:
+            ptxt += f" · carry {carry:,.0f}"
+        cls = "pos" if ret > 0 else "neg" if ret < 0 else ""
+        star = " ★" if m == best and n else ""
+        rows.append(f'<tr><td><span class="dot" style="background:{PALETTE[j]}"></span><b>{m}</b>{star}'
+                    f'<div class="d">{html.escape(desc)}</div></td><td class="r">{eq:,.2f}</td>'
+                    f'<td class="r {cls}">{ret:+.1%}</td><td class="r {"pos" if day > 0 else "neg" if day < 0 else ""}">{day:+.2%}</td>'
+                    f'<td class="r">{dd:.1%}</td><td class="r">{(levv or 0):.1f}x</td><td>{html.escape(ptxt)}</td></tr>')
+    logf = root / "logs/abtest.log"
+    tail = []
+    if logf.exists():
+        try:
+            tail = logf.read_text(encoding="utf-8", errors="replace").splitlines()[-14:]
+        except Exception:
+            tail = []
+    runs = root / "data_lake/meta/runs.jsonl"
+    last_run = ""
+    if runs.exists():
+        try:
+            last_run = json.loads(runs.read_text(encoding="utf-8").splitlines()[-1]).get("_written", "")
+        except Exception:
+            pass
+    page = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="300">
+<title>backinsight</title><style>
+:root{{--bg:#f8fafc;--card:#fff;--fg:#0f172a;--mut:#64748b;--line:#e2e8f0;--pos:#15803d;--neg:#b91c1c}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0b1220;--card:#111a2e;--fg:#e2e8f0;--mut:#94a3b8;--line:#1e293b;--pos:#4ade80;--neg:#f87171}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}
+.w{{max-width:1000px;margin:0 auto;padding:16px}} h1{{font-size:20px;margin:4px 0}} .mut{{color:var(--mut)}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:12px 0;overflow-x:auto}}
+table{{width:100%;border-collapse:collapse}} td,th{{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}}
+th{{text-align:left;color:var(--mut);font-weight:500}} .r{{text-align:right;white-space:nowrap}} .d{{color:var(--mut);font-size:12px}}
+.grp td{{background:transparent;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding-top:14px}}
+.pos{{color:var(--pos)}} .neg{{color:var(--neg)}} .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}}
+svg{{width:100%;height:auto}} .ax{{fill:var(--mut);font-size:11px}} .base{{stroke:var(--line);stroke-dasharray:4 4}}
+pre{{white-space:pre-wrap;font:12px/1.4 ui-monospace,Consolas,monospace;margin:0;color:var(--mut)}}
+</style></head><body><div class="w">
+<h1>backinsight · {len(MODELS)} стратегий</h1>
+<div class="mut">Деньги виртуальные, данные живые ({html.escape(st["exchange"])}). Старт {st["created"][:10]}, по {cap:,.0f} USDT на стратегию.
+Дней в тесте: {n}. Последний дневной цикл: {st.get("last_cycle") or "ещё не было (первый в 03:05 МСК)"}.
+Страница обновлена: {now_utc():%Y-%m-%d %H:%M} UTC{f", последний запуск {last_run[:16]}" if last_run else ""}.</div>
+<div class="card">{f'<svg viewBox="0 0 {W} {H}">{"".join(lines)}</svg>' if lines else '<div class="mut">График появится после второго дневного цикла.</div>'}
+<div class="mut">Капитал каждой стратегии, старт = 100</div></div>
+<div class="card"><table><tr><th>Стратегия</th><th class="r">Капитал</th><th class="r">Всего</th><th class="r">За день</th>
+<th class="r">Макс. просадка</th><th class="r">Плечо</th><th>Сейчас</th></tr>{"".join(rows)}</table>
+<div class="mut" style="margin-top:8px">★ лучшая сейчас. Меньше 90 дней: разница между стратегиями ещё в основном случайна.</div></div>
+<div class="card"><b>Лог</b><pre>{html.escape(chr(10).join(tail)) or "пусто"}</pre></div>
+</div></body></html>"""
+    atomic_write(root / "dashboard.html", page)
+    return root / "dashboard.html"
 
 _LOCK = None
 
@@ -925,6 +1146,7 @@ def cmd_loop(a):
                     cmd_export(a)                  # резервный архив раз в месяц
             else:
                 cmd_snapshot(a)
+            cmd_dashboard(a)
         except SystemExit:
             raise
         except Exception as e:
@@ -995,7 +1217,13 @@ def cmd_replay(a):
         coins = ["BTC"] + coins
     Path(a.dir).mkdir(parents=True, exist_ok=True)
     dfs = {k: feed.daily(k, days=a.days + 1500) for k in coins}
-    closes = {k: v.close for k, v in dfs.items()}
+    for k in ROT_UNIVERSE:
+        if k not in dfs:
+            try:
+                dfs[k] = feed.daily(k, days=a.days + 400)
+            except Exception:
+                pass
+    closes = {k: dfs[k].close for k in coins}
     oc = onchain(a.dir)
     ocf = onchain_features(oc)
     layers = S.market_layers(oc, S.Params())
@@ -1005,13 +1233,14 @@ def cmd_replay(a):
     mstate = {m: {} for m in MODELS}
     eqh = {m: {} for m in MODELS}
     ctx = build_context(closes, ocf, oc, layers, coins, days[0])
+    ctx["uni"] = {k: v.close for k, v in dfs.items()}
     liqs = {m: 0 for m in MODELS}
     m4_rows, nfills = [], {m: 0 for m in MODELS}
     for i, day in enumerate(days):
         ctx["day"] = day
-        prices = {k: float(closes[k].loc[day]) for k in coins}
-        lows = {k: float(dfs[k].low.get(day, prices[k])) for k in coins}
-        highs = {k: float(dfs[k].high.get(day, prices[k])) for k in coins}
+        prices = {k: float(v.close.loc[day]) for k, v in dfs.items() if day in v.index}
+        lows = {k: float(dfs[k].low.loc[day]) for k in prices}
+        highs = {k: float(dfs[k].high.loc[day]) for k in prices}
         for m in MODELS:
             targets, diag, fills, eq, paid, liq = step_model(m, accts[m], mstate[m], list(eqh[m].values()), ctx, day,
                                                              prices, None, None, {}, lows, highs)
@@ -1175,7 +1404,7 @@ def cmd_export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
-                                    "health", "export"])
+                                    "health", "export", "dashboard"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=100)
@@ -1186,8 +1415,8 @@ def main():
     setup_logging(a.dir)
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
-          "export": cmd_export}[a.cmd]
-    if a.cmd in ("report", "doctor", "health", "export", "replay"):
+          "export": cmd_export, "dashboard": cmd_dashboard}[a.cmd]
+    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard"):
         return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:

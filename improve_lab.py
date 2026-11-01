@@ -61,6 +61,8 @@ def run(models, coins, start, fee_margin, vt_target=None, label="", final=False)
     ocf = A.onchain_features(oc)
     layers = S.market_layers(oc, S.Params())
     ctx = A.build_context(closes, ocf, oc, layers, coins, days[0])
+    uni = {k: load(k) for k in A.ROT_UNIVERSE}
+    ctx["uni"] = {k: v.close for k, v in uni.items()}
     fund = funding_daily(coins, pd.DatetimeIndex(days))
     accts = {m: {"cash": 100.0, "units": {}, "start": 100.0, "base": 100.0} for m in models}
     ms = {m: {} for m in models}
@@ -69,9 +71,10 @@ def run(models, coins, start, fee_margin, vt_target=None, label="", final=False)
     stats = {m: dict(fills=0, liq=0, fees=0.0, funding=0.0) for m in models}
     for i, day in enumerate(days):
         ctx["day"] = day
-        prices = {k: float(closes[k].loc[day]) for k in coins}
-        lows = {k: float(dfs[k].low.loc[day]) for k in coins}
-        highs = {k: float(dfs[k].high.loc[day]) for k in coins}
+        src = uni if final else dfs
+        prices = {k: float(v.close.loc[day]) for k, v in src.items() if day in v.index}
+        lows = {k: float(src[k].low.loc[day]) for k in prices}
+        highs = {k: float(src[k].high.loc[day]) for k in prices}
         f8 = {k: float(fund[k].loc[day]) / 3 for k in coins}
         for m in models:
             if final:                                  # внедрённая версия: ровно код abtest.step_model
