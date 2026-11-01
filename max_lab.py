@@ -104,7 +104,8 @@ def main():
         return pd.Series(eq, idx), liq
 
     def m(e):
-        e = e[e > 0] if (e > 0).any() else e
+        if e.iloc[-1] <= 0:                             # ликвидация: капитал обнулён
+            return -1.0, np.nan, -1.0
         r = e.pct_change().dropna()
         yrs = len(r) / 365
         dd = (e / e.cummax() - 1).min()
@@ -116,6 +117,9 @@ def main():
         "M1 BTC+ETH плечо по вол. 0.8 до x3": (basket(BIG), "vol", 0.8, 3),
         "M1 BTC+ETH плечо по вол. 1.0 до x5": (basket(BIG), "vol", 1.0, 5),
         "M1 BTC+ETH постоянное x3": (basket(BIG), "fixed", 0, 3),
+        "M1 BTC+ETH постоянное x10": (basket(BIG), "fixed", 0, 10),
+        "M1 BTC+ETH плечо по вол. 1.5 до x10": (basket(BIG), "vol", 1.5, 10),
+        "M1 BTC+ETH плечо по вол. 3.0 до x10": (basket(BIG), "vol", 3.0, 10),
         "M1 6 волатильных": (basket(VOLATILE), "none", 0, 0),
         "M1 6 волатильных плечо по вол. 0.6 до x3": (basket(VOLATILE), "vol", 0.6, 3),
         "M1 все 19 монет": (basket(ALL), "none", 0, 0),
@@ -129,7 +133,10 @@ def main():
     }
     rows = {}
     curves = {}
+    only = sys.argv[1] if len(sys.argv) > 1 else ""
     for name, (wfn, lev, tv, cap) in cases.items():
+        if only and only not in name:
+            continue
         e, liq = bt(wfn, lev, tv, cap)
         curves[name] = e
         c, s, dd = m(e)
@@ -141,8 +148,9 @@ def main():
     hold = (C[BIG].loc[idx] / C[BIG].loc[idx].iloc[0]).mean(axis=1)
     c, s, dd = m(hold)
     print(f"{'держать BTC+ETH':52s} {c:+6.0%} в год  Sharpe {s:4.2f}  просадка {dd:+5.0%}")
-    pd.DataFrame(rows).T.to_csv("improve_results/max_lab.csv")
-    pd.DataFrame(curves).to_csv("improve_results/max_lab_curves.csv")
+    if not only:
+        pd.DataFrame(rows).T.to_csv("improve_results/max_lab.csv")
+        pd.DataFrame(curves).to_csv("improve_results/max_lab_curves.csv")
 
 
 if __name__ == "__main__":
