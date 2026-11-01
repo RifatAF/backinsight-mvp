@@ -43,7 +43,7 @@ for _s in (sys.stdout, sys.stderr):              # Windows: cp1252 в перен
 FEE = 0.001            # тейкер спот Bybit
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
 THRESHOLD = 0.02       # ребаланс, если вес ушёл больше чем на 2%
-COMPOUND_STEP = 20.0   # реинвест ступенями: база для расчёта позиций = старт + 20 × целое число шагов прибыли/убытка
+COMPOUND_STEP = 0.0    # 0 = ежедневный реинвест (позиции от текущего капитала); >0 = ступенями по столько USDT
 MIN_ORDER = 5.0        # минимальная сумма ордера на Bybit (спот и перпетуалы), USDT
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
@@ -563,9 +563,12 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
     start = acct.setdefault("start", acct.get("base", eq0))
     old = acct.get("base", start)
-    sizing = max(0.0, start + COMPOUND_STEP * math.floor((eq0 - start) / COMPOUND_STEP))   # всегда <= капитала
+    if COMPOUND_STEP > 0:
+        sizing = max(0.0, start + COMPOUND_STEP * math.floor((eq0 - start) / COMPOUND_STEP))   # всегда <= капитала
+    else:
+        sizing = max(0.0, eq0)
     acct["base"] = sizing
-    if sizing != old:
+    if COMPOUND_STEP > 0 and sizing != old:
         diag["_compound"] = {"from": old, "to": sizing, "equity": eq0}
     scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
     if scale != 1:
