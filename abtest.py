@@ -1082,6 +1082,20 @@ def cmd_dashboard(a, st=None):
             last_run = json.loads(runs.read_text(encoding="utf-8").splitlines()[-1]).get("_written", "")
         except Exception:
             pass
+    status = ""
+    stf = root / "selftest.json"
+    if stf.exists():
+        try:
+            t = json.loads(stf.read_text(encoding="utf-8"))
+            if t.get("ok"):
+                status = (f'<div class="card ok">✓ <b>Тестовая сделка {t["ts"][:16].replace("T", " ")} UTC прошла.</b> '
+                          f'Купил {t["qty"]:.8f} BTC за {t["notional"]:g} USDT по {t["buy_px"]:,.2f}, продал по '
+                          f'{t["sell_px"]:,.2f}, издержки {t["cost"]:.4f} USDT. Виртуально, на живом стакане {html.escape(t["exchange"])}.</div>')
+            else:
+                status = f'<div class="card bad">✗ <b>Тестовая сделка не прошла:</b> {html.escape(str(t.get("error")))}</div>'
+        except Exception:
+            pass
+    gen = now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
     page = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="300">
 <title>backinsight</title><style>
@@ -1095,9 +1109,15 @@ th{{text-align:left;color:var(--mut);font-weight:500}} .r{{text-align:right;whit
 .grp td{{background:transparent;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding-top:14px}}
 .pos{{color:var(--pos)}} .neg{{color:var(--neg)}} .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}}
 svg{{width:100%;height:auto}} .ax{{fill:var(--mut);font-size:11px}} .base{{stroke:var(--line);stroke-dasharray:4 4}}
+.ok{{border-color:var(--pos)}} .bad{{border-color:var(--neg);color:var(--neg)}} #alive{{font-weight:600}}
 pre{{white-space:pre-wrap;font:12px/1.4 ui-monospace,Consolas,monospace;margin:0;color:var(--mut)}}
 </style></head><body><div class="w">
 <h1>backinsight · {len(MODELS)} стратегий</h1>
+<div id="alive" class="pos">● бот работает</div>
+<script>var g=Date.parse("{gen}"),m=(Date.now()-g)/60000;var e=document.getElementById("alive");
+if(m>130){{e.className="neg";e.textContent="● бот не отвечает "+Math.round(m/60)+" ч: проверьте, включён ли ноутбук и интернет";}}
+else e.textContent="● бот работает, последняя проверка "+Math.max(0,Math.round(m))+" мин назад";</script>
+{status}
 <div class="mut">Деньги виртуальные, данные живые ({html.escape(st["exchange"])}). Старт {st["created"][:10]}, по {cap:,.0f} USDT на стратегию.
 Дней в тесте: {n}. Последний дневной цикл: {st.get("last_cycle") or "ещё не было (первый в 03:05 МСК)"}.
 Страница обновлена: {now_utc():%Y-%m-%d %H:%M} UTC{f", последний запуск {last_run[:16]}" if last_run else ""}.</div>
@@ -1110,6 +1130,44 @@ pre{{white-space:pre-wrap;font:12px/1.4 ui-monospace,Consolas,monospace;margin:0
 </div></body></html>"""
     atomic_write(root / "dashboard.html", page)
     return root / "dashboard.html"
+
+
+def cmd_selftest(a, st=None):
+    """Тестовая сделка при запуске: виртуальная покупка на MIN_ORDER USDT по живому стакану и сразу продажа.
+    Счета стратегий не трогает. Проверяет биржу, стакан, исполнение, запись на диск. Итог в selftest.json."""
+    st = st or load_state(a)
+    root = Path(a.dir)
+    res = {"ts": now_utc().isoformat(), "exchange": st["exchange"], "ok": False, "steps": {}}
+    try:
+        t0 = time.time()
+        feed = Feed(st["exchange"])
+        ob = feed.snapshot("BTC", depth=20).get("orderbook")
+        res["steps"]["биржа"] = f"{(time.time() - t0) * 1000:.0f} мс"
+        if not ob or not ob.get("bids") or not ob.get("asks"):
+            raise RuntimeError("биржа не отдала стакан BTC")
+        mid = (ob["bids"][0][0] + ob["asks"][0][0]) / 2
+        bpx, _ = fill_price("buy", MIN_ORDER, ob, mid)
+        qty = MIN_ORDER * (1 - FEE) / bpx
+        spx, _ = fill_price("sell", qty * mid, ob, mid)
+        back = qty * spx * (1 - FEE)
+        res.update(coin="BTC", notional=MIN_ORDER, buy_px=bpx, qty=qty, sell_px=spx, returned=back,
+                   cost=MIN_ORDER - back)
+        res["steps"]["покупка"] = f"{qty:.8f} BTC по {bpx:,.2f}"
+        res["steps"]["продажа"] = f"по {spx:,.2f}, вернулось {back:.4f} USDT"
+        Recorder(root / "data_lake").append_jsonl("meta/selftest.jsonl", res)
+        res["steps"]["запись на диск"] = "ок"
+        res["ok"] = 0 < res["cost"] < MIN_ORDER * 0.02          # потеря только комиссии и спред, меньше 2%
+        if not res["ok"]:
+            res["error"] = f"странная потеря {res['cost']:.4f} USDT"
+    except Exception as e:
+        res["error"] = str(e)[:300]
+    atomic_write(root / "selftest.json", json.dumps(res, ensure_ascii=False, indent=1))
+    if res["ok"]:
+        log(f"тестовая сделка ОК: купил {res['qty']:.8f} BTC за {MIN_ORDER:g} USDT по {res['buy_px']:,.2f}, "
+            f"продал по {res['sell_px']:,.2f}, издержки {res['cost']:.4f} USDT (виртуально)")
+    else:
+        log(f"тестовая сделка НЕ ПРОШЛА: {res.get('error')}", "error")
+    return res["ok"]
 
 _LOCK = None
 
@@ -1135,6 +1193,10 @@ def single_instance(base_dir):
 def cmd_loop(a):
     single_instance(a.dir)
     log("loop: снимок рынка каждый час, дневной цикл в 00:05 UTC. Ctrl+C для остановки")
+    try:
+        cmd_selftest(a)
+    except Exception as e:
+        log(f"тестовая сделка: {e}", "error")
     while True:
         try:
             st = load_state(a)
@@ -1404,7 +1466,7 @@ def cmd_export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
-                                    "health", "export", "dashboard"])
+                                    "health", "export", "dashboard", "selftest"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=100)
@@ -1415,8 +1477,8 @@ def main():
     setup_logging(a.dir)
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
-          "export": cmd_export, "dashboard": cmd_dashboard}[a.cmd]
-    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard"):
+          "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest}[a.cmd]
+    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest"):
         return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:

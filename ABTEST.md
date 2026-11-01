@@ -45,6 +45,7 @@ python abtest.py init --capital 100 --coins BTC,ETH         # BTC обязате
 python abtest.py loop                                       # снимок рынка каждый час, дневной цикл в 00:05 UTC
 python abtest.py report                                     # в любой момент: сравнение моделей
 python abtest.py dashboard                                  # abtest/dashboard.html: панель для наблюдения
+python abtest.py selftest                                   # тестовая сделка: виртуально купить и продать 5 USDT по живому стакану (loop делает её при каждом запуске)
 python abtest.py dataset                                    # таблица для анализа и дообучения
 ```
 
