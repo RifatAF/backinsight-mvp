@@ -1,0 +1,11 @@
+data/
+results.csv
+__pycache__/
+results_*.csv
+results_coins.csv
+results_risk.csv
+paper/
+live/
+abtest/
+improve_results/
+improve_cache/

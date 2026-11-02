@@ -1,0 +1,4 @@
+# проверено: Python 3.10–3.13, pandas 3.0.5, numpy 2.5.3, ccxt 4.5.91
+pandas>=2.2
+numpy>=1.26
+ccxt>=4.4,<5
