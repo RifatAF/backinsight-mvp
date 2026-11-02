@@ -123,8 +123,10 @@ object Planner {
         val alarm = pi(ctx, ScheduleReceiver.ALARM, 12)
         am.cancel(alarm)
         val next = nextAlarm(d, now) ?: return
+        // Не setAlarmClock: иначе система показывает наш будильник вместо будильника из «Часов»
+        // и по нажатию на него открывает приложение.
         if (canExact(ctx)) {
-            am.setAlarmClock(AlarmManager.AlarmClockInfo(next.first, openSchedule(ctx, 13)), alarm)
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.first, alarm)
         } else {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.first, alarm)
         }
@@ -211,7 +213,7 @@ object Planner {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val at = System.currentTimeMillis() + 10 * 60_000
         val alarm = pi(ctx, ScheduleReceiver.ALARM, 12)
-        if (canExact(ctx)) am.setAlarmClock(AlarmManager.AlarmClockInfo(at, openSchedule(ctx, 13)), alarm)
+        if (canExact(ctx)) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarm)
         else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarm)
     }
 }
