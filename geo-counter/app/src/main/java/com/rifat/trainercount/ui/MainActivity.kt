@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +63,26 @@ class MainActivity : ComponentActivity() {
         openFrom(intent)
         setContent {
             AppTheme {
+                var crash by androidx.compose.runtime.remember { mutableStateOf(Store.takeCrash(this)) }
+                crash?.let { text ->
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { crash = null },
+                        title = { androidx.compose.material3.Text("Приложение закрылось с ошибкой") },
+                        text = {
+                            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                                androidx.compose.material3.Text("Скопируйте и пришлите текст, чтобы её исправить.\n\n$text", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(onClick = {
+                                getSystemService(android.content.ClipboardManager::class.java)
+                                    ?.setPrimaryClip(android.content.ClipData.newPlainText("Ошибка", text))
+                                crash = null
+                            }) { androidx.compose.material3.Text("Копировать") }
+                        },
+                        dismissButton = { androidx.compose.material3.TextButton(onClick = { crash = null }) { androidx.compose.material3.Text("Закрыть") } },
+                    )
+                }
                 val data by Store.data.collectAsStateWithLifecycle()
                 BackHandler(enabled = stack.size > 1) { nav.back() }
                 when (val s = nav.current) {

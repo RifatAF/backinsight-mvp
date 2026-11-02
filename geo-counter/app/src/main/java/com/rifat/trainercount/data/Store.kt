@@ -34,6 +34,7 @@ object Store {
     @Synchronized
     fun init(ctx: Context) {
         if (loaded) return
+        catchCrashes(ctx.applicationContext)
         file = File(ctx.filesDir, "data.json")
         _data.value = if (!file.exists()) AppData() else runCatching { fromJson(JSONObject(file.readText())) }.getOrElse {
             // Файл не читается: сохраняем его копию, чтобы следующее сохранение не стёрло данные насовсем.
@@ -275,5 +276,23 @@ object Store {
             },
             ignored = o.optJSONArray("ignored").list { p -> Spot(p.getDouble("lat"), p.getDouble("lng"), p.optInt("radius", 150)) },
         )
+    }
+
+    /** Вылет приложения: сохранить текст ошибки, чтобы показать его при следующем запуске. */
+    private fun catchCrashes(app: Context) {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val text = "${java.time.LocalDateTime.now().withNano(0)} версия ${app.packageManager.getPackageInfo(app.packageName, 0).versionName}\n" +
+                    android.util.Log.getStackTraceString(e).take(6000)
+                app.getSharedPreferences("crash", 0).edit().putString("last", text).commit()
+            }
+            prev?.uncaughtException(t, e)
+        }
+    }
+
+    fun takeCrash(ctx: Context): String? {
+        val p = ctx.getSharedPreferences("crash", 0)
+        return p.getString("last", null)?.also { p.edit().remove("last").apply() }
     }
 }
