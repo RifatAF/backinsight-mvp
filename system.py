@@ -48,11 +48,29 @@ def zz(s, n=365):
 
 # ---------- рыночные слои (ончейн BTC) ----------
 
+_SSL = None
+
+
+def _ssl_ctx():
+    """Системные корни + certifi. На Windows Python видит не все корни (Windows докачивает их по требованию),
+    без certifi часть сайтов даёт CERTIFICATE_VERIFY_FAILED."""
+    global _SSL
+    if _SSL is None:
+        import ssl
+        _SSL = ssl.create_default_context()
+        try:
+            import certifi
+            _SSL.load_verify_locations(certifi.where())
+        except Exception:
+            pass
+    return _SSL
+
+
 def _get_json(url):
     for attempt in range(5):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "paper-bot"})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=60, context=_ssl_ctx()) as r:
                 return json.loads(r.read())
         except Exception:
             if attempt == 4:

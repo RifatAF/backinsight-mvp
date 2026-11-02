@@ -238,7 +238,17 @@ def onchain(cache_dir):
     path = Path(cache_dir) / "onchain_cache.csv"
     if path.exists() and time.time() - path.stat().st_mtime < 12 * 3600:
         return pd.read_csv(path, index_col=0, parse_dates=True)
-    oc = S.fetch_onchain()
+    try:
+        oc = S.fetch_onchain()
+    except Exception as e:                             # Coin Metrics недоступен: старый кэш или копия из exe
+        seed = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "data" / "onchain_seed.csv"
+        src = path if path.exists() else seed
+        if not src.exists():
+            raise
+        oc = pd.read_csv(src, index_col=0, parse_dates=True)
+        log(f"on-chain (Coin Metrics) недоступен: {str(e)[:120]}. Беру сохранённые данные до {oc.index[-1].date()}: "
+            f"MVRV меняется медленно, торговле это почти не мешает", "warning")
+        return oc
     try:
         url = ("https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?assets=eth,btc"
                "&metrics=CapMVRVCur,PriceUSD&frequency=1d&start_time=2014-01-01&page_size=10000")
@@ -671,6 +681,19 @@ def carry_rebalance(acct, sig, idle_frac, eq):
     return cost
 
 
+FLOW_KEYS = ("fees", "funding", "carry_income", "carry_cost", "liquidations")
+
+
+def flows_split(acct, eq):
+    """Итог счёта по источникам: рынок (движение цен), комиссии сделок, funding по плечу/шорту, carry."""
+    fl = acct.get("flows", {})
+    other = -fl.get("fees", 0.0) - fl.get("funding", 0.0) + fl.get("carry_income", 0.0) - fl.get("carry_cost", 0.0)
+    return dict(total=eq - acct.get("start", eq), market=eq - acct.get("start", eq) - other, fees=-fl.get("fees", 0.0),
+                funding=-fl.get("funding", 0.0), carry=fl.get("carry_income", 0.0) - fl.get("carry_cost", 0.0),
+                carry_income=fl.get("carry_income", 0.0), carry_cost=-fl.get("carry_cost", 0.0),
+                liquidations=int(fl.get("liquidations", 0)))
+
+
 def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows, highs):
     """Один день одной модели: ликвидация по диапазону дня, funding, carry, решение, сделки."""
     base, lev, short = model_spec(m)
@@ -703,11 +726,25 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     fills = execute(acct, targets, prices, books, m, day, rec, lev=model_spec(m)[1] if margin and not short else 1.0,
                     allow_short=short, fee=PERP_FEE if margin else FEE)
     eq = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
+    cost = 0.0
     if carry_on:
         gross = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
+        was = acct.get("carry", 0.0)
         cost = carry_rebalance(acct, carry_sig, max(0.0, (eq - gross) / eq) if eq > 0 else 0.0, eq)
         eq -= cost
         diag["_carry"] = {"notional": acct.get("carry", 0.0), "pnl": carry_pnl, "cost": cost, "on": bool(carry_sig)}
+        if cost and rec:
+            rec.append_csv("orders/carry.csv", dict(ts=now_utc().isoformat(), day=str(day.date()), model=m,
+                                                    from_usdt=was, to_usdt=acct.get("carry", 0.0), cost=cost,
+                                                    funding_btc=funding.get("BTC")))
+    fl = acct.setdefault("flows", {k: 0.0 for k in FLOW_KEYS})   # накопленные потоки денег счёта
+    fl["fees"] = fl.get("fees", 0.0) + sum(f["fee"] for f in fills)
+    fl["funding"] = fl.get("funding", 0.0) + paid
+    fl["carry_income"] = fl.get("carry_income", 0.0) + carry_pnl
+    fl["carry_cost"] = fl.get("carry_cost", 0.0) + cost
+    fl["liquidations"] = fl.get("liquidations", 0.0) + (1 if liq else 0)
+    diag["_flows_today"] = {"fees": sum(f["fee"] for f in fills), "funding": paid, "carry_income": carry_pnl,
+                            "carry_cost": cost}
     return targets, diag, fills, eq, paid, liq
 
 
@@ -968,6 +1005,7 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
                                                  funding_paid=paid, liquidated=bool(liq), sizing_base=acct.get("base"),
                                                  carry_notional=acct.get("carry", 0.0),
                                                  carry_pnl=(diag.get("_carry") or {}).get("pnl", 0.0),
+                                                 **{f"cum_{k}": v for k, v in flows_split(acct, eq).items()},
                                                  **{f"w_{k}": acct["units"].get(k, 0) * prices[k] / eq if eq > 0 else 0
                                                     for k in coins},
                                                  positions=json.dumps({k: round(u * prices[k] / eq, 4) for k, u in
@@ -980,7 +1018,13 @@ def process_day(st, rec, ctx, day, prices, books, catchup):
                                size=diag[k]["size"], realized_ret=np.nan, realized_up=np.nan, correct=np.nan))
             if "_model" in diag:
                 rec.append_jsonl("models/m4_versions.jsonl", {"day": str(day.date()), **diag["_model"]})
-        log(f"{day.date()} {m}: сделок {len(fills)}, капитал {eq:,.2f} ({eq / st['capital'] - 1:+.2%})"
+        ft = diag.get("_flows_today", {})
+        extra = "".join(t for t in (
+            f", комиссии -{ft.get('fees', 0):.2f}" if ft.get("fees") else "",
+            f", funding {-ft.get('funding', 0):+.2f}" if abs(ft.get("funding", 0)) >= 0.005 else "",
+            f", carry {ft.get('carry_income', 0) - ft.get('carry_cost', 0):+.2f}"
+            if abs(ft.get("carry_income", 0) - ft.get("carry_cost", 0)) >= 0.005 else ""))
+        log(f"{day.date()} {m}: сделок {len(fills)}{extra}, капитал {eq:,.2f} ({eq / st['capital'] - 1:+.2%})"
             f"{' [catchup]' if catchup else ''}")
 
 
@@ -1082,6 +1126,43 @@ def cmd_dashboard(a, st=None):
             last_run = json.loads(runs.read_text(encoding="utf-8").splitlines()[-1]).get("_written", "")
         except Exception:
             pass
+    money = []
+    tot = dict(market=0.0, fees=0.0, funding=0.0, carry=0.0, total=0.0)
+    for j, m in enumerate(MODELS):
+        e = E[m].dropna()
+        f_ = flows_split(st["accounts"][m], float(e.iloc[-1]) if len(e) else cap)
+        f_ = {k: (0.0 if isinstance(v, float) and abs(v) < 0.005 else v) for k, v in f_.items()}   # без «-0.00»
+        for k in tot:
+            tot[k] += f_[k]
+        c = lambda v: f'class="r {"pos" if v > 0.005 else "neg" if v < -0.005 else ""}"'
+        carry_t = (f'{f_["carry"]:+.2f}<div class="d">+{f_["carry_income"]:.2f} получено, {f_["carry_cost"]:.2f} комиссии</div>'
+                   if f_["carry_income"] or f_["carry_cost"] else "0.00")
+        money.append(f'<tr><td><span class="dot" style="background:{PALETTE[j]}"></span><b>{m}</b>'
+                     f'{" · ликвидаций " + str(f_["liquidations"]) if f_["liquidations"] else ""}</td>'
+                     f'<td {c(f_["market"])}>{f_["market"]:+.2f}</td><td {c(f_["fees"])}>{f_["fees"]:+.2f}</td>'
+                     f'<td {c(f_["funding"])}>{f_["funding"]:+.2f}</td><td {c(f_["carry"])}>{carry_t}</td>'
+                     f'<td {c(f_["total"])}><b>{f_["total"]:+.2f}</b></td></tr>')
+    money.append(f'<tr><td><b>Все 15</b></td>' + "".join(f'<td class="r"><b>{tot[k]:+.2f}</b></td>' for k in
+                                                         ("market", "fees", "funding", "carry", "total")) + "</tr>")
+    ops = []
+    for rel, kind in (("orders/fills.csv", "fill"), ("orders/carry.csv", "carry")):
+        fp = root / "data_lake" / rel
+        if fp.exists():
+            try:
+                d = pd.read_csv(fp).tail(15)
+                for _, r in d.iterrows():
+                    if kind == "fill":
+                        txt = (f'{r["model"]}: {"покупка" if r["side"] == "buy" else "продажа"} {r["coin"]} на '
+                               f'{r["notional"]:,.2f} USDT по {r["vwap"]:,.2f} ({r.get("market", "spot")}), комиссия {r["fee"]:.3f}')
+                    else:
+                        txt = (f'{r["model"]}: carry (BTC спот + шорт перпа) {r["from_usdt"]:,.2f} → '
+                               f'{r["to_usdt"]:,.2f} USDT, комиссии {r["cost"]:.3f}')
+                    ops.append((str(r["day"]) + " " + str(r["ts"])[11:16], txt))
+            except Exception as e:
+                log(f"панель: не прочитал {rel}: {e}", "warning")
+    ops = sorted(ops, reverse=True)[:15]
+    ops_html = "".join(f'<tr><td class="d" style="white-space:nowrap">{html.escape(t)}</td>'
+                       f'<td>{html.escape(x)}</td></tr>' for t, x in ops) or '<tr><td class="mut">Операций ещё не было: первые будут в дневном цикле 03:05 МСК.</td></tr>'
     status = ""
     stf = root / "selftest.json"
     if stf.exists():
@@ -1126,6 +1207,13 @@ else e.textContent="● бот работает, последняя провер
 <div class="card"><table><tr><th>Стратегия</th><th class="r">Капитал</th><th class="r">Всего</th><th class="r">За день</th>
 <th class="r">Макс. просадка</th><th class="r">Плечо</th><th>Сейчас</th></tr>{"".join(rows)}</table>
 <div class="mut" style="margin-top:8px">★ лучшая сейчас. Меньше 90 дней: разница между стратегиями ещё в основном случайна.</div></div>
+<div class="card"><b>Куда шли деньги</b> <span class="mut">(USDT с начала теста)</span><table>
+<tr><th>Стратегия</th><th class="r">Рынок (цены)</th><th class="r">Комиссии сделок</th><th class="r">Funding плечо/шорт</th>
+<th class="r">Carry (funding на свободные деньги)</th><th class="r">Итог</th></tr>{"".join(money)}</table>
+<div class="mut" style="margin-top:8px">Рынок: прибыль и убыток от движения цен, включая проскальзывание и ликвидации. Funding: плата
+за позиции с плечом и шорты, раз в 8 часов (плюс = получено). Carry: свободные деньги стоят в связке «купить BTC + шорт BTC-перпа»,
+цена не влияет, доход даёт funding. Earn не используется.</div></div>
+<div class="card"><b>Последние операции</b><table>{ops_html}</table></div>
 <div class="card"><b>Лог</b><pre>{html.escape(chr(10).join(tail)) or "пусто"}</pre></div>
 </div></body></html>"""
     atomic_write(root / "dashboard.html", page)
