@@ -33,11 +33,32 @@ data class AgentPlan(val reply: String, val steps: List<AgentStep>, val data: Ap
     fun text() = buildString {
         append(reply.trim())
         if (steps.isNotEmpty()) {
-            append("\n\nПлан:\n")
+            append("\n\n")
             steps.forEach { append(if (it.ok) "• " else "✗ ").append(it.text).append('\n') }
         }
     }.trim()
 }
+
+private val SAFE = setOf("add_event", "remove_event")
+
+/** Только личные дела: клиентов не касается и отменяется одной командой, поэтому делается сразу, без «да». */
+fun autoApply(actions: List<Any?>) = actions.isNotEmpty() && actions.all { (it as? Map<*, *>)?.get("type") in SAFE }
+
+/** Ответ после того, как дела записаны сразу. */
+fun doneText(steps: List<AgentStep>): String {
+    val ok = steps.filter { it.ok }.map { it.text.substringBefore("\n").removePrefix("Личное дело: ") }
+    val bad = steps.filter { !it.ok }.map { "✗ " + it.text }
+    val head = when {
+        ok.isEmpty() -> "Не получилось записать."
+        ok.size == 1 -> "Записано ✓ ${ok[0]}"
+        else -> "Записано ✓\n" + ok.joinToString("\n") { "• $it" }
+    }
+    return (listOf(head) + bad).joinToString("\n") + if (ok.isNotEmpty()) "\nЕсли не так, напишите «отмени»." else ""
+}
+
+/** «отмени», «верни как было»: отменить то, что сделано последним. Отмена конкретного занятия сюда не попадает. */
+fun isUndo(text: String) = Regex("^\\s*(отмени|отмена|отменить|верни|верни как было|не так|не надо было)[\\s.!]*$", RegexOption.IGNORE_CASE)
+    .containsMatchIn(text)
 
 private val DOW_SHORT = listOf("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
@@ -161,7 +182,10 @@ fun agentPrompt(
 6. Имена клиентов пиши точно как в списке. Время, которое назвал Рифат, пиши как есть (15:45 так 15:45). Даты в формате ГГГГ-ММ-ДД.
 7. Если непонятно, о ком или о каком дне речь, задай один короткий вопрос в reply и не делай actions.
 8. Вопросы (что завтра, сколько осталось у Анны, когда свободен) просто отвечай по сведениям, без actions.
-9. reply по-русски, коротко и по делу, без повторения плана: приложение само покажет список действий и спросит подтверждение.
+9. reply по-русски, коротко и по делу. Если делаешь actions, reply оставь пустым: приложение само покажет, что сделано.
+   Пиши reply, только если нужно добавить важное или спросить.
+10. Сообщение с датой и временем про дело, встречу или событие («9.11 в 11:00 встреча с Папой Римским»,
+   «в пятницу в 17:00 стоматолог») значит записать его: add_event. Не отвечай «Понял» и не переспрашивай.
 
 Сведения:
 """
@@ -337,7 +361,7 @@ fun applyActions(
                 if (date == null || t == null || title == null) { bad("Личное дело: не понял день или время"); continue }
                 val dur = (a.num("minutes")?.toInt() ?: 60).coerceIn(15, 12 * 60)
                 nd = nd.copy(events = nd.events + Personal(newId(), date.toEpochDay(), t, dur, title.replaceFirstChar { it.uppercase() }))
-                ok("Личное дело: ${dayLabel(date)} ${hhmm(t)}–${hhmm(t + dur)} ${title.replaceFirstChar { it.uppercase() }}")
+                ok("Личное дело: ${title.replaceFirstChar { it.uppercase() }}, ${dayLabel(date)} ${hhmm(t)}–${hhmm(t + dur)}")
             }
             "remove_event" -> {
                 if (date == null) { bad("Удалить дело: какой день?"); continue }

@@ -83,7 +83,7 @@ object Assistant {
                 if (s2.count { !it.ok } < rejected.size) { r = r2; actions = a2; nd = nd2; steps = s2 }
             }
         }
-        return Proposal(AgentPlan(r.reply.ifBlank { if (steps.isEmpty()) "Не понял, напишите подробнее." else "Вот что сделаю:" }, steps, nd), actions)
+        return Proposal(AgentPlan(r.reply.ifBlank { if (steps.isEmpty()) "Не понял, напишите подробнее." else "" }, steps, nd), actions)
     }
 
     /** Выполнить план. Возвращает данные до изменения (для отмены) и итог. */

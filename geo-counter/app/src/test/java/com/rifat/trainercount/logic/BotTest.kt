@@ -160,7 +160,7 @@ class BotTest {
         assertEquals(ClientCmd.Report, parseClientBot("🧾 Отчёт"))
         assertEquals(ClientCmd.Compose, parseClientBot("✉️ Написать Рифату"))
         assertEquals(ClientCmd.Help, parseClientBot("❓ Помощь"))
-        assertTrue(isButton("💰 Остатки", OWNER_BUTTONS))
+        assertTrue(isButton("💰 Остатки", OWNER_MORE))
         assertTrue(keyboardJson(CLIENT_BUTTONS).startsWith("{\"keyboard\":[[{\"text\":\"📋 Сколько занятий осталось\"}"))
     }
 

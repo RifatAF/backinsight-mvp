@@ -49,6 +49,12 @@ import com.rifat.trainercount.logic.quickAnswer
 import com.rifat.trainercount.logic.BOT_HELP
 import com.rifat.trainercount.logic.CLIENT_BUTTONS
 import com.rifat.trainercount.logic.OWNER_BUTTONS
+import com.rifat.trainercount.logic.OWNER_MORE
+import com.rifat.trainercount.logic.BTN_MORE
+import com.rifat.trainercount.logic.BTN_BACK
+import com.rifat.trainercount.logic.autoApply
+import com.rifat.trainercount.logic.doneText
+import com.rifat.trainercount.logic.isUndo
 import com.rifat.trainercount.logic.isButton
 import com.rifat.trainercount.logic.keyboardJson
 import com.rifat.trainercount.ui.MainActivity
@@ -64,6 +70,7 @@ class BotService : Service() {
         private const val NID = 5501
         val OWNER_KB = keyboardJson(OWNER_BUTTONS)
         val CLIENT_KB = keyboardJson(CLIENT_BUTTONS)
+        val MORE_KB = keyboardJson(OWNER_MORE)
 
         /** Чат только что разрешили: прислать приветствие с кнопками. */
         fun welcome(ctx: Context, chatId: String) {
@@ -190,28 +197,50 @@ class BotService : Service() {
             return
         }
         val now = System.currentTimeMillis()
+        // Кнопки сворачиваются: основная строка и «Ещё» присылаются только по запросу.
+        when (m.text.trim()) {
+            BTN_MORE -> { Telegram.send(token, m.chat.id, "Ещё вопросы на кнопках ниже.", MORE_KB); return }
+            BTN_BACK -> { Telegram.send(token, m.chat.id, "Основные кнопки ниже.", OWNER_KB); return }
+        }
+        // «отмени» сразу после изменения: вернуть как было.
+        if (isUndo(m.text)) lastDone.remove(m.chat.id)?.let { before ->
+            Assistant.undo(this, before)
+            proposals.remove(m.chat.id)
+            send(token, m.chat.id, "Вернул как было.")
+            return
+        }
         // Ответ на предложенный план: «да» выполняет, «нет» отменяет.
         proposals.remove(m.chat.id)?.let { p ->
             if (isYes(m.text)) {
-                val (_, done) = Assistant.apply(this, p)
+                val (before, done) = Assistant.apply(this, p)
+                lastDone[m.chat.id] = before
                 remember(m.chat.id, m.text, done)
-                Telegram.send(token, m.chat.id, done, OWNER_KB)
+                send(token, m.chat.id, "$done\nЕсли не так, напишите «отмени».")
                 return
             }
-            if (isNo(m.text)) { Telegram.send(token, m.chat.id, "Хорошо, ничего не меняю.", OWNER_KB); return }
+            if (isNo(m.text)) { send(token, m.chat.id, "Хорошо, ничего не меняю."); return }
         }
         var cmd = parseBot(m.text, dayOf(now))
         // С ключом Gemini сообщение разбирает помощник; балансы, сводки и кнопки приложение считает само, точно.
         val exact = cmd is BotCmd.Help || cmd is BotCmd.Summary || cmd is BotCmd.Report || cmd is BotCmd.Balances ||
-            isButton(m.text, OWNER_BUTTONS) || quickAnswer(d0, m.text, now) != null
+            isButton(m.text, OWNER_BUTTONS) || isButton(m.text, OWNER_MORE) || quickAnswer(d0, m.text, now) != null
         if (d0.settings.aiKey.isNotBlank() && !exact) {
             val status = whereText(map = Regex("где|куда|адрес|встрет|подъех|забрать", RegexOption.IGNORE_CASE).containsMatchIn(m.text))
             val p = Assistant.think(this, m.text, history[m.chat.id]?.toList().orEmpty(), status.replace("\n", "; "))
             if (p != null) {
                 Diag.add(this, "Бот (помощник): «${m.text.take(40)}» от ${m.chat.name}")
-                val text = if (p.plan.hasChanges) { proposals[m.chat.id] = p; p.plan.text() + "\n\nСделать? Ответьте «да» или «нет»." } else p.plan.text()
+                val text = when {
+                    // Личные дела записываются сразу, без «да».
+                    p.plan.hasChanges && autoApply(p.actions) -> {
+                        val (before, _) = Assistant.apply(this, p)
+                        lastDone[m.chat.id] = before
+                        doneText(p.plan.steps)
+                    }
+                    p.plan.hasChanges -> { proposals[m.chat.id] = p; p.plan.text() + "\n\nСделать? Ответьте «да» или «нет»." }
+                    else -> p.plan.text()
+                }
                 remember(m.chat.id, m.text, text)
-                Telegram.send(token, m.chat.id, text, OWNER_KB)
+                send(token, m.chat.id, text)
                 return
             }
         }
@@ -222,8 +251,17 @@ class BotService : Service() {
         Store.update { d -> botAnswer(d, cmd, now, { where }).also { reply = it.second }.first }
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
-        Telegram.send(token, m.chat.id, reply, OWNER_KB)
+        send(token, m.chat.id, reply, if (cmd is BotCmd.Help) OWNER_KB else null)
     }
+
+    /** Ответ без кнопок (их не раскрываем заново) и никогда не пустой: пустое сообщение Telegram не доставит. */
+    private fun send(token: String, chat: String, text: String, kb: String? = null) {
+        Telegram.send(token, chat, text.ifBlank { "Не понял, напишите подробнее." }, kb)
+            .onFailure { Diag.add(this, "✗ Бот: не отправилось (${it.message})") }
+    }
+
+    /** Данные до последнего изменения из бота, для «отмени». */
+    private val lastDone = mutableMapOf<String, AppData>()
 
     /** Чат клиента: только его баланс, занятия и примерно, где Рифат. Остальное передаётся Рифату. */
     private fun handleClient(token: String, c: com.rifat.trainercount.logic.Client, m: Telegram.Message) {
@@ -257,7 +295,7 @@ class BotService : Service() {
         val text = reply!!
         history.getOrPut(m.chat.id) { ArrayDeque() }.apply { addLast(m.text to text); while (size > 4) removeFirst() }
         Diag.add(this, "Бот: клиент ${c.name}: «${m.text.take(40)}»")
-        Telegram.send(token, m.chat.id, text, CLIENT_KB)
+        send(token, m.chat.id, text, if (parseClientBot(m.text) is ClientCmd.Help) CLIENT_KB else null)
     }
 
     /** Клиенты, нажавшие «Написать Рифату»: их следующее сообщение передаётся как есть. */

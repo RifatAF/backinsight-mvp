@@ -179,7 +179,7 @@ object Bybit {
                     Diag.add(ctx, "✓ Bybit: ${e.client.name} ${fCoin(e.dep)} → ${lessons(e.sessions)}")
                     Notifier.clientInfo(ctx, e.client, "Оплата через Bybit ✓", "${e.client.name}: ${fCoin(e.dep)}, записал ${lessons(e.sessions)}")
                     if (e.client.tgChatId.isNotBlank() && s.tgToken.isNotBlank() && s.tgBotOn)
-                        Telegram.send(s.tgToken, e.client.tgChatId, paidClientText(d, e), BotService.CLIENT_KB)
+                        Telegram.send(s.tgToken, e.client.tgChatId, paidClientText(d, e))
                 }
                 // О непонятных переводах говорим один раз.
                 is PayEvent.Unclear -> if (seen.add(e.dep.id)) Notifier.clientInfo(

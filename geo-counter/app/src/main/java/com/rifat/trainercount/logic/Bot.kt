@@ -214,18 +214,23 @@ const val BOT_HELP = """Я помощник Рифата по расписани
 • сколько осталось у Анны / кто должен
 • итоги за прошлый месяц / отчёт Игорь
 
-Частые вопросы есть на кнопках внизу.""""
+Частые вопросы на кнопках: «Сегодня», «Завтра», «Где Рифат», остальные под «Ещё». Кнопки сворачиваются значком у поля ввода.""""
 
 /** Значки в начале кнопок не мешают разбору. */
 private val LEAD = Regex("^[^\\p{L}\\d/]+")
 
 /** Кнопки быстрых вопросов под полем ввода в Telegram. */
 val OWNER_BUTTONS = listOf(
-    listOf("📅 Сегодня", "📅 Завтра", "🗓 Неделя"),
-    listOf("🕐 Свободное время", "📍 Где Рифат"),
-    listOf("💰 Остатки", "⚠️ Кто должен", "📊 Сводка"),
-    listOf("❓ Помощь"),
+    listOf("📅 Сегодня", "📅 Завтра", "📍 Где Рифат", "⋯ Ещё"),
 )
+/** Остальные вопросы: открываются кнопкой «Ещё», чтобы не занимать пол-экрана. */
+val OWNER_MORE = listOf(
+    listOf("🗓 Неделя", "🕐 Свободное время"),
+    listOf("💰 Остатки", "⚠️ Кто должен", "📊 Сводка"),
+    listOf("❓ Помощь", "◀ Назад"),
+)
+const val BTN_MORE = "⋯ Ещё"
+const val BTN_BACK = "◀ Назад"
 val CLIENT_BUTTONS = listOf(
     listOf("📋 Сколько занятий осталось", "📅 Мои занятия"),
     listOf("🚗 Где Рифат", "🧾 Отчёт"),
@@ -234,9 +239,12 @@ val CLIENT_BUTTONS = listOf(
 
 fun isButton(text: String, buttons: List<List<String>>) = buttons.any { row -> text.trim() in row }
 
-/** reply_markup для Telegram: постоянная клавиатура с кнопками. */
+/**
+ * reply_markup для Telegram: клавиатура с кнопками. Не постоянная: её можно свернуть, и она открывается
+ * значком у поля ввода. Бот присылает её только по «Помощь», «Ещё» и «Назад», чтобы не раскрывать заново.
+ */
 fun keyboardJson(buttons: List<List<String>>): String =
-    buttons.joinToString(",", "{\"keyboard\":[", "],\"resize_keyboard\":true,\"is_persistent\":true}") { row ->
+    buttons.joinToString(",", "{\"keyboard\":[", "],\"resize_keyboard\":true,\"is_persistent\":false}") { row ->
         row.joinToString(",", "[", "]") { "{\"text\":\"$it\"}" }
     }
 

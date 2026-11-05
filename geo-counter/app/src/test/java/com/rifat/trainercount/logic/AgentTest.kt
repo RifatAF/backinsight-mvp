@@ -5,6 +5,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AgentTest {
@@ -139,5 +140,18 @@ class AgentTest {
         assertTrue(steps.all { it.ok }, steps.toString())
         assertTrue(nd.rules.any { it.clientId == "pe" && it.day == 4 && it.min == 16 * 60 + 30 && !it.off })
         assertEquals(120, nd.client("an")!!.sessionMin)
+    }
+
+    @Test
+    fun personalEventsWithoutConfirm() {
+        val ev = mapOf("type" to "add_event", "date" to "2026-11-09", "time" to "11:00", "title" to "встреча с Папой Римским")
+        assertTrue(autoApply(listOf(ev)))
+        assertFalse(autoApply(listOf(ev, mapOf("type" to "cancel"))))
+        assertFalse(autoApply(emptyList()))
+        val text = doneText(listOf(AgentStep("Личное дело: Встреча с Папой Римским, пн 09.11 11:00–12:00", true)))
+        assertEquals("Записано ✓ Встреча с Папой Римским, пн 09.11 11:00–12:00\nЕсли не так, напишите «отмени».", text)
+        assertTrue(isUndo("Отмени"))
+        assertTrue(isUndo("верни как было!"))
+        assertFalse(isUndo("отмени Игоря завтра"))
     }
 }

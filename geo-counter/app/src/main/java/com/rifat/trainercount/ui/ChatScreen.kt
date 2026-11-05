@@ -103,6 +103,9 @@ object ChatLog {
             }
             add(app, when {
                 p == null -> Msg(false, "Не получилось связаться с ИИ. Проверьте интернет и ключ Gemini в настройках.")
+                // Личные дела записываются сразу; кнопка «Отменить» остаётся.
+                p.plan.hasChanges && com.rifat.trainercount.logic.autoApply(p.actions) ->
+                    Msg(false, com.rifat.trainercount.logic.doneText(p.plan.steps).substringBefore("\nЕсли не так"), p, St.DONE, Assistant.apply(app, p).first)
                 p.plan.hasChanges -> Msg(false, p.plan.text(), p, St.ASK)
                 else -> Msg(false, p.plan.text())
             })
