@@ -54,7 +54,7 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP", "ZONE"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
@@ -64,6 +64,9 @@ EXP_Z, EXP_HOLD, EXP_TAKE, EXP_LEV = -1.0, 14, 0.05, 2.0
 # ZONE: пробой зоны проторговки (профиль объёма 30 дней) + оценочная карта ликвидаций (60 дней) + перцентиль цены
 ZONE_BIN, ZONE_PROFILE_DAYS, ZONE_LIQ_DAYS, ZONE_LIQ_RANGE = 0.0025, 30, 60, 0.10
 ZONE_LEVS = {10: 0.40, 25: 0.35, 50: 0.15, 100: 0.10}   # предполагаемое распределение плеч новых позиций
+# FNEG: BTC только когда средний funding за 7 дней < 0 (толпа в шортах). orth_lab.py: 2020–26 +18%/год, Sharpe 0.98,
+# просадка −19%, в рынке 10% дней; плацебо (те же отрезки в случайном порядке) Sharpe 95% = 0.73.
+FNEG_DAYS, FNEG_THR = 7, 0.0
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -642,7 +645,27 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
                 diag[k] = {**{q: float(v) for q, v in zf.items()}, "pct365": pct, "on": on}
             mstate[k] = on
             targets[k] = 0.5 if on else 0.0
+    elif model == "FNEG":
+        fd = ctx.get("fund_btc")
+        f = fd.loc[:day].iloc[-FNEG_DAYS:] if fd is not None and len(fd) else None
+        if f is None or len(f) < FNEG_DAYS:
+            diag["BTC"] = {"error": "нет истории funding", "on": False}
+            targets["BTC"] = 0.0
+        else:
+            on = float(f.mean()) < FNEG_THR
+            diag["BTC"] = {"funding_7d_per_day": float(f.mean()), "on": on}
+            targets["BTC"] = 1.0 if on else 0.0
     return targets, diag
+
+
+def funding_daily(df):
+    """Сумма ставок funding за каждый день UTC (BTC: 3 выплаты по 8 ч)."""
+    if df is None or not len(df):
+        return None
+    r = df["rate"] if "rate" in df else df.iloc[:, 0]
+    r.index = pd.to_datetime(r.index)
+    d = r.groupby(r.index.floor("D")).sum()
+    return d.iloc[:-1] if len(d) > 1 and r.index[-1].hour < 16 else d    # неполный текущий день не берём
 
 
 # ====================================================================================== виртуальный брокер
@@ -1221,6 +1244,11 @@ def cmd_cycle(a):
             except Exception as e:
                 log(f"ZONE: нет 4ч свечей {k}: {str(e)[:100]}", "warning")
     record_funding_history(feed, rec, list(dict.fromkeys(coins + ROT_UNIVERSE)))
+    try:
+        ctx["fund_btc"] = funding_daily(pd.read_csv(rec.path("market/funding/BTC.csv"), index_col=0, parse_dates=True))
+    except Exception as e:
+        ctx["fund_btc"] = None
+        log(f"FNEG: нет истории funding BTC: {str(e)[:100]}", "warning")
     record_daily_extras(feed, rec)
     for day in todo:
         live = day == latest
@@ -1319,9 +1347,10 @@ MODEL_INFO = {
     "ROT3": ("Эксперименты", "Ротация: 3 сильнейшие монеты из 19"),
     "EXP": ("Эксперименты", "Эксперт: покупка паники в бычьем рынке, x2"),
     "ZONE": ("Эксперименты", "Пробой зоны проторговки + карта ликвидаций + перцентиль"),
+    "FNEG": ("Эксперименты", "BTC только при отрицательном funding за 7 дней (против толпы)"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d"]
 
 
 def cmd_dashboard(a, st=None):
@@ -1684,6 +1713,11 @@ def cmd_replay(a):
     eqh = {m: {} for m in MODELS}
     ctx = build_context(closes, ocf, oc, layers, coins, days[0])
     ctx["uni"] = {k: v.close for k, v in dfs.items()}
+    try:
+        ctx["fund_btc"] = funding_daily(feed.funding_history("BTC", int(pd.Timestamp(days[0]).value // 10**6) - 10 * DAY))
+    except Exception as e:
+        ctx["fund_btc"] = None
+        log(f"FNEG: нет истории funding: {str(e)[:100]}", "warning")
     liqs = {m: 0 for m in MODELS}
     m4_rows, nfills = [], {m: 0 for m in MODELS}
     for i, day in enumerate(days):

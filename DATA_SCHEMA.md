@@ -61,6 +61,8 @@
 | `market/options/YYYY-MM-DD.jsonl` | каждый час, Deribit BTC и ETH: `dvol`, открытый интерес и объём путов/коллов, `put_call_oi`, `atm_iv`, IV пута 90% и колла 110% и их разница `skew_90_110` на экспирации, ближайшей к 30 дням |
 | `market/earn.jsonl` | раз в день ставки Bybit Earn (гибкие) по USDT, BTC, ETH: как есть из API (`products`, в них `estimateApr`) |
 | `market/fng.csv` | индекс страха и жадности (alternative.me) по дням, вся история |
+| `data/BTC_dvol_daily.csv`, `data/ETH_dvol_daily.csv` | (в репозитории) история DVOL Deribit с 2021-03, для `orth_lab.py` |
+| `data/fng_history.csv` | (в репозитории) индекс страха и жадности с 2018-02 |
 | `orders/carry.csv` | изменения связки carry (спот BTC + шорт перпа): `from_usdt`, `to_usdt`, `cost` (комиссии обеих ног), `funding_btc` |
 | `meta/selftest.jsonl` | тестовые сделки при каждом запуске (виртуальная покупка и продажа на 5 USDT) |
 | `equity/equity.csv` | капитал каждой модели после цикла: `equity`, `cash`, `w_<COIN>` (фактический вес монеты, минус = шорт), `leverage` (сумма позиций / капитал), `funding_paid` (за сутки, минус = получено), `liquidated`, `sizing_base` (капитал, от которого считались позиции; при ежедневном реинвесте равен капиталу), `carry_notional` (сумма в связке спот BTC + шорт перпа), `carry_pnl` (funding по связке за сутки), `cum_market`/`cum_fees`/`cum_funding`/`cum_carry`/`cum_carry_income`/`cum_carry_cost`/`cum_total` (накопленный результат по источникам с начала теста, USDT; рынок = итог минус остальные), `cum_liquidations`, `positions` (JSON: все позиции счёта в долях капитала, включая монеты ROT3) |
