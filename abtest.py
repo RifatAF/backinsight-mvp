@@ -152,7 +152,15 @@ def fetch_update(dest, current=None, timeout=60):
     rels = [r for r in rels if str(r.get("tag_name", "")).startswith("exe-") and not r.get("draft")]
     if not rels:
         raise RuntimeError("на GitHub нет релизов exe-*")
-    rel = max(rels, key=lambda r: r.get("published_at") or r.get("created_at") or "")
+    when = lambda r: r.get("published_at") or r.get("created_at") or ""
+    rel = max(rels, key=when)
+    cur = current or CODE_VERSION
+    mine = next((r for r in rels if r["tag_name"] == f"exe-{cur}"), None)
+    if not os.environ.get("BACKINSIGHT_FAKE_VERSION"):
+        # Только вперёд: если своего релиза в списке нет (список у GitHub обновляется с задержкой) или найденный
+        # не новее своего — ничего не делать. Так старая версия никогда не поставится поверх новой.
+        if mine is None or when(rel) <= when(mine):
+            return cur, None
     body = rel.get("body") or ""
     ver = re.search(r"version:\s*(\S+)", body)
     sha = re.search(r"sha256:\s*([0-9a-fA-F]{64})", body)
