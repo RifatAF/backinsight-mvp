@@ -74,10 +74,12 @@ FMIX_LEV = 2.0
 # mix_lab.py (с 2021-06): +42%/год, Sharpe 1.23, просадка −30% против M1 +26%, 0.93, −28%. Плечо до x2.
 COMBO_LEV = 2.0
 # MEGA: три разных источника дохода поровну — тренд (M1), покупка паники (EXP, x2), funding против толпы (FMIX, x2) —
-# и общий контроль риска: плечо = 30% / волатильность портфеля, не больше x2; свободные деньги в carry.
-# Веса заданы заранее (не подбирались). mega_lab.py, replay 2022-03..2026-10: +57%/год, Sharpe 1.72, просадка −33%,
-# Sharpe 1.70 / 1.76 по половинам истории, плюс каждый год (в 2022 тоже). Корреляции частей: M1–EXP 0.15, M1–FMIX 0.12.
-MEGA_PARTS, MEGA_VOL, MEGA_MAX_LEV = ("M1", "EXP", "FMIX"), 0.30, 2.0
+# и общий контроль риска: плечо = 20% / фактическая волатильность портфеля за 30 дней (без плеча), не больше x2;
+# свободные деньги в carry. Веса заданы заранее (не подбирались). Корреляции частей: M1–EXP 0.15, M1–FMIX 0.12.
+# mega_lab.py по кривым replay 2022-03..2026-11: 1/3 без плеча +33%/год, Sharpe 1.54, просадка −21%;
+# с целью 20%: +45%/год, Sharpe 1.84 (1.82 / 1.87 по половинам), просадка −24%.
+# Плечо по волатильности позиций (как у _x3) здесь хуже: когда EXP и FMIX вне рынка, удваивает M1 (Sharpe 1.36).
+MEGA_PARTS, MEGA_VOL, MEGA_MAX_LEV, MEGA_VOL_DAYS = ("M1", "EXP", "FMIX"), 0.20, 2.0, 30
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -98,7 +100,7 @@ def lev_mode(m):
     if var == "x5":
         return "vol", 1.0
     if m == "MEGA":
-        return "vol", MEGA_VOL
+        return "realized", MEGA_VOL
     if m in ("EXP", "FMIX", "COMBO"):
         return "fixed", None
     return "none", None
@@ -1000,6 +1002,20 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
         pv = port_vol({k: (v or 0.0) for k, v in targets.items()}, ctx["closes"], day)
         lev = min(model_spec(m)[1], tv / pv) if pv > 0 else 1.0
         diag["_leverage"] = {"port_vol_unlevered": pv, "leverage": lev}
+    elif mode == "realized":                             # плечо по фактической волатильности самого портфеля
+        lh = ms.setdefault("_lev_hist", [])
+        eq = pd.Series(list(eq_hist[-MEGA_VOL_DAYS - 1:]), dtype=float)
+        r = eq.pct_change().dropna()
+        past_lev = np.array(lh[-len(r):]) if lh and len(r) else np.array([])
+        if len(r) >= 10 and len(past_lev) == len(r) and past_lev.min() > 0:
+            rv = float((r.values / past_lev).std() * math.sqrt(365))   # волатильность без плеча
+            lev = min(model_spec(m)[1], tv / rv) if rv > 0 else 1.0
+        else:
+            lev = 1.0                                    # первые 10 дней без плеча
+            rv = None
+        lh.append(lev)
+        del lh[:-MEGA_VOL_DAYS - 5]
+        diag["_leverage"] = {"realized_vol_unlevered": rv, "leverage": lev}
     scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
     if scale != 1:
         targets = {k: (None if v is None else v * scale) for k, v in targets.items()}
@@ -1504,7 +1520,7 @@ MODEL_INFO = {
     "FNEG": ("Эксперименты", "BTC только при отрицательном funding за 7 дней (против толпы)"),
     "FMIX": ("Эксперименты", "FNEG + фильтр роста стейблкоинов, x2, свободные деньги в carry"),
     "COMBO": ("Эксперименты", "M1 + сверху 1 BTC при сигнале FMIX (две некоррелированные части), до x2"),
-    "MEGA": ("Эксперименты", "Портфель: тренд M1 + паника EXP + funding FMIX поровну, риск 30% годовых, до x2"),
+    "MEGA": ("Эксперименты", "Портфель: тренд M1 + паника EXP + funding FMIX поровну, риск 20% годовых, до x2"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
            "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309"]
