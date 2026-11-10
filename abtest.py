@@ -54,7 +54,7 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
@@ -70,6 +70,9 @@ FNEG_DAYS, FNEG_THR = 7, 0.0
 # FMIX: сигнал FNEG, но только если предложение стейблкоинов за 30 дней растёт; плечо x2; свободные деньги в carry.
 # mix_lab.py: 2020–26 +49%/год, Sharpe 1.32, просадка −19% (2020–23 / 2024–26: +58% / +37%); 22 входа, плацебо 95% = 0.70.
 FMIX_LEV = 2.0
+# COMBO: портфель из двух некоррелированных частей (корреляция 0.09): M1 как есть + сверху ещё 1 BTC при сигнале FMIX.
+# mix_lab.py (с 2021-06): +42%/год, Sharpe 1.23, просадка −30% против M1 +26%, 0.93, −28%. Плечо до x2.
+COMBO_LEV = 2.0
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -77,7 +80,7 @@ DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отда
 def model_spec(m):
     """(базовая модель, максимальное плечо, разрешён шорт)."""
     base, _, var = m.partition("_")
-    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else 1.0)
+    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else COMBO_LEV if base == "COMBO" else 1.0)
     return base, lev, var == "ls"
 
 
@@ -88,7 +91,7 @@ def lev_mode(m):
         return "vol", 0.6
     if var == "x5":
         return "vol", 1.0
-    if m in ("EXP", "FMIX"):
+    if m in ("EXP", "FMIX", "COMBO"):
         return "fixed", None
     return "none", None
 DAY = 86400000
@@ -123,6 +126,100 @@ def code_version():
 
 
 CODE_VERSION = code_version()
+UPDATE_URL = "https://api.github.com/repos/RifatAF/backinsight-mvp/releases/tags/exe-latest"
+
+
+def fetch_update(dest, current=None, timeout=60):
+    """Скачать новую версию exe из релиза exe-latest (его публикует CI только после всех проверок).
+    Возвращает (версия, путь) или (версия, None), если обновлять не нужно. Проверяет SHA-256 из описания релиза."""
+    import hashlib
+    import re
+    import urllib.request
+    hdr = {"User-Agent": "backinsight-updater", "Accept": "application/vnd.github+json"}
+    ctx = S._ssl_ctx()
+    rel = json.loads(urllib.request.urlopen(urllib.request.Request(UPDATE_URL, headers=hdr), timeout=timeout,
+                                            context=ctx).read())
+    body = rel.get("body") or ""
+    ver = re.search(r"version:\s*(\S+)", body)
+    sha = re.search(r"sha256:\s*([0-9a-fA-F]{64})", body)
+    if not ver or not sha:
+        raise RuntimeError("в релизе нет версии или контрольной суммы")
+    ver, sha = ver.group(1), sha.group(1).lower()
+    if ver == (current or CODE_VERSION):
+        return ver, None
+    asset = next((x for x in rel.get("assets", []) if x["name"] == "backinsight.exe"), None)
+    if not asset:
+        raise RuntimeError("в релизе нет backinsight.exe")
+    tmp = Path(dest).with_suffix(".part")
+    h = hashlib.sha256()
+    with urllib.request.urlopen(urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": hdr["User-Agent"]}),
+                                timeout=timeout * 5, context=ctx) as r, open(tmp, "wb") as f:
+        while True:
+            b = r.read(1 << 20)
+            if not b:
+                break
+            h.update(b)
+            f.write(b)
+    if h.hexdigest() != sha:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("контрольная сумма не совпала, файл удалён")
+    os.replace(tmp, dest)
+    return ver, Path(dest)
+
+
+def auto_update(a):
+    """Раз в час (из loop): если на GitHub есть новая проверенная версия, заменить exe и перезапуститься.
+    Данные в папке abtest не трогаются; перед заменой копия state.json кладётся в state_backups.
+    Выключить: создать пустой файл abtest/autoupdate_off. Откат: backinsight.old.exe рядом с exe."""
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return
+    root = Path(a.dir)
+    if (root / "autoupdate_off").exists():
+        return
+    hist_p = root / "update.json"
+    hist = json.loads(hist_p.read_text(encoding="utf-8")) if hist_p.exists() else {"failed": {}, "done": []}
+    exe = Path(sys.executable)
+    new = exe.with_name("backinsight.new.exe")
+    cur = os.environ.get("BACKINSIGHT_FAKE_VERSION", CODE_VERSION)     # только для проверки обновления в CI
+    try:
+        ver, path = fetch_update(new, current=cur)
+    except Exception as e:
+        log(f"автообновление: проверка не удалась ({str(e)[:120]}), работаю на {CODE_VERSION}", "warning")
+        return
+    if path is None:
+        return
+    if hist["failed"].get(ver, 0) >= 3:
+        new.unlink(missing_ok=True)
+        return
+    import shutil
+    import subprocess
+    try:
+        r = subprocess.run([str(new), "version"], capture_output=True, text=True, timeout=180)
+        if ver not in (r.stdout or ""):
+            raise RuntimeError(f"новая версия не запустилась: {(r.stdout or r.stderr)[-200:]}")
+        sp = root / "state.json"
+        if sp.exists():
+            (root / "state_backups").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sp, root / "state_backups" / f"state_before_update_{cur}_to_{ver}.json")
+        old = exe.with_name("backinsight.old.exe")
+        old.unlink(missing_ok=True)
+        os.replace(exe, old)                            # Windows разрешает переименовать запущенный exe
+        try:
+            os.replace(new, exe)
+        except Exception:
+            os.replace(old, exe)                        # не вышло: вернуть как было
+            raise
+    except Exception as e:
+        hist["failed"][ver] = hist["failed"].get(ver, 0) + 1
+        atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
+        log(f"автообновление до {ver} не удалось: {str(e)[:200]}", "error")
+        return
+    hist["done"].append({"ts": now_utc().isoformat(), "from": cur, "to": ver})
+    atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
+    log(f"автообновление: {cur} -> {ver}, перезапуск (планировщик поднимет новую версию за 1 минуту)")
+    import logging
+    logging.shutdown()
+    os._exit(3)                                         # код ≠ 0: задача планировщика перезапускается сама
 
 
 def setup_logging(base_dir):
@@ -478,6 +575,15 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
     coins, closes, layers, feats, day = ctx["coins"], ctx["closes"], ctx["layers"], ctx["feats"], ctx["day"]
     n, btc = len(coins), ctx["btc"]
     targets, diag = {}, {}
+    if model == "COMBO":                                 # веса делятся на плечо: execute умножит их обратно на COMBO_LEV
+        t1, d1 = decide("M1", ctx, mstate.setdefault("m1", {}), equity_hist)
+        t2, d2 = decide("FMIX", ctx, mstate.setdefault("fmix", {}), equity_hist)
+        for k in set(t1) | set(t2):
+            if t1.get(k) is None and k in t1:
+                targets[k] = None
+            else:
+                targets[k] = ((t1.get(k) or 0.0) + (t2.get(k) or 0.0)) / COMBO_LEV
+        return targets, {"M1": d1, "FMIX": d2}
     can_short = short and (not bear_only or btc_bear(btc, day))   # bear_only: шорт только в медвежьем рынке
     if model in ("M1", "M2"):
         p = S.Params(mode="A" if model == "M1" else "B")
@@ -847,7 +953,7 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    carry_on = lev == 1 or base in ("EXP", "FMIX")                # EXP большую часть времени вне рынка
+    carry_on = lev == 1 or base in ("EXP", "FMIX", "COMBO")                # EXP большую часть времени вне рынка
     carry_pnl, carry_sig = carry_step(acct, funding, None) if carry_on else (0.0, False)
     targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
@@ -1368,9 +1474,10 @@ MODEL_INFO = {
     "ZONE": ("Эксперименты", "Пробой зоны проторговки + карта ликвидаций + перцентиль"),
     "FNEG": ("Эксперименты", "BTC только при отрицательном funding за 7 дней (против толпы)"),
     "FMIX": ("Эксперименты", "FNEG + фильтр роста стейблкоинов, x2, свободные деньги в carry"),
+    "COMBO": ("Эксперименты", "M1 + сверху 1 BTC при сигнале FMIX (две некоррелированные части), до x2"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a"]
 
 
 def cmd_dashboard(a, st=None):
@@ -1533,7 +1640,7 @@ else e.textContent="● бот работает, последняя провер
 {status}
 <div class="mut">Деньги виртуальные, данные живые ({html.escape(st["exchange"])}). Старт {st["created"][:10]}, по {cap:,.0f} USDT на стратегию.
 Дней в тесте: {n}. Последний дневной цикл: {st.get("last_cycle") or "ещё не было (первый в 03:05 МСК)"}.
-Страница обновлена: {now_utc():%Y-%m-%d %H:%M} UTC{f", последний запуск {last_run[:16]}" if last_run else ""}.</div>
+Страница обновлена: {now_utc():%Y-%m-%d %H:%M} UTC{f", последний запуск {last_run[:16]}" if last_run else ""}. Версия {CODE_VERSION}{" (автообновление выключено)" if (Path(a.dir) / "autoupdate_off").exists() else ", обновляется сама с GitHub"}.</div>
 <div class="card">{f'<svg viewBox="0 0 {W} {H}">{"".join(lines)}</svg>' if lines else '<div class="mut">График появится после второго дневного цикла.</div>'}
 <div class="mut">Капитал каждой стратегии, старт = 100</div></div>
 <div class="card"><table><tr><th>Стратегия</th><th class="r">Капитал</th><th class="r">Всего</th><th class="r">За день</th>
@@ -1646,6 +1753,7 @@ def cmd_loop(a):
             else:
                 cmd_snapshot(a)
             cmd_dashboard(a)
+            auto_update(a)
         except SystemExit:
             raise
         except Exception as e:
@@ -1908,7 +2016,7 @@ def cmd_export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
-                                    "health", "export", "dashboard", "selftest", "streamtest"])
+                                    "health", "export", "dashboard", "selftest", "streamtest", "version", "update"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=100)
@@ -1919,8 +2027,11 @@ def main():
     setup_logging(a.dir)
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
-          "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest, "streamtest": cmd_streamtest}[a.cmd]
-    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest", "streamtest"):
+          "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest, "streamtest": cmd_streamtest,
+          "version": lambda a: print(f"backinsight {CODE_VERSION}"), "update": auto_update}[a.cmd]
+    if a.cmd == "version":
+        return fn(a) or 0
+    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest", "streamtest", "update"):
         return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:

@@ -60,7 +60,7 @@ def first_run():
             return False
         print(f"{alt} работает, использую её.")
         ex = alt
-    cap = ask("Виртуальный капитал каждой из 18 стратегий, USDT", "100")
+    cap = ask("Виртуальный капитал каждой из 19 стратегий, USDT", "100")
     coins = ask("Монеты через запятую", "BTC,ETH").upper().replace(" ", "")
     run("init", "--exchange", ex, "--capital", cap, "--coins", coins)
     print("\nТестовая сделка (виртуальная покупка и продажа на 5 USDT по живому стакану):")
@@ -139,7 +139,7 @@ def open_path(p):
 def menu():
     while True:
         print("\n" + "=" * 60)
-        print("backinsight: A/B-тест 18 стратегий, виртуальные деньги, живые данные")
+        print("backinsight: A/B-тест 19 стратегий, виртуальные деньги, живые данные")
         status_task()
         print("""
  1  Открыть панель (графики и позиции всех стратегий)
@@ -151,7 +151,10 @@ def menu():
  5  Открыть папку с логами
  6  Проверка доступа к бирже и данным
  7  Запустить бота в этом окне (если без автозапуска)
+10  Автообновление: включить / выключить
  0  Выход""")
+        print(f"Версия {abtest.CODE_VERSION}. Автообновление с GitHub: "
+              f"{'выключено' if (DATA / 'autoupdate_off').exists() else 'включено (бот проверяет раз в час)'}")
         c = input("> ").strip()
         if c == "1":
             open_panel()
@@ -175,6 +178,15 @@ def menu():
         elif c == "7":
             print("Бот работает. Закройте окно, чтобы остановить.")
             run("loop")
+        elif c == "10":
+            f = DATA / "autoupdate_off"
+            if f.exists():
+                f.unlink()
+                print("Автообновление включено: новая проверенная версия поставится сама в течение часа.")
+            else:
+                DATA.mkdir(exist_ok=True)
+                f.write_text("автообновление выключено из меню\n", encoding="utf-8")
+                print("Автообновление выключено.")
         elif c == "0":
             return
 

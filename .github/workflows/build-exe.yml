@@ -6,6 +6,9 @@ on:
     paths: ["abtest.py", "system.py", "launcher.py", "laptop/**", "requirements.txt", ".github/workflows/build-exe.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: write          # публикация релиза exe-latest для автообновления
+
 jobs:
   exe:
     runs-on: windows-latest
@@ -35,7 +38,7 @@ jobs:
           .\backinsight.exe init --exchange okx
           $n = @((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties).Count
           Write-Host "accounts: $n"
-          if ($n -ne 18) { throw "need 18 accounts, got $n" }
+          if ($n -ne 19) { throw "need 19 accounts, got $n" }
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe selftest
@@ -66,6 +69,47 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File laptop\setup.ps1 -Exchange okx
           if ($LASTEXITCODE -ne 0) { throw "setup.ps1 failed" }
           if (-not (Test-Path abtest\state.json)) { throw "no state" }
+      - name: Test version command of exe
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          $out = & dist\backinsight.exe version
+          Write-Host $out
+          if ("$out" -notmatch $v) { throw "version mismatch: $out vs $v" }
+      - name: Publish release exe-latest (laptop updates itself from it)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          $h = (Get-FileHash dist\backinsight.exe -Algorithm SHA256).Hash.ToLower()
+          gh release delete exe-latest --yes --cleanup-tag 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create exe-latest dist\backinsight.exe --target $env:GITHUB_SHA --title "backinsight $v" `
+            --notes "version: $v`nsha256: $h`nСобрано и проверено CI (selftest, streamtest, dashboard, export, автозапуск)."
+          if ($LASTEXITCODE -ne 0) { throw "release failed" }
+      - name: Test auto-update from the published release (old version pretends to be older)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory u | Out-Null
+          Copy-Item dist\backinsight.exe u\
+          Copy-Item -Recurse t\abtest u\abtest
+          Set-Location u
+          $before = (Get-FileHash abtest\state.json).Hash
+          $env:BACKINSIGHT_FAKE_VERSION = "0000000"
+          $p = Start-Process .\backinsight.exe -ArgumentList "update" -Wait -PassThru -NoNewWindow
+          Remove-Item Env:BACKINSIGHT_FAKE_VERSION
+          Write-Host "exit code: $($p.ExitCode)"
+          Get-Content abtest\logs\abtest.log -Tail 5 -Encoding UTF8
+          if ($p.ExitCode -ne 3) { throw "updater did not swap the exe" }
+          if (-not (Test-Path backinsight.old.exe)) { throw "no rollback copy" }
+          if (-not (Test-Path abtest\state_backups\state_before_update_0000000_*.json)) { throw "no state backup" }
+          if ((Get-FileHash abtest\state.json).Hash -ne $before) { throw "state.json changed" }
+          $out = & .\backinsight.exe version
+          if ("$out" -notmatch (Get-Content ..\VERSION).Trim()) { throw "new exe broken: $out" }
+          Get-Content abtest\update.json
       - uses: actions/upload-artifact@v4
         with:
           name: backinsight-exe
