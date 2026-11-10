@@ -6,8 +6,12 @@ on:
     paths: ["abtest.py", "system.py", "launcher.py", "laptop/**", "requirements.txt", ".github/workflows/build-exe.yml"]
   workflow_dispatch:
 
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write          # публикация релиза exe-latest для автообновления
+  contents: write          # публикация релизов exe-<версия> для автообновления
 
 jobs:
   exe:
@@ -76,7 +80,7 @@ jobs:
           $out = & dist\backinsight.exe version
           Write-Host $out
           if ("$out" -notmatch $v) { throw "version mismatch: $out vs $v" }
-      - name: Publish release exe-latest (laptop updates itself from it)
+      - name: Publish release exe-<version> (laptop updates itself from the newest one)
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
@@ -84,9 +88,7 @@ jobs:
         run: |
           $v = (Get-Content VERSION).Trim()
           $h = (Get-FileHash dist\backinsight.exe -Algorithm SHA256).Hash.ToLower()
-          gh release delete exe-latest --yes --cleanup-tag 2>$null
-          $global:LASTEXITCODE = 0
-          gh release create exe-latest dist\backinsight.exe --target $env:GITHUB_SHA --title "backinsight $v" `
+          gh release create "exe-$v" dist\backinsight.exe --target $env:GITHUB_SHA --title "backinsight $v" `
             --notes "version: $v`nsha256: $h`nСобрано и проверено CI (selftest, streamtest, dashboard, export, автозапуск)."
           if ($LASTEXITCODE -ne 0) { throw "release failed" }
       - name: Test auto-update from the published release (old version pretends to be older)

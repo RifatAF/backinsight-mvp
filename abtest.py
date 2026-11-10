@@ -134,19 +134,23 @@ def code_version():
 
 
 CODE_VERSION = code_version()
-UPDATE_URL = "https://api.github.com/repos/RifatAF/backinsight-mvp/releases/tags/exe-latest"
+UPDATE_URL = "https://api.github.com/repos/RifatAF/backinsight-mvp/releases?per_page=50"   # релизы exe-<версия>
 
 
 def fetch_update(dest, current=None, timeout=60):
-    """Скачать новую версию exe из релиза exe-latest (его публикует CI только после всех проверок).
+    """Скачать новую версию exe из самого свежего релиза exe-<версия> (CI публикует его только после всех проверок).
     Возвращает (версия, путь) или (версия, None), если обновлять не нужно. Проверяет SHA-256 из описания релиза."""
     import hashlib
     import re
     import urllib.request
     hdr = {"User-Agent": "backinsight-updater", "Accept": "application/vnd.github+json"}
     ctx = S._ssl_ctx()
-    rel = json.loads(urllib.request.urlopen(urllib.request.Request(UPDATE_URL, headers=hdr), timeout=timeout,
-                                            context=ctx).read())
+    rels = json.loads(urllib.request.urlopen(urllib.request.Request(UPDATE_URL, headers=hdr), timeout=timeout,
+                                             context=ctx).read())
+    rels = [r for r in rels if str(r.get("tag_name", "")).startswith("exe-") and not r.get("draft")]
+    if not rels:
+        raise RuntimeError("на GitHub нет релизов exe-*")
+    rel = max(rels, key=lambda r: r.get("published_at") or r.get("created_at") or "")
     body = rel.get("body") or ""
     ver = re.search(r"version:\s*(\S+)", body)
     sha = re.search(r"sha256:\s*([0-9a-fA-F]{64})", body)
