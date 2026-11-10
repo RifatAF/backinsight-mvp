@@ -54,7 +54,7 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
@@ -67,6 +67,9 @@ ZONE_LEVS = {10: 0.40, 25: 0.35, 50: 0.15, 100: 0.10}   # предполагае
 # FNEG: BTC только когда средний funding за 7 дней < 0 (толпа в шортах). orth_lab.py: 2020–26 +18%/год, Sharpe 0.98,
 # просадка −19%, в рынке 10% дней; плацебо (те же отрезки в случайном порядке) Sharpe 95% = 0.73.
 FNEG_DAYS, FNEG_THR = 7, 0.0
+# FMIX: сигнал FNEG, но только если предложение стейблкоинов за 30 дней растёт; плечо x2; свободные деньги в carry.
+# mix_lab.py: 2020–26 +49%/год, Sharpe 1.32, просадка −19% (2020–23 / 2024–26: +58% / +37%); 22 входа, плацебо 95% = 0.70.
+FMIX_LEV = 2.0
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -74,7 +77,7 @@ DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отда
 def model_spec(m):
     """(базовая модель, максимальное плечо, разрешён шорт)."""
     base, _, var = m.partition("_")
-    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else 1.0)
+    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else 1.0)
     return base, lev, var == "ls"
 
 
@@ -85,7 +88,7 @@ def lev_mode(m):
         return "vol", 0.6
     if var == "x5":
         return "vol", 1.0
-    if m == "EXP":
+    if m in ("EXP", "FMIX"):
         return "fixed", None
     return "none", None
 DAY = 86400000
@@ -645,7 +648,7 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
                 diag[k] = {**{q: float(v) for q, v in zf.items()}, "pct365": pct, "on": on}
             mstate[k] = on
             targets[k] = 0.5 if on else 0.0
-    elif model == "FNEG":
+    elif model in ("FNEG", "FMIX"):
         fd = ctx.get("fund_btc")
         f = fd.loc[:day].iloc[-FNEG_DAYS:] if fd is not None and len(fd) else None
         if f is None or len(f) < FNEG_DAYS:
@@ -654,6 +657,15 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
         else:
             on = float(f.mean()) < FNEG_THR
             diag["BTC"] = {"funding_7d_per_day": float(f.mean()), "on": on}
+            if model == "FMIX":
+                sg = ctx.get("stables")
+                g = sg.loc[:day].dropna() if sg is not None else None
+                growth = float(g.iloc[-1] / g.iloc[-31] - 1) if g is not None and len(g) > 31 else None
+                diag["BTC"]["stables_growth30"] = growth
+                if growth is None:
+                    diag["BTC"]["error"] = "нет данных о стейблкоинах"
+                on = on and growth is not None and growth > 0
+                diag["BTC"]["on"] = on
             targets["BTC"] = 1.0 if on else 0.0
     return targets, diag
 
@@ -835,7 +847,7 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    carry_on = lev == 1 or base == "EXP"                 # EXP большую часть времени вне рынка
+    carry_on = lev == 1 or base in ("EXP", "FMIX")                # EXP большую часть времени вне рынка
     carry_pnl, carry_sig = carry_step(acct, funding, None) if carry_on else (0.0, False)
     targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
@@ -967,7 +979,8 @@ def build_context(closes_full, ocf, oc, layers, coins, day):
             c = closes_full[k]
             coin_200w[k] = c / c.rolling(1400, min_periods=1400).mean()
     return dict(coins=coins, closes=closes_full, btc=btc, layers=layers, feats=feats, day=day,
-                coin_mvrv=coin_mvrv, coin_sma1400_ratio=coin_200w)
+                coin_mvrv=coin_mvrv, coin_sma1400_ratio=coin_200w,
+                stables=oc["stables"].shift(1) if oc is not None and "stables" in oc else None)
 
 
 def label_m4_predictions(rec, closes):
@@ -1348,9 +1361,10 @@ MODEL_INFO = {
     "EXP": ("Эксперименты", "Эксперт: покупка паники в бычьем рынке, x2"),
     "ZONE": ("Эксперименты", "Пробой зоны проторговки + карта ликвидаций + перцентиль"),
     "FNEG": ("Эксперименты", "BTC только при отрицательном funding за 7 дней (против толпы)"),
+    "FMIX": ("Эксперименты", "FNEG + фильтр роста стейблкоинов, x2, свободные деньги в carry"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d"]
 
 
 def cmd_dashboard(a, st=None):
