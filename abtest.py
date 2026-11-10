@@ -54,13 +54,16 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
 ROT_K, ROT_LOOKBACK, ROT_MIN_HISTORY = 3, 90, 250
 # EXP: покупка паники внутри бычьего рынка (против толпы и ортогонально тренду), плечо 2
 EXP_Z, EXP_HOLD, EXP_TAKE, EXP_LEV = -1.0, 14, 0.05, 2.0
+# ZONE: пробой зоны проторговки (профиль объёма 30 дней) + оценочная карта ликвидаций (60 дней) + перцентиль цены
+ZONE_BIN, ZONE_PROFILE_DAYS, ZONE_LIQ_DAYS, ZONE_LIQ_RANGE = 0.0025, 30, 60, 0.10
+ZONE_LEVS = {10: 0.40, 25: 0.35, 50: 0.15, 100: 0.10}   # предполагаемое распределение плеч новых позиций
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -181,21 +184,22 @@ class Feed:
                 log(f"повтор {getattr(fn, '__name__', fn)}: {str(e)[:120]}", "warning")
                 time.sleep(2 ** attempt)
 
-    def daily(self, coin, days=1800):
+    def daily(self, coin, days=1800, tf="1d"):
+        step = {"1d": DAY, "4h": DAY // 6}[tf]
         since = self.spot.milliseconds() - days * DAY
         rows = []
         while True:
-            batch = self._retry(self.spot.fetch_ohlcv, self.sym(coin), "1d", since=since, limit=300)
+            batch = self._retry(self.spot.fetch_ohlcv, self.sym(coin), tf, since=since, limit=300)
             if not batch:
                 break
             rows += batch
-            since = batch[-1][0] + DAY
+            since = batch[-1][0] + step
             if len(batch) < 300 or since > self.spot.milliseconds():
                 break
         df = pd.DataFrame(rows, columns=["t", "open", "high", "low", "close", "volume"]).drop_duplicates("t")
         df.index = pd.to_datetime(df.t, unit="ms")
         df = df.drop(columns="t").sort_index()
-        return df[df.index < today_utc()]     # только закрытые свечи
+        return df[df.index < today_utc()]     # только закрытые свечи (для 4h: до начала текущих суток UTC)
 
     def snapshot(self, coin, depth=50):
         """Всё, что известно о рынке монеты прямо сейчас. Каждое поле опционально (None, если биржа не отдала)."""
@@ -368,6 +372,59 @@ def short_signal(d):
     return float(pd.notna(d.btc_mom) and pd.notna(d.rsi) and d.btc_mom < 0 and d.rsi < 50)
 
 
+def volume_profile(h, l, v, bin_=ZONE_BIN):
+    """Профиль объёма: объём свечи поровну по ценовым корзинам между её low и high. -> (POC, VAL, VAH), 70% объёма."""
+    lo, hi = np.log(l.min()), np.log(h.max())
+    n = max(int((hi - lo) / bin_) + 1, 1)
+    hist = np.zeros(n)
+    a = ((np.log(l) - lo) / bin_).astype(int)
+    b = ((np.log(h) - lo) / bin_).astype(int)
+    for i in range(len(v)):
+        hist[a[i]:b[i] + 1] += v[i] / (b[i] - a[i] + 1)
+    poc = int(hist.argmax())
+    lo_i = hi_i = poc
+    tot, acc = hist.sum(), hist[poc]
+    while acc < 0.7 * tot and (lo_i > 0 or hi_i < n - 1):
+        up = hist[hi_i + 1] if hi_i < n - 1 else -1
+        dn = hist[lo_i - 1] if lo_i > 0 else -1
+        if up >= dn:
+            hi_i += 1
+            acc += up
+        else:
+            lo_i -= 1
+            acc += dn
+    px = lambda i: math.exp(lo + (i + 0.5) * bin_)
+    return px(poc), px(lo_i), px(hi_i)
+
+
+def liq_magnet(h, l, c, v, price, rng=ZONE_LIQ_RANGE):
+    """Оценочная карта ликвидаций без данных OI: объём свечи = новые позиции, половина лонги, половина шорты, плечи
+    ZONE_LEVS. Уровень снят, если цена после открытия до него дошла. -> (доля ликвидаций в ±rng выше цены,
+    сумма выше, сумма ниже). Выше цены лежат ликвидации шортов, ниже лонгов."""
+    nxt_min = np.append(np.minimum.accumulate(l[::-1])[::-1][1:], np.inf)
+    nxt_max = np.append(np.maximum.accumulate(h[::-1])[::-1][1:], -np.inf)
+    above = below = 0.0
+    for L, w in ZONE_LEVS.items():
+        lq_long, lq_short = c * (1 - 1 / L + 0.005), c * (1 + 1 / L - 0.005)
+        below += (v * 0.5 * w)[(lq_long < nxt_min) & (lq_long >= price * (1 - rng))].sum()
+        above += (v * 0.5 * w)[(lq_short > nxt_max) & (lq_short <= price * (1 + rng))].sum()
+    return (above / (above + below) if above + below > 0 else 0.5), above, below
+
+
+def zone_features(h4, day):
+    """Зоны и карта ликвидаций по 4-часовым свечам, закрытым до конца дня day."""
+    x = h4[h4.index < day + pd.Timedelta(days=1)]
+    if len(x) < ZONE_LIQ_DAYS * 6 * 0.8:
+        return None
+    H, L, C = x.high.values, x.low.values, x.close.values
+    V = (x.volume * x.close).values                    # объём в USDT
+    p = C[-1]
+    poc, val, vah = volume_profile(H[-ZONE_PROFILE_DAYS * 6:], L[-ZONE_PROFILE_DAYS * 6:], V[-ZONE_PROFILE_DAYS * 6:])
+    n = ZONE_LIQ_DAYS * 6
+    mag, up, dn = liq_magnet(H[-n:], L[-n:], C[-n:], V[-n:], p)
+    return dict(price=p, poc=poc, val=val, vah=vah, magnet=mag, liq_above=up, liq_below=dn)
+
+
 def btc_bear(btc, day):
     """Подтверждённый медвежий рынок: BTC ниже SMA200 и SMA200 ниже, чем 30 дней назад."""
     b = btc.loc[:day]
@@ -530,6 +587,27 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
             st["left"] = max(0, st["left"] - 1)
             targets[k] = (1.0 / 2) if on else 0.0
             diag[k] = {"bull": bull, "z7": z, "ret7": float(r7.iloc[-1]), "days_left": st["left"], "on": on}
+    elif model == "ZONE":
+        # Вход: цена закрылась выше верхней границы зоны проторговки 30 дней (VAH), цена выше медианы года
+        # (перцентиль > 50%) и над ценой больше неснятых ликвидаций шортов, чем под ней лонгов (magnet > 0.5).
+        # Выход: закрытие ниже POC (уровня с наибольшим объёмом). Только BTC и ETH, по половине капитала.
+        h4 = ctx.get("h4") or {}
+        for k in [c for c in coins if c in ("BTC", "ETH")]:
+            on = bool(mstate.get(k, False))
+            zf = zone_features(h4[k], day) if k in h4 else None
+            c = closes[k].loc[:day].iloc[-366:]
+            pct = float((c.iloc[:-1] < c.iloc[-1]).mean()) if len(c) > 200 else np.nan
+            if zf is None:
+                diag[k] = {"error": "нет 4ч свечей", "on": on}
+            else:
+                p = float(closes[k].loc[:day].iloc[-1])
+                if not on and p > zf["vah"] and pct > 0.5 and zf["magnet"] > 0.5:
+                    on = True
+                elif on and p < zf["poc"]:
+                    on = False
+                diag[k] = {**{q: float(v) for q, v in zf.items()}, "pct365": pct, "on": on}
+            mstate[k] = on
+            targets[k] = 0.5 if on else 0.0
     return targets, diag
 
 
@@ -949,6 +1027,14 @@ def cmd_cycle(a):
     ctx["uni"] = {k: v.close for k, v in uni_df.items()}
     ctx["lows"] = {k: v.low for k, v in uni_df.items()}
     ctx["highs"] = {k: v.high for k, v in uni_df.items()}
+    ctx["h4"] = {}
+    for k in ("BTC", "ETH"):                           # для ZONE: 4-часовые свечи (зоны и карта ликвидаций)
+        if k in coins:
+            try:
+                ctx["h4"][k] = feed.daily(k, days=ZONE_LIQ_DAYS + 5 + (pd.Timestamp(latest) - todo[0]).days, tf="4h")
+                rec.upsert_csv(f"market/ohlcv_4h/{k}.csv", ctx["h4"][k])
+            except Exception as e:
+                log(f"ZONE: нет 4ч свечей {k}: {str(e)[:100]}", "warning")
     for day in todo:
         live = day == latest
         books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
@@ -1045,9 +1131,10 @@ MODEL_INFO = {
     "M1_x5": ("Эксперименты", "M1, плечо по волатильности до x5"),
     "ROT3": ("Эксперименты", "Ротация: 3 сильнейшие монеты из 19"),
     "EXP": ("Эксперименты", "Эксперт: покупка паники в бычьем рынке, x2"),
+    "ZONE": ("Эксперименты", "Пробой зоны проторговки + карта ликвидаций + перцентиль"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207"]
 
 
 def cmd_dashboard(a, st=None):
@@ -1142,7 +1229,7 @@ def cmd_dashboard(a, st=None):
                      f'<td {c(f_["market"])}>{f_["market"]:+.2f}</td><td {c(f_["fees"])}>{f_["fees"]:+.2f}</td>'
                      f'<td {c(f_["funding"])}>{f_["funding"]:+.2f}</td><td {c(f_["carry"])}>{carry_t}</td>'
                      f'<td {c(f_["total"])}><b>{f_["total"]:+.2f}</b></td></tr>')
-    money.append(f'<tr><td><b>Все 15</b></td>' + "".join(f'<td class="r"><b>{tot[k]:+.2f}</b></td>' for k in
+    money.append(f'<tr><td><b>Все {len(MODELS)}</b></td>' + "".join(f'<td class="r"><b>{tot[k]:+.2f}</b></td>' for k in
                                                          ("market", "fees", "funding", "carry", "total")) + "</tr>")
     ops = []
     for rel, kind in (("orders/fills.csv", "fill"), ("orders/carry.csv", "carry")):
