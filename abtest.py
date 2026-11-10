@@ -172,7 +172,41 @@ class Feed:
         return f"{coin}/{self.quote}"
 
     def psym(self, coin):
+        if coin in ("PEPE", "SHIB") and self.name == "bybit":   # на Bybit перпы этих монет в тысячах: 1000PEPEUSDT
+            return f"1000{coin}/USDT:USDT"
         return f"{coin}/USDT:USDT"
+
+    def derivs(self, coin):
+        """Компактный снимок деривативов: funding, mark/index, открытый интерес, лонг/шорт. Ошибки по полям."""
+        snap = {"ts": now_utc().isoformat(), "exchange": self.name, "coin": coin}
+        for key, fn in (("funding", lambda: {k: self.perp.fetch_funding_rate(self.psym(coin)).get(k) for k in
+                                             ("fundingRate", "fundingTimestamp", "markPrice", "indexPrice")}),
+                        ("open_interest", lambda: {k: self.perp.fetch_open_interest(self.psym(coin)).get(k) for k in
+                                                   ("openInterestAmount", "openInterestValue")}),
+                        ("long_short", lambda: [r.get("longShortRatio") for r in
+                                                self.perp.fetch_long_short_ratio_history(self.psym(coin), "1h", limit=1)])):
+            try:
+                snap[key] = fn()
+            except Exception as e:
+                snap[key] = None
+                snap.setdefault("errors", {})[key] = str(e)[:200]
+        return snap
+
+    def funding_history(self, coin, since_ms):
+        """Все выплаты funding с since_ms (каждые 8 ч у BTC/ETH, у части монет чаще)."""
+        rows = []
+        while True:
+            batch = self._retry(self.perp.fetch_funding_rate_history, self.psym(coin), since=since_ms, limit=200)
+            batch = [b for b in batch if b["timestamp"] >= since_ms]
+            if not batch:
+                break
+            rows += [{"t": b["timestamp"], "rate": b["fundingRate"]} for b in batch]
+            since_ms = batch[-1]["timestamp"] + 1
+            if len(batch) < 100:
+                break
+        df = pd.DataFrame(rows).drop_duplicates("t") if rows else pd.DataFrame(columns=["t", "rate"])
+        df.index = pd.to_datetime(df.t, unit="ms")
+        return df.drop(columns="t")
 
     def _retry(self, fn, *a, **kw):
         for attempt in range(4):
@@ -983,7 +1017,32 @@ def cmd_snapshot(a, feed=None, st=None):
             st.setdefault("funding", {})[k] = float(fr)
         log(f"снимок {k}: last {((s.get('ticker') or {}).get('last'))}, спред {s.get('spread_bps', float('nan')):.1f} bps, "
             f"funding {((s.get('funding') or {}).get('fundingRate'))}")
+    if feed.name != "coinbase":                        # остальные монеты списка: funding, OI, лонг/шорт каждый час
+        ok = 0
+        for k in [c for c in ROT_UNIVERSE if c not in st["coins"]]:
+            try:
+                d = feed.derivs(k)
+                rec.append_jsonl(f"market/derivs/{d['ts'][:10]}.jsonl", d)
+                ok += d.get("funding") is not None
+            except Exception as e:
+                log(f"деривативы {k}: {str(e)[:100]}", "warning")
+        log(f"деривативы ещё {ok} монет записаны")
     return books
+
+
+def record_funding_history(feed, rec, coins):
+    """market/funding/<COIN>.csv: полная история ставок funding, дописывается раз в день. При первом запуске
+    берёт всё, что отдаёт биржа (до ~2 лет), дальше только новое. История копится, даже если биржа потом её урежет."""
+    for k in coins:
+        p = rec.path(f"market/funding/{k}.csv")
+        try:
+            since = (pd.read_csv(p, index_col=0, parse_dates=True).index[-1].value // 10**6 + 1) if p.exists() \
+                else feed.perp.milliseconds() - 730 * DAY
+            df = feed.funding_history(k, since)
+            if len(df):
+                rec.upsert_csv(f"market/funding/{k}.csv", df)
+        except Exception as e:
+            log(f"история funding {k}: {str(e)[:100]}", "warning")
 
 
 def cmd_cycle(a):
@@ -1035,6 +1094,7 @@ def cmd_cycle(a):
                 rec.upsert_csv(f"market/ohlcv_4h/{k}.csv", ctx["h4"][k])
             except Exception as e:
                 log(f"ZONE: нет 4ч свечей {k}: {str(e)[:100]}", "warning")
+    record_funding_history(feed, rec, list(dict.fromkeys(coins + ROT_UNIVERSE)))
     for day in todo:
         live = day == latest
         books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
