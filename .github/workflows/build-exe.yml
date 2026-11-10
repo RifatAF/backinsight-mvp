@@ -39,6 +39,7 @@ jobs:
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe selftest
+          .\backinsight.exe streamtest
           .\backinsight.exe dashboard
           if (-not (Test-Path abtest\dashboard.html)) { throw "no dashboard" }
           .\backinsight.exe export

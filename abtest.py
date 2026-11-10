@@ -1027,7 +1027,123 @@ def cmd_snapshot(a, feed=None, st=None):
             except Exception as e:
                 log(f"деривативы {k}: {str(e)[:100]}", "warning")
         log(f"деривативы ещё {ok} монет записаны")
+    for r in options_snapshot():
+        rec.append_jsonl(f"market/options/{r['ts'][:10]}.jsonl", r)
     return books
+
+
+# ====================================================================================== редкие данные (копятся)
+
+def options_snapshot():
+    """Deribit, BTC и ETH: индекс DVOL, открытый интерес и объём путов/коллов, IV около денег и перекос (skew)
+    на ближайшей экспирации к 30 дням. Истории перекоса и put/call в бесплатном доступе нет, поэтому пишем сами."""
+    out = []
+    for cur in ("BTC", "ETH"):
+        r = {"ts": now_utc().isoformat(), "currency": cur}
+        try:
+            r["dvol"] = S._get_json(f"https://www.deribit.com/api/v2/public/get_index_price?index_name={cur.lower()}dvol_usdc")["result"]["index_price"]
+            book = S._get_json(f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={cur}&kind=option")["result"]
+            rows = []
+            for b in book:
+                _, exp, strike, typ = b["instrument_name"].split("-")
+                rows.append(dict(exp=pd.Timestamp(datetime.strptime(exp, "%d%b%y")), k=float(strike), t=typ,
+                                 oi=b.get("open_interest") or 0, vol=b.get("volume") or 0, iv=b.get("mark_iv"),
+                                 u=b.get("underlying_price")))
+            o = pd.DataFrame(rows)
+            r["put_oi"], r["call_oi"] = float(o[o.t == "P"].oi.sum()), float(o[o.t == "C"].oi.sum())
+            r["put_vol_24h"], r["call_vol_24h"] = float(o[o.t == "P"].vol.sum()), float(o[o.t == "C"].vol.sum())
+            r["put_call_oi"] = r["put_oi"] / r["call_oi"] if r["call_oi"] else None
+            now = pd.Timestamp.now().normalize()
+            exps = sorted(o.exp.unique(), key=lambda e: abs((e - now).days - 30))
+            e = o[o.exp == exps[0]]
+            u = float(e.u.median())
+            pick = lambda typ, k: e[e.t == typ].iloc[(e[e.t == typ].k - k).abs().argsort()[:1]]
+            atm_c, atm_p = pick("C", u), pick("P", u)
+            p90, c110 = pick("P", 0.9 * u), pick("C", 1.1 * u)
+            r.update(expiry=str(exps[0].date()), underlying=u,
+                     atm_iv=float((atm_c.iv.iloc[0] + atm_p.iv.iloc[0]) / 2),
+                     put90_iv=float(p90.iv.iloc[0]), call110_iv=float(c110.iv.iloc[0]),
+                     skew_90_110=float(p90.iv.iloc[0] - c110.iv.iloc[0]))
+        except Exception as ex:
+            r["error"] = str(ex)[:200]
+        out.append(r)
+    return out
+
+
+def record_daily_extras(feed, rec):
+    """Раз в день: ставки Bybit Earn (гибкие, USDT/BTC/ETH) и индекс страха и жадности."""
+    if feed.name == "bybit":
+        for c in ("USDT", "BTC", "ETH"):
+            try:
+                r = feed.spot.publicGetV5EarnProduct({"category": "FlexibleSaving", "coin": c})
+                rec.append_jsonl("market/earn.jsonl", {"ts": now_utc().isoformat(), "coin": c,
+                                                       "products": (r.get("result") or {}).get("list", [])})
+            except Exception as e:
+                rec.append_jsonl("market/earn.jsonl", {"ts": now_utc().isoformat(), "coin": c, "error": str(e)[:200]})
+    try:
+        d = S._get_json("https://api.alternative.me/fng/?limit=0")["data"]
+        f = pd.DataFrame({"fng": [int(x["value"]) for x in d]},
+                         index=pd.to_datetime([int(x["timestamp"]) for x in d], unit="s"))
+        rec.upsert_csv("market/fng.csv", f.sort_index())
+    except Exception as e:
+        log(f"индекс страха и жадности: {str(e)[:100]}", "warning")
+
+
+def start_liquidation_stream(exchange, coins, root):
+    """Фоновый поток: все ликвидации по перпам монет списка через websocket биржи -> market/liquidations/<день>.csv.
+    История ликвидаций по REST не отдаётся, поэтому копится только пока бот работает."""
+    import asyncio
+    import threading
+
+    def run():
+        import ccxt.pro as ccxtpro
+        rec = Recorder(Path(root) / "data_lake")
+        feed_sym = Feed.__new__(Feed)
+        feed_sym.name = exchange
+
+        def save(ex, q, coin):
+            info = q.get("info") or {}
+            det = (info.get("details") or [{}])[0] if isinstance(info.get("details"), list) else {}
+            cs = q.get("contractSize") or (ex.markets.get(q.get("symbol"), {}) or {}).get("contractSize") or 1
+            px, n = q.get("price"), q.get("contracts")
+            rec.append_csv(f"market/liquidations/{now_utc():%Y-%m-%d}.csv", dict(
+                ts=q.get("datetime"), exchange=exchange, coin=coin, price=px, contracts=n,
+                usd=(px * n * cs) if px and n else q.get("quoteValue"),
+                side=q.get("side") or info.get("S") or info.get("side"),
+                pos_side=det.get("posSide") or ("long" if info.get("S") == "Buy" else "short" if info.get("S") == "Sell" else None)))
+
+        async def one(ex, syms):
+            while True:
+                try:
+                    if len(syms) > 1:
+                        got = await ex.watch_liquidations_for_symbols(list(syms))
+                    else:
+                        got = await ex.watch_liquidations(next(iter(syms)))
+                    for q in got:
+                        save(ex, q, syms.get(q.get("symbol"), q.get("symbol")))
+                except Exception as e:
+                    log(f"поток ликвидаций: {str(e)[:120]}, переподключение через 30 с", "warning")
+                    await asyncio.sleep(30)
+
+        async def main():
+            ex = getattr(ccxtpro, exchange)({"options": {"defaultType": "swap"}})
+            ex.aiohttp_trust_env = True                 # системный прокси, если он есть
+            proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+            if proxy:
+                ex.wss_proxy = proxy
+            await ex.load_markets()
+            syms = {Feed.psym(feed_sym, k): k for k in coins if Feed.psym(feed_sym, k) in ex.markets}
+            if ex.has.get("watchLiquidationsForSymbols") is True:
+                await one(ex, syms)                     # одна подписка на все монеты (OKX)
+            else:
+                await asyncio.gather(*(one(ex, {s_: k}) for s_, k in syms.items()))   # по монете (Bybit)
+        try:
+            asyncio.run(main())
+        except Exception as e:
+            log(f"поток ликвидаций остановлен: {e}", "error")
+    t = threading.Thread(target=run, name="liquidations", daemon=True)
+    t.start()
+    return t
 
 
 def record_funding_history(feed, rec, coins):
@@ -1095,6 +1211,7 @@ def cmd_cycle(a):
             except Exception as e:
                 log(f"ZONE: нет 4ч свечей {k}: {str(e)[:100]}", "warning")
     record_funding_history(feed, rec, list(dict.fromkeys(coins + ROT_UNIVERSE)))
+    record_daily_extras(feed, rec)
     for day in todo:
         live = day == latest
         books = cmd_snapshot(a, feed, st) if live else None      # живой стакан только для текущего дня
@@ -1310,6 +1427,15 @@ def cmd_dashboard(a, st=None):
     ops = sorted(ops, reverse=True)[:15]
     ops_html = "".join(f'<tr><td class="d" style="white-space:nowrap">{html.escape(t)}</td>'
                        f'<td>{html.escape(x)}</td></tr>' for t, x in ops) or '<tr><td class="mut">Операций ещё не было: первые будут в дневном цикле 03:05 МСК.</td></tr>'
+    def cnt(sub, pat="*"):
+        d_ = root / "data_lake" / sub
+        return sorted(d_.glob(pat)) if d_.exists() else []
+    liq_files = cnt("market/liquidations", "*.csv")
+    n_liq = sum(max(0, sum(1 for _ in open(f_, encoding="utf-8")) - 1) for f_ in liq_files[-31:])
+    acc = (f"Снимки рынка: {len(cnt('market/snapshots', '*.jsonl'))} дн · деривативы 19 монет: "
+           f"{len(cnt('market/derivs', '*.jsonl'))} дн · опционы Deribit: {len(cnt('market/options', '*.jsonl'))} дн · "
+           f"ликвидации: {len(liq_files)} дн, {n_liq:,} за последний месяц · история funding: "
+           f"{len(cnt('market/funding', '*.csv'))} монет · Earn: {'есть' if (root / 'data_lake/market/earn.jsonl').exists() else 'нет'}")
     status = ""
     stf = root / "selftest.json"
     if stf.exists():
@@ -1361,6 +1487,7 @@ else e.textContent="● бот работает, последняя провер
 за позиции с плечом и шорты, раз в 8 часов (плюс = получено). Carry: свободные деньги стоят в связке «купить BTC + шорт BTC-перпа»,
 цена не влияет, доход даёт funding. Earn не используется.</div></div>
 <div class="card"><b>Последние операции</b><table>{ops_html}</table></div>
+<div class="card"><b>Накоплено данных</b><div class="mut">{html.escape(acc)}</div></div>
 <div class="card"><b>Лог</b><pre>{html.escape(chr(10).join(tail)) or "пусто"}</pre></div>
 </div></body></html>"""
     atomic_write(root / "dashboard.html", page)
@@ -1404,6 +1531,16 @@ def cmd_selftest(a, st=None):
         log(f"тестовая сделка НЕ ПРОШЛА: {res.get('error')}", "error")
     return res["ok"]
 
+def cmd_streamtest(a):
+    """Проверка потока ликвидаций: 90 секунд слушает websocket и печатает, сколько записано."""
+    st = load_state(a)
+    start_liquidation_stream(st["exchange"], list(dict.fromkeys(st["coins"] + ROT_UNIVERSE)), a.dir)
+    time.sleep(90)
+    f = Path(a.dir) / "data_lake" / "market" / "liquidations" / f"{now_utc():%Y-%m-%d}.csv"
+    n = max(0, len(f.read_text(encoding="utf-8").splitlines()) - 1) if f.exists() else 0
+    log(f"поток ликвидаций: за 90 с записано {n}")
+    return n > 0
+
 _LOCK = None
 
 
@@ -1428,6 +1565,13 @@ def single_instance(base_dir):
 def cmd_loop(a):
     single_instance(a.dir)
     log("loop: снимок рынка каждый час, дневной цикл в 00:05 UTC. Ctrl+C для остановки")
+    try:
+        st0 = load_state(a)
+        if st0["exchange"] in ("bybit", "okx"):
+            start_liquidation_stream(st0["exchange"], list(dict.fromkeys(st0["coins"] + ROT_UNIVERSE)), a.dir)
+            log("поток ликвидаций запущен (websocket биржи, пишет market/liquidations/)")
+    except Exception as e:
+        log(f"поток ликвидаций не запущен: {e}", "warning")
     try:
         cmd_selftest(a)
     except Exception as e:
@@ -1701,7 +1845,7 @@ def cmd_export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
-                                    "health", "export", "dashboard", "selftest"])
+                                    "health", "export", "dashboard", "selftest", "streamtest"])
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=100)
@@ -1712,8 +1856,8 @@ def main():
     setup_logging(a.dir)
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
-          "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest}[a.cmd]
-    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest"):
+          "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest, "streamtest": cmd_streamtest}[a.cmd]
+    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest", "streamtest"):
         return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:
