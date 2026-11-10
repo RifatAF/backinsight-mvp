@@ -1089,6 +1089,9 @@ def record_daily_extras(feed, rec):
         log(f"индекс страха и жадности: {str(e)[:100]}", "warning")
 
 
+LIQ_STATUS = {"connected": False, "n": 0, "error": None}
+
+
 def start_liquidation_stream(exchange, coins, root):
     """Фоновый поток: все ликвидации по перпам монет списка через websocket биржи -> market/liquidations/<день>.csv.
     История ликвидаций по REST не отдаётся, поэтому копится только пока бот работает."""
@@ -1096,6 +1099,14 @@ def start_liquidation_stream(exchange, coins, root):
     import threading
 
     def run():
+        try:
+            run_inner()
+        except BaseException as e:
+            import traceback
+            LIQ_STATUS["error"] = f"{type(e).__name__}: {e}"
+            log(f"поток ликвидаций остановлен: {e}\n{traceback.format_exc()}", "error")
+
+    def run_inner():
         import ccxt.pro as ccxtpro
         rec = Recorder(Path(root) / "data_lake")
         feed_sym = Feed.__new__(Feed)
@@ -1121,6 +1132,7 @@ def start_liquidation_stream(exchange, coins, root):
                         got = await ex.watch_liquidations(next(iter(syms)))
                     for q in got:
                         save(ex, q, syms.get(q.get("symbol"), q.get("symbol")))
+                        LIQ_STATUS["n"] += 1
                 except Exception as e:
                     log(f"поток ликвидаций: {str(e)[:120]}, переподключение через 30 с", "warning")
                     await asyncio.sleep(30)
@@ -1132,15 +1144,13 @@ def start_liquidation_stream(exchange, coins, root):
             if proxy:
                 ex.wss_proxy = proxy
             await ex.load_markets()
+            LIQ_STATUS["connected"] = True
             syms = {Feed.psym(feed_sym, k): k for k in coins if Feed.psym(feed_sym, k) in ex.markets}
             if ex.has.get("watchLiquidationsForSymbols") is True:
                 await one(ex, syms)                     # одна подписка на все монеты (OKX)
             else:
                 await asyncio.gather(*(one(ex, {s_: k}) for s_, k in syms.items()))   # по монете (Bybit)
-        try:
-            asyncio.run(main())
-        except Exception as e:
-            log(f"поток ликвидаций остановлен: {e}", "error")
+        asyncio.run(main())
     t = threading.Thread(target=run, name="liquidations", daemon=True)
     t.start()
     return t
@@ -1536,10 +1546,9 @@ def cmd_streamtest(a):
     st = load_state(a)
     start_liquidation_stream(st["exchange"], list(dict.fromkeys(st["coins"] + ROT_UNIVERSE)), a.dir)
     time.sleep(90)
-    f = Path(a.dir) / "data_lake" / "market" / "liquidations" / f"{now_utc():%Y-%m-%d}.csv"
-    n = max(0, len(f.read_text(encoding="utf-8").splitlines()) - 1) if f.exists() else 0
-    log(f"поток ликвидаций: за 90 с записано {n}")
-    return n > 0
+    log(f"поток ликвидаций: подключён {LIQ_STATUS['connected']}, за 90 с записано {LIQ_STATUS['n']}, "
+        f"ошибка {LIQ_STATUS['error']}")
+    return LIQ_STATUS["connected"] and not LIQ_STATUS["error"]
 
 _LOCK = None
 

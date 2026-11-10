@@ -22,7 +22,7 @@ jobs:
           git rev-parse --short HEAD | Out-File -Encoding ascii VERSION
           pyinstaller -y --onefile --name backinsight `
             --add-data "laptop/autostart_windows.ps1;laptop" --add-data "DATA_SCHEMA.md;." `
-            --add-data "ABTEST.md;." --add-data "VERSION;." --add-data "data/onchain_seed.csv;data" launcher.py
+            --add-data "ABTEST.md;." --add-data "VERSION;." --add-data "data/onchain_seed.csv;data" --collect-submodules ccxt.pro launcher.py
       - name: Smoke test exe
         shell: pwsh
         run: |
