@@ -328,11 +328,14 @@ class Feed:
         while True:
             batch = self._retry(self.spot.fetch_ohlcv, self.sym(coin), tf, since=since, limit=300)
             if not batch:
+                if not rows and since + 300 * step < self.spot.milliseconds():
+                    since += 300 * step                  # запрошено раньше начала истории монеты: двигаемся вперёд
+                    continue
                 break
             rows += batch
             since = batch[-1][0] + step
-            if len(batch) < 300 or since > self.spot.milliseconds():
-                break
+            if since > self.spot.milliseconds() or (len(batch) < 300 and since > self.spot.milliseconds() - 300 * step):
+                break                                    # короткий ответ в начале истории монеты не значит конец
         df = pd.DataFrame(rows, columns=["t", "open", "high", "low", "close", "volume"]).drop_duplicates("t")
         df.index = pd.to_datetime(df.t, unit="ms")
         df = df.drop(columns="t").sort_index()
@@ -1846,6 +1849,16 @@ def cmd_replay(a):
     except Exception as e:
         ctx["fund_btc"] = None
         log(f"FNEG: нет истории funding: {str(e)[:100]}", "warning")
+    local = Path(__file__).parent / "data/binance/BTC_funding.csv"   # биржи отдают историю funding коротко
+    if local.exists():
+        try:
+            f = pd.read_csv(local)
+            f.index = pd.to_datetime(f.t, unit="ms")
+            hist = funding_daily(f[["rate"]])
+            cur = ctx.get("fund_btc")
+            ctx["fund_btc"] = hist if cur is None else pd.concat([hist[hist.index < cur.index[0]], cur])
+        except Exception as e:
+            log(f"локальная история funding: {str(e)[:100]}", "warning")
     liqs = {m: 0 for m in MODELS}
     m4_rows, nfills = [], {m: 0 for m in MODELS}
     for i, day in enumerate(days):
