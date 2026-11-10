@@ -38,7 +38,7 @@ jobs:
           .\backinsight.exe init --exchange okx
           $n = @((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties).Count
           Write-Host "accounts: $n"
-          if ($n -ne 19) { throw "need 19 accounts, got $n" }
+          if ($n -ne 20) { throw "need 20 accounts, got $n" }
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe selftest

@@ -54,7 +54,7 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO", "MEGA"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
@@ -73,6 +73,11 @@ FMIX_LEV = 2.0
 # COMBO: портфель из двух некоррелированных частей (корреляция 0.09): M1 как есть + сверху ещё 1 BTC при сигнале FMIX.
 # mix_lab.py (с 2021-06): +42%/год, Sharpe 1.23, просадка −30% против M1 +26%, 0.93, −28%. Плечо до x2.
 COMBO_LEV = 2.0
+# MEGA: три разных источника дохода поровну — тренд (M1), покупка паники (EXP, x2), funding против толпы (FMIX, x2) —
+# и общий контроль риска: плечо = 30% / волатильность портфеля, не больше x2; свободные деньги в carry.
+# Веса заданы заранее (не подбирались). mega_lab.py, replay 2022-03..2026-10: +57%/год, Sharpe 1.72, просадка −33%,
+# Sharpe 1.70 / 1.76 по половинам истории, плюс каждый год (в 2022 тоже). Корреляции частей: M1–EXP 0.15, M1–FMIX 0.12.
+MEGA_PARTS, MEGA_VOL, MEGA_MAX_LEV = ("M1", "EXP", "FMIX"), 0.30, 2.0
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -80,7 +85,8 @@ DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отда
 def model_spec(m):
     """(базовая модель, максимальное плечо, разрешён шорт)."""
     base, _, var = m.partition("_")
-    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else COMBO_LEV if base == "COMBO" else 1.0)
+    lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else COMBO_LEV if base == "COMBO"
+                                       else MEGA_MAX_LEV if base == "MEGA" else 1.0)
     return base, lev, var == "ls"
 
 
@@ -91,6 +97,8 @@ def lev_mode(m):
         return "vol", 0.6
     if var == "x5":
         return "vol", 1.0
+    if m == "MEGA":
+        return "vol", MEGA_VOL
     if m in ("EXP", "FMIX", "COMBO"):
         return "fixed", None
     return "none", None
@@ -587,6 +595,20 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
             else:
                 targets[k] = ((t1.get(k) or 0.0) + (t2.get(k) or 0.0)) / COMBO_LEV
         return targets, {"M1": d1, "FMIX": d2}
+    if model == "MEGA":                                  # доли частей с их собственным плечом, затем общий риск
+        parts, last = {}, mstate.setdefault("last", {})
+        for m in MEGA_PARTS:
+            t, d = decide(m, ctx, mstate.setdefault(m, {}), equity_hist)
+            mult = model_spec(m)[1]
+            for k, v in t.items():
+                if v is None:                            # «не трогать»: берём прошлую цель этой части
+                    v = last.get(m, {}).get(k, 0.0)
+                else:
+                    v = v * mult
+                last.setdefault(m, {})[k] = v
+                targets[k] = targets.get(k, 0.0) + v / len(MEGA_PARTS)
+            parts[m] = d
+        return targets, parts
     can_short = short and (not bear_only or btc_bear(btc, day))   # bear_only: шорт только в медвежьем рынке
     if model in ("M1", "M2"):
         p = S.Params(mode="A" if model == "M1" else "B")
@@ -956,7 +978,7 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    carry_on = lev == 1 or base in ("EXP", "FMIX", "COMBO")                # EXP большую часть времени вне рынка
+    carry_on = lev == 1 or base in ("EXP", "FMIX", "COMBO", "MEGA")                # EXP большую часть времени вне рынка
     carry_pnl, carry_sig = carry_step(acct, funding, None) if carry_on else (0.0, False)
     targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
@@ -1478,9 +1500,10 @@ MODEL_INFO = {
     "FNEG": ("Эксперименты", "BTC только при отрицательном funding за 7 дней (против толпы)"),
     "FMIX": ("Эксперименты", "FNEG + фильтр роста стейблкоинов, x2, свободные деньги в carry"),
     "COMBO": ("Эксперименты", "M1 + сверху 1 BTC при сигнале FMIX (две некоррелированные части), до x2"),
+    "MEGA": ("Эксперименты", "Портфель: тренд M1 + паника EXP + funding FMIX поровну, риск 30% годовых, до x2"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309"]
 
 
 def cmd_dashboard(a, st=None):
@@ -1844,6 +1867,12 @@ def cmd_replay(a):
     eqh = {m: {} for m in MODELS}
     ctx = build_context(closes, ocf, oc, layers, coins, days[0])
     ctx["uni"] = {k: v.close for k, v in dfs.items()}
+    ctx["h4"] = {}
+    for k in ("BTC", "ETH"):                             # для ZONE: без 4ч свечей она в replay не торговала бы
+        try:
+            ctx["h4"][k] = feed.daily(k, days=a.days + ZONE_LIQ_DAYS + 5, tf="4h")
+        except Exception as e:
+            log(f"ZONE: нет 4ч свечей {k}: {str(e)[:100]}", "warning")
     try:
         ctx["fund_btc"] = funding_daily(feed.funding_history("BTC", int(pd.Timestamp(days[0]).value // 10**6) - 10 * DAY))
     except Exception as e:
