@@ -1015,12 +1015,14 @@ def load_state(a):
         if m not in st["accounts"]:
             st["accounts"][m] = {"cash": st["capital"], "units": {}, "start": st["capital"], "base": st["capital"]}
             st["model_state"][m], st["equity_hist"][m] = {}, {}
+            st.setdefault("_added_models", []).append(m)
         st["accounts"][m].setdefault("start", st["capital"])
     return st
 
 
 def save_state(a, st):
     st["code_version"] = CODE_VERSION
+    st.pop("_added_models", None)
     atomic_write(state_path(a), json.dumps(st, indent=2, ensure_ascii=False, default=str))
     b = Path(a.dir) / "state_backups" / f"state_{now_utc():%Y-%m-%d}.json"
     b.parent.mkdir(parents=True, exist_ok=True)
@@ -1224,6 +1226,10 @@ def cmd_cycle(a):
         todo = [latest]
     if not todo:
         log(f"цикл за свечу {latest.date()} уже выполнен")
+        added = st.get("_added_models")
+        if added:                                      # новые стратегии после обновления: сразу видны на панели
+            save_state(a, st)
+            log(f"добавлены стратегии: {', '.join(added)}, начнут торговать со следующего дневного цикла")
         return
     if len(todo) > 1:
         log(f"ноутбук был выключен или спал: догоняю {len(todo)} дней {todo[0].date()} .. {todo[-1].date()} "
