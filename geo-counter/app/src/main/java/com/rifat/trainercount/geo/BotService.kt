@@ -150,7 +150,8 @@ class BotService : Service() {
                     if (m.chat.id.isBlank() || m.text.isBlank()) continue
                     Telegram.remember(this, m.chat)
                     // Ошибка в одном сообщении не должна останавливать бота и выглядеть как «нет связи».
-                    try { handle(s.tgToken, m) } catch (e: InterruptedException) { throw e } catch (e: Exception) {
+                    // Throwable, а не Exception: любая ошибка иначе молча останавливала бота до перезапуска.
+                    try { handle(s.tgToken, m) } catch (e: InterruptedException) { throw e } catch (e: Throwable) {
                         Diag.add(this, "✗ Бот: ошибка при ответе (${e.javaClass.simpleName}: ${e.message})")
                         runCatching { Telegram.send(s.tgToken, m.chat.id, "Не получилось ответить, попробуйте ещё раз.") }
                     }
@@ -226,7 +227,8 @@ class BotService : Service() {
             isButton(m.text, OWNER_BUTTONS) || isButton(m.text, OWNER_MORE) || quickAnswer(d0, m.text, now) != null
         if (d0.settings.aiKey.isNotBlank() && !exact) {
             val status = whereText(map = Regex("где|куда|адрес|встрет|подъех|забрать", RegexOption.IGNORE_CASE).containsMatchIn(m.text))
-            val p = Assistant.think(this, m.text, history[m.chat.id]?.toList().orEmpty(), status.replace("\n", "; "))
+            Telegram.typing(token, m.chat.id)
+            val p = thinkWithin(m, status)
             if (p != null) {
                 Diag.add(this, "Бот (помощник): «${m.text.take(40)}» от ${m.chat.name}")
                 val text = when {
@@ -244,7 +246,9 @@ class BotService : Service() {
                 return
             }
         }
-        if (cmd is BotCmd.Unknown && d0.settings.aiKey.isNotBlank()) ai(m.text, now)?.let { cmd = it }
+        // Помощник уже пробовал и не ответил: второй запрос к ИИ только затянет ответ.
+        val triedAi = d0.settings.aiKey.isNotBlank() && !exact
+        if (cmd is BotCmd.Unknown && d0.settings.aiKey.isNotBlank() && !triedAi) ai(m.text, now)?.let { cmd = it }
         // Место ищем до записи в данные: это может занять до 20 секунд.
         val where = if (cmd is BotCmd.Where) whereText() else ""
         var reply = ""
@@ -252,6 +256,35 @@ class BotService : Service() {
         if (Store.data.value != d0) Planner.refresh(this)
         Diag.add(this, "Бот: «${m.text.take(40)}» от ${m.chat.name}")
         send(token, m.chat.id, reply, if (cmd is BotCmd.Help) OWNER_KB else null)
+    }
+
+    private val pool = java.util.concurrent.Executors.newCachedThreadPool { r -> Thread(r, "tg-ai").apply { isDaemon = true } }
+
+    /**
+     * Помощник с ограничением по времени: если ИИ не ответил за 60 секунд, бот отвечает сам, по расписанию,
+     * а не молчит. Пока ждём, в чате видно «печатает…».
+     */
+    private fun thinkWithin(m: Telegram.Message, status: String): Assistant.Proposal? {
+        val token = Store.data.value.settings.tgToken
+        val f = pool.submit<Assistant.Proposal?> {
+            Assistant.think(this, m.text, history[m.chat.id]?.toList().orEmpty(), status.replace("\n", "; "))
+        }
+        val until = System.currentTimeMillis() + 60_000
+        while (true) {
+            try {
+                return f.get(4, TimeUnit.SECONDS)
+            } catch (_: java.util.concurrent.TimeoutException) {
+                if (System.currentTimeMillis() > until) {
+                    f.cancel(true)
+                    Diag.add(this, "✗ Бот: ИИ не ответил за минуту, отвечаю без него")
+                    return null
+                }
+                Telegram.typing(token, m.chat.id)
+            } catch (e: java.util.concurrent.ExecutionException) {
+                Diag.add(this, "✗ Бот: ошибка ИИ (${e.cause?.javaClass?.simpleName}: ${e.cause?.message})")
+                return null
+            }
+        }
     }
 
     /** Ответ без кнопок (их не раскрываем заново) и никогда не пустой: пустое сообщение Telegram не доставит. */

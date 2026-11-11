@@ -36,6 +36,11 @@ object Telegram {
         return JSONObject(text)
     }
 
+    /** «печатает…» в чате, пока бот думает (держится около 5 секунд). */
+    fun typing(token: String, chatId: String) {
+        runCatching { call(token, "sendChatAction", mapOf("chat_id" to chatId, "action" to "typing"), 10_000) }
+    }
+
     /** Имя бота или null, если токен неверный. Вызывать не на главном потоке. */
     fun botName(token: String): String? = runCatching {
         val o = call(token, "getMe")

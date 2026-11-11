@@ -151,6 +151,8 @@ class BotTest {
         assertEquals(BotCmd.Week(today), parseBot("🗓 Неделя", today))
         assertEquals(BotCmd.Free(null), parseBot("🕐 Свободное время", today))
         assertEquals(BotCmd.Where, parseBot("📍 Где Рифат", today))
+        assertEquals(BotCmd.Where, parseBot("Рифат сейчас на работе. Есть данные об этом?", today))
+        assertTrue(parseBot("завтра в 10 совещание на работе", today) !is BotCmd.Where)
         assertTrue(parseBot("💰 Остатки", today) is BotCmd.Balances)
         assertTrue(parseBot("⚠️ Кто должен", today) is BotCmd.Balances)
         assertTrue(parseBot("📊 Сводка", today) is BotCmd.Summary)

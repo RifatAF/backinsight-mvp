@@ -161,7 +161,7 @@ private fun takeDuration(sc: Scan): Int? = sc.take(Regex("\\sна\\s+(?:(\\d+(?:
 fun parseBot(text: String, today: LocalDate): BotCmd {
     val sc = Scan(text.replace(LEAD, ""))
     if (sc.has(Regex("^\\s*/?(start|help|помощь|команды|что умеешь)"))) return BotCmd.Help
-    if (sc.has(Regex("\\s(где|/where)(?=\\s)"))) return BotCmd.Where
+    if (sc.has(Regex("\\s(где|/where)(?=\\s)|(сейчас|он)[^.?!]{0,20}на работе|чем (он )?(сейчас )?занят|что (он )?(сейчас )?делает|сейчас занят"))) return BotCmd.Where
     // Деньги и статистика; фраза со временем это запись дела («17:00 оплатить интернет»).
     if (!sc.has(Regex("\\d{1,2}[:.]\\d{2}|\\sв\\s+\\d{1,2}\\s"))) {
         if (sc.has(Regex("\\sотчет"))) return BotCmd.Report(text)
