@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # аудит: токен с правом записи не остаётся в .git/config во время сборки
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -42,7 +44,7 @@ jobs:
           .\backinsight.exe init --exchange okx
           $n = @((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties).Count
           Write-Host "accounts: $n"
-          if ($n -ne 21) { throw "need 21 accounts, got $n" }
+          if ($n -ne 24) { throw "need 24 accounts, got $n" }
           .\backinsight.exe cycle --exchange okx
           .\backinsight.exe health
           .\backinsight.exe selftest
@@ -81,7 +83,7 @@ jobs:
           Write-Host $out
           if ("$out" -notmatch $v) { throw "version mismatch: $out vs $v" }
       - name: Publish release exe-<version> (laptop updates itself from the newest one)
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.ref == 'refs/heads/ccr-bcd12257-71rrmp'   # релизы только с этой ветки (аудит)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,7 +94,7 @@ jobs:
             --notes "version: $v`nsha256: $h`nСобрано и проверено CI (selftest, streamtest, dashboard, export, автозапуск)."
           if ($LASTEXITCODE -ne 0) { throw "release failed" }
       - name: Test auto-update from the published release (old version pretends to be older)
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.ref == 'refs/heads/ccr-bcd12257-71rrmp'   # релизы только с этой ветки (аудит)
         shell: pwsh
         run: |
           New-Item -ItemType Directory u | Out-Null

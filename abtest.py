@@ -44,7 +44,9 @@ FEE = 0.001            # тейкер спот Bybit (VIP0)
 PERP_FEE = 0.00055     # тейкер перпетуалов Bybit (VIP0): по ним торгуют клоны с плечом и шортом
 VOL_TARGET = 0.6       # _x3: плечо до 3 по волатильности, целевая годовая волатильность портфеля 60%
 MAX_LEV = 3.0
-CARRY_SHARE = 0.9      # carry: доля «устойчиво свободных» денег в связке спот BTC + шорт перпа BTC
+CARRY_SHARE = 0.5      # carry: доля «устойчиво свободных» денег в связке спот BTC + шорт перпа BTC
+                       # (было 0.9; аудит: шорт-ноге нужна маржа, а 90% требует единой маржи и не учитывает ADL)
+CARRY_MIN_FUNDING = 0.08 / 1095   # carry включается, только если средний funding за 7 дней > 8% годовых (аудит)
 CARRY_DAYS = 7         # «устойчиво свободные» = минимум свободной доли за 7 дней
 CARRY_MIN_CHANGE = 0.10
 FALLBACK_SLIP = 0.0005 # если стакан недоступен (replay)
@@ -54,7 +56,8 @@ MIN_ORDER = 5.0        # минимальная сумма ордера на Byb
 BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
-          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO", "MEGA", "MEGA_x5"])
+          + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO", "MEGA", "MEGA_x5",
+             "TREND", "MEGA_SAFE", "CARRY"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
@@ -83,6 +86,18 @@ MEGA_PARTS, MEGA_VOL, MEGA_MAX_LEV, MEGA_VOL_DAYS = ("M1", "EXP", "FMIX"), 0.20,
 # MEGA_x5: тот же портфель, риск 60% годовых, плечо до x5 (по кривым replay: +147%/год, Sharpe 1.78, просадка −59%,
 # среднее плечо 3.8, худший месяц −33%; реальная программа хуже идеальной смеси кривых, ориентир Sharpe ~1).
 MEGA_X5_VOL = 0.60
+# После аудита (AUDIT.md): плечо MEGA/MEGA_x5 считается по волатильности целевых позиций (худшая из EWMA 10 и 60 дней),
+# а не по кривой капитала: в кэше та давала ≈0 и плечо уходило в потолок прямо на входе. Плюс на входе из кэша
+# первые ENTRY_DAYS дней плечо не больше ENTRY_LEV.
+ENTRY_LEV, ENTRY_DAYS = 2.0, 5
+# Предложения панели аудита, заданы до любых проверок (без подбора):
+# TREND: тренд BTC/ETH по трём горизонтам 20/60/120 дней, непрерывный сигнал = средняя по горизонтам
+#        clip(доходность за h / (волатильность·√h), 0, 1); цель волатильности 20%, общее плечо не больше 1.5.
+# MEGA_SAFE: части MEGA, цель 20%, общее плечо ≤ 1.5, стоп по просадке: от пика −15% → позиции вдвое,
+#        −25% → всё в кэш на 20 дней, затем пик сбрасывается на текущий капитал.
+# CARRY: только связка спот BTC + шорт перпа (рыночно нейтрально) — эталон «дохода без направления».
+TREND_H, TREND_VOL, SAFE_VOL, GROSS_CAP = (20, 60, 120), 0.20, 0.20, 1.5
+SAFE_DD_HALF, SAFE_DD_OUT, SAFE_OUT_DAYS = 0.15, 0.25, 20
 MAINT_MARGIN = 0.005   # ликвидация, если капитал < 0.5% от суммы позиций (как у перпетуалов)
 DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отдала (средний исторический уровень ≈ 11% годовых)
 
@@ -90,8 +105,11 @@ DEFAULT_FUNDING = 0.0001  # funding за 8 ч, если биржа не отда
 def model_spec(m):
     """(базовая модель, максимальное плечо, разрешён шорт)."""
     base, _, var = m.partition("_")
+    if m == "MEGA_SAFE":                                 # отдельная модель, а не клон MEGA
+        base, var = m, ""
     lev = {"x3": 3.0, "x5": 5.0}.get(var, EXP_LEV if base == "EXP" else FMIX_LEV if base == "FMIX" else COMBO_LEV if base == "COMBO"
-                                       else MEGA_MAX_LEV if base == "MEGA" else 1.0)
+                                       else MEGA_MAX_LEV if base in ("MEGA", "MEGA_SAFE") else GROSS_CAP if base == "TREND"
+                                       else 1.0)
     return base, lev, var == "ls"
 
 
@@ -99,13 +117,17 @@ def lev_mode(m):
     """Плечо: vol = по волатильности до максимума (цель, максимум), fixed = постоянное, none = без плеча."""
     var = m.partition("_")[2]
     if m == "MEGA_x5":
-        return "realized", MEGA_X5_VOL
+        return "ewma", MEGA_X5_VOL
+    if m == "TREND":
+        return "ewma", TREND_VOL
+    if m == "MEGA_SAFE":
+        return "ewma", SAFE_VOL
     if var == "x3":
         return "vol", 0.6
     if var == "x5":
         return "vol", 1.0
     if m == "MEGA":
-        return "realized", MEGA_VOL
+        return "ewma", MEGA_VOL
     if m in ("EXP", "FMIX", "COMBO"):
         return "fixed", None
     return "none", None
@@ -141,30 +163,53 @@ def code_version():
 
 
 CODE_VERSION = code_version()
-UPDATE_URL = "https://api.github.com/repos/RifatAF/backinsight-mvp/releases?per_page=50"   # релизы exe-<версия>
 
 
-def fetch_update(dest, current=None, timeout=60):
-    """Скачать новую версию exe из самого свежего релиза exe-<версия> (CI публикует его только после всех проверок).
-    Возвращает (версия, путь) или (версия, None), если обновлять не нужно. Проверяет SHA-256 из описания релиза."""
+UPDATE_API = "https://api.github.com/repos/RifatAF/backinsight-mvp"
+UPDATE_BRANCH = "ccr-bcd12257-71rrmp"         # релизы принимаются только от CI этой ветки
+UPDATE_AUTHOR = "github-actions[bot]"
+
+
+def _gh_json(url, timeout=60):
+    import urllib.request
+    hdr = {"User-Agent": "backinsight-updater", "Accept": "application/vnd.github+json"}
+    return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=timeout,
+                                             context=S._ssl_ctx()).read())
+
+
+def fetch_update(dest, current=None, timeout=60, skip=(), min_published=""):
+    """Скачать новую версию exe из самого свежего релиза exe-<версия>, который выпустил CI этой ветки.
+    Возвращает (версия, путь) или (версия, None), если обновлять не нужно. Правила (после аудита):
+      - релиз принимается только от github-actions[bot] и только с коммита ветки UPDATE_BRANCH (чужие релизы в том же
+        репозитории не подходят);
+      - только вперёд: свой релиз ищется напрямую по тегу, кандидат должен быть опубликован позже него и позже
+        самой новой уже установленной версии (min_published), иначе ничего не делаем;
+      - версии из skip (3 неудачные попытки) не скачиваются вовсе;
+      - SHA-256 из описания релиза сверяется после скачивания (защита от битой загрузки; подписи кода нет,
+        доверие держится на правах записи в репозиторий — см. AUDIT.md)."""
     import hashlib
     import re
     import urllib.request
-    hdr = {"User-Agent": "backinsight-updater", "Accept": "application/vnd.github+json"}
-    ctx = S._ssl_ctx()
-    rels = json.loads(urllib.request.urlopen(urllib.request.Request(UPDATE_URL, headers=hdr), timeout=timeout,
-                                             context=ctx).read())
-    rels = [r for r in rels if str(r.get("tag_name", "")).startswith("exe-") and not r.get("draft")]
-    if not rels:
-        raise RuntimeError("на GitHub нет релизов exe-*")
-    when = lambda r: r.get("published_at") or r.get("created_at") or ""
-    rel = max(rels, key=when)
+    import urllib.error
     cur = current or CODE_VERSION
-    mine = next((r for r in rels if r["tag_name"] == f"exe-{cur}"), None)
-    if not os.environ.get("BACKINSIGHT_FAKE_VERSION"):
-        # Только вперёд: если своего релиза в списке нет (список у GitHub обновляется с задержкой) или найденный
-        # не новее своего — ничего не делать. Так старая версия никогда не поставится поверх новой.
-        if mine is None or when(rel) <= when(mine):
+    fake = bool(os.environ.get("BACKINSIGHT_FAKE_VERSION"))
+    when = lambda r: r.get("published_at") or r.get("created_at") or ""
+    rels = _gh_json(UPDATE_API + "/releases?per_page=50", timeout)
+    ok = lambda r: (str(r.get("tag_name", "")).startswith("exe-") and not r.get("draft") and not r.get("prerelease")
+                    and (r.get("author") or {}).get("login") == UPDATE_AUTHOR)
+    rels = [r for r in rels if ok(r)]
+    if not rels:
+        raise RuntimeError("на GitHub нет подходящих релизов exe-*")
+    rel = max(rels, key=when)
+    if not fake:
+        try:
+            mine = _gh_json(UPDATE_API + f"/releases/tags/exe-{cur}", timeout)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                log(f"автообновление: релиза своей версии exe-{cur} на GitHub нет, обновление пропущено", "warning")
+                return cur, None
+            raise
+        if when(rel) <= max(when(mine), min_published or ""):
             return cur, None
     body = rel.get("body") or ""
     ver = re.search(r"version:\s*(\S+)", body)
@@ -172,15 +217,24 @@ def fetch_update(dest, current=None, timeout=60):
     if not ver or not sha:
         raise RuntimeError("в релизе нет версии или контрольной суммы")
     ver, sha = ver.group(1), sha.group(1).lower()
-    if ver == (current or CODE_VERSION):
-        return ver, None
+    if ver == cur or ver in skip:
+        return cur, None
+    if rel.get("tag_name") != f"exe-{ver}":
+        raise RuntimeError("тег релиза не совпадает с версией в описании")
+    try:                                               # релиз должен указывать на коммит нашей ветки
+        cmp = _gh_json(UPDATE_API + f"/compare/{ver}...{UPDATE_BRANCH}", timeout)
+        if cmp.get("status") not in ("identical", "ahead"):
+            raise RuntimeError(f"коммит {ver} не из ветки {UPDATE_BRANCH}")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"не удалось проверить коммит {ver}: HTTP {e.code}")
     asset = next((x for x in rel.get("assets", []) if x["name"] == "backinsight.exe"), None)
     if not asset:
         raise RuntimeError("в релизе нет backinsight.exe")
     tmp = Path(dest).with_suffix(".part")
     h = hashlib.sha256()
-    with urllib.request.urlopen(urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": hdr["User-Agent"]}),
-                                timeout=timeout * 5, context=ctx) as r, open(tmp, "wb") as f:
+    with urllib.request.urlopen(urllib.request.Request(asset["browser_download_url"],
+                                                       headers={"User-Agent": "backinsight-updater"}),
+                                timeout=timeout * 5, context=S._ssl_ctx()) as r, open(tmp, "wb") as f:
         while True:
             b = r.read(1 << 20)
             if not b:
@@ -191,33 +245,73 @@ def fetch_update(dest, current=None, timeout=60):
         tmp.unlink(missing_ok=True)
         raise RuntimeError("контрольная сумма не совпала, файл удалён")
     os.replace(tmp, dest)
-    return ver, Path(dest)
+    return ver, Path(dest), when(rel)
+
+
+def _read_json(p, default):
+    try:
+        return json.loads(Path(p).read_text(encoding="utf-8")) if Path(p).exists() else default
+    except Exception as e:
+        log(f"{Path(p).name} повреждён ({e}), начинаю заново", "warning")
+        return default
+
+
+def update_watchdog(a, survived=False):
+    """Откат после неудачного обновления: новая версия считает свои запуски; если она 3 раза подряд не прожила
+    первый час (падение в loop), возвращается backinsight.old.exe, версия помечается неудачной."""
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return
+    hist_p = Path(a.dir) / "update.json"
+    hist = _read_json(hist_p, {"failed": {}, "done": []})
+    pend = hist.get("pending")
+    if not pend or pend.get("to") != CODE_VERSION:
+        return
+    if survived:
+        hist.pop("pending", None)
+        log(f"автообновление: версия {CODE_VERSION} проработала час, откат больше не нужен")
+    else:
+        pend["starts"] = pend.get("starts", 0) + 1
+        if pend["starts"] > 3:
+            exe = Path(sys.executable)
+            old = exe.with_name("backinsight.old.exe")
+            if old.exists():
+                hist["failed"][CODE_VERSION] = 3
+                hist.pop("pending", None)
+                atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
+                os.replace(exe, exe.with_name("backinsight.bad.exe"))
+                os.replace(old, exe)
+                log(f"автообновление: {CODE_VERSION} падала {pend['starts'] - 1} раза, откат на {pend.get('from')}",
+                    "error")
+                import logging
+                logging.shutdown()
+                os._exit(3)
+    atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
 
 
 def auto_update(a):
     """Раз в час (из loop): если на GitHub есть новая проверенная версия, заменить exe и перезапуститься.
     Данные в папке abtest не трогаются; перед заменой копия state.json кладётся в state_backups.
-    Выключить: создать пустой файл abtest/autoupdate_off. Откат: backinsight.old.exe рядом с exe."""
+    Выключить: создать пустой файл abtest/autoupdate_off. Откат: backinsight.old.exe рядом с exe
+    (и автоматический — см. update_watchdog)."""
     if not getattr(sys, "frozen", False) or os.name != "nt":
         return
     root = Path(a.dir)
     if (root / "autoupdate_off").exists():
         return
     hist_p = root / "update.json"
-    hist = json.loads(hist_p.read_text(encoding="utf-8")) if hist_p.exists() else {"failed": {}, "done": []}
+    hist = _read_json(hist_p, {"failed": {}, "done": []})
     exe = Path(sys.executable)
     new = exe.with_name("backinsight.new.exe")
     cur = os.environ.get("BACKINSIGHT_FAKE_VERSION", CODE_VERSION)     # только для проверки обновления в CI
+    skip = {v for v, n in hist.get("failed", {}).items() if n >= 3}
     try:
-        ver, path = fetch_update(new, current=cur)
+        res = fetch_update(new, current=cur, skip=skip, min_published=hist.get("max_published", ""))
     except Exception as e:
-        log(f"автообновление: проверка не удалась ({str(e)[:120]}), работаю на {CODE_VERSION}", "warning")
+        log(f"автообновление: проверка не удалась ({str(e)[:160]}), работаю на {CODE_VERSION}", "warning")
         return
-    if path is None:
+    if res[1] is None:
         return
-    if hist["failed"].get(ver, 0) >= 3:
-        new.unlink(missing_ok=True)
-        return
+    ver, path, published = res
     import shutil
     import subprocess
     try:
@@ -237,13 +331,15 @@ def auto_update(a):
             os.replace(old, exe)                        # не вышло: вернуть как было
             raise
     except Exception as e:
-        hist["failed"][ver] = hist["failed"].get(ver, 0) + 1
+        hist.setdefault("failed", {})[ver] = hist.get("failed", {}).get(ver, 0) + 1
         atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
         log(f"автообновление до {ver} не удалось: {str(e)[:200]}", "error")
         return
-    hist["done"].append({"ts": now_utc().isoformat(), "from": cur, "to": ver})
+    hist.setdefault("done", []).append({"ts": now_utc().isoformat(), "from": cur, "to": ver})
+    hist["max_published"] = max(hist.get("max_published", ""), published)
+    hist["pending"] = {"from": cur, "to": ver, "starts": 0}
     atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
-    log(f"автообновление: {cur} -> {ver}, перезапуск (планировщик поднимет новую версию за 1 минуту)")
+    log(f"автообновление: {cur} -> {ver}, перезапуск (планировщик поднимет новую версию)")
     import logging
     logging.shutdown()
     os._exit(3)                                         # код ≠ 0: задача планировщика перезапускается сама
@@ -264,7 +360,7 @@ def setup_logging(base_dir):
     handlers = [(logging.StreamHandler(sys.stdout), logging.INFO)] if sys.stdout else []   # pythonw: консоли нет
     for h, lvl in handlers + [
                    (TimedRotatingFileHandler(d / "abtest.log", when="midnight", backupCount=200, utc=True, encoding="utf-8"), logging.INFO),
-                   (logging.FileHandler(d / "errors.log", encoding="utf-8"), logging.WARNING)]:
+                   (TimedRotatingFileHandler(d / "errors.log", when="midnight", backupCount=90, utc=True, encoding="utf-8", delay=True), logging.WARNING)]:
         h.setLevel(lvl)
         h.setFormatter(fmt)
         lg.addHandler(h)
@@ -614,7 +710,21 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
             else:
                 targets[k] = ((t1.get(k) or 0.0) + (t2.get(k) or 0.0)) / COMBO_LEV
         return targets, {"M1": d1, "FMIX": d2}
-    if model == "MEGA":                                  # доли частей с их собственным плечом, затем общий риск
+    if model == "CARRY":                                 # без позиций: все деньги свободны и идут в carry
+        return {}, {"note": "только carry"}
+    if model == "TREND":
+        for k in [c for c in coins if c in ("BTC", "ETH")]:
+            c = closes[k].loc[:day]
+            r = np.log(c).diff().iloc[-60:]
+            vol = float(r.std())
+            sig = []
+            for h in TREND_H:
+                if len(c) > h and vol > 0:
+                    sig.append(float(np.clip(math.log(c.iloc[-1] / c.iloc[-1 - h]) / (vol * math.sqrt(h)), 0, 1)))
+            targets[k] = (np.mean(sig) if sig else 0.0) / 2
+            diag[k] = {"signals": sig, "daily_vol": vol}
+        return targets, diag
+    if model in ("MEGA", "MEGA_SAFE"):                   # доли частей с их собственным плечом, затем общий риск
         parts, last = {}, mstate.setdefault("last", {})
         for m in MEGA_PARTS:
             t, d = decide(m, ctx, mstate.setdefault(m, {}), equity_hist)
@@ -922,6 +1032,23 @@ def apply_funding(acct, prices, funding):
     return paid
 
 
+def replay_funding(coins):
+    """{день: {монета: средний funding за 8 ч}} из локальной истории Binance (data/binance/<COIN>_funding.csv)."""
+    out = {}
+    for k in coins:
+        p = Path(__file__).parent / f"data/binance/{k}_funding.csv"
+        if not p.exists():
+            continue
+        try:
+            f = pd.read_csv(p)
+            d = f.groupby(pd.to_datetime(f.t, unit="ms").dt.floor("D")).rate.mean()
+            for day, r in d.items():
+                out.setdefault(day, {})[k] = float(r)
+        except Exception as e:
+            log(f"funding {k} для replay: {str(e)[:80]}", "warning")
+    return out
+
+
 def check_liquidation(acct, lows, highs):
     """Ликвидация по худшей цене дня (минимум для лонга, максимум для шорта)."""
     worst = {k: (lows[k] if u > 0 else highs[k]) for k, u in acct["units"].items() if u and k in lows}
@@ -947,16 +1074,29 @@ def port_vol(targets, closes, day, n=30):
     return float(np.sqrt(max(w @ r.cov().values @ w, 0) * 365))
 
 
+def port_vol_ewma(targets, closes, day, halflife):
+    """Годовая волатильность портфеля с весами targets: EWMA-ковариация дневных доходностей (полураспад halflife дней)."""
+    ks = [k for k, w in targets.items() if w]
+    if not ks:
+        return 0.0
+    r = pd.DataFrame({k: closes[k].loc[:day].pct_change().iloc[-6 * halflife:] for k in ks}).fillna(0)
+    if len(r) < 5:
+        return 0.0
+    cov = r.ewm(halflife=halflife).cov().iloc[-len(ks):].values
+    w = np.array([targets[k] for k in ks])
+    return float(np.sqrt(max(w @ cov @ w, 0) * 365))
+
+
 def carry_step(acct, funding, eq):
     """Свободные деньги счёта без плеча стоят в связке «спот BTC + шорт перпа BTC» (без риска цены) и получают
-    funding. Включено, если средний funding BTC за прошлые дни > 0. Размер = 90% минимальной свободной доли
+    funding. Включено, если средний funding BTC за прошлые 7 дней > 8% годовых. Размер = 50% минимальной свободной доли
     за 7 дней; смена размера больше 10% капитала оплачивается комиссией обеих ног."""
     fr = funding.get("BTC")
     fr = DEFAULT_FUNDING if fr is None else fr
     pnl = acct.get("carry", 0.0) * fr * 3                 # funding за прошедшие сутки на открытую связку
     acct["cash"] += pnl
     hist = acct.setdefault("fund_hist", [])
-    sig = (np.mean(hist[-7:]) if hist else fr) > 0
+    sig = (np.mean(hist[-7:]) if hist else fr) > CARRY_MIN_FUNDING
     hist.append(fr)
     del hist[:-30]
     return pnl, sig
@@ -997,7 +1137,7 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
     margin = lev > 1 or short
     liq = check_liquidation(acct, lows, highs) if margin and lows else None
     paid = apply_funding(acct, prices, funding) if margin else 0.0
-    carry_on = lev == 1 or base in ("EXP", "FMIX", "COMBO", "MEGA")                # EXP большую часть времени вне рынка
+    carry_on = lev == 1 or base in ("EXP", "FMIX", "COMBO", "MEGA", "MEGA_SAFE", "TREND")                # EXP большую часть времени вне рынка
     carry_pnl, carry_sig = carry_step(acct, funding, None) if carry_on else (0.0, False)
     targets, diag = decide(base, ctx, ms, eq_hist, short=short, bear_only=short)
     eq0 = acct["cash"] + sum(acct["units"].get(k, 0) * prices[k] for k in prices)
@@ -1015,6 +1155,19 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
         pv = port_vol({k: (v or 0.0) for k, v in targets.items()}, ctx["closes"], day)
         lev = min(model_spec(m)[1], tv / pv) if pv > 0 else 1.0
         diag["_leverage"] = {"port_vol_unlevered": pv, "leverage": lev}
+    elif mode == "ewma":                                 # плечо по волатильности целевых позиций (EWMA 10 и 60 дней)
+        t0 = {k: (v or 0.0) for k, v in targets.items()}
+        pv = max(port_vol_ewma(t0, ctx["closes"], day, 10), port_vol_ewma(t0, ctx["closes"], day, 60))
+        cap = model_spec(m)[1]
+        gross_now = sum(abs(acct["units"].get(k, 0)) * prices[k] for k in prices)
+        cash_days = ms.get("_cash_days", 99) + 1 if gross_now < 0.05 * max(eq0, 1e-9) else 0
+        ms["_cash_days"] = cash_days
+        held = ms.get("_held_days", 0) + 1 if gross_now >= 0.05 * max(eq0, 1e-9) else 0
+        ms["_held_days"] = held
+        if held < ENTRY_DAYS:                            # первые дни после входа из кэша: не больше ENTRY_LEV
+            cap = min(cap, ENTRY_LEV)
+        lev = min(cap, tv / pv) if pv > 0 else 1.0
+        diag["_leverage"] = {"port_vol_ewma": pv, "leverage": lev, "cap": cap}
     elif mode == "realized":                             # плечо по фактической волатильности самого портфеля
         lh = ms.setdefault("_lev_hist", [])
         eq = pd.Series(list(eq_hist[-MEGA_VOL_DAYS - 1:]), dtype=float)
@@ -1029,9 +1182,31 @@ def step_model(m, acct, ms, eq_hist, ctx, day, prices, books, rec, funding, lows
         lh.append(lev)
         del lh[:-MEGA_VOL_DAYS - 5]
         diag["_leverage"] = {"realized_vol_unlevered": rv, "leverage": lev}
+    if base == "MEGA_SAFE":                              # стоп по просадке
+        pk = max(ms.get("_peak", eq0), eq0)
+        out = ms.get("_out_days", 0)
+        dd = eq0 / pk - 1 if pk > 0 else 0.0
+        if out > 0:
+            out -= 1
+            k_dd = 0.0
+            if out == 0:
+                pk = eq0                                 # пауза закончилась: пик заново от текущего капитала
+        elif dd <= -SAFE_DD_OUT:
+            out, k_dd = SAFE_OUT_DAYS, 0.0
+        elif dd <= -SAFE_DD_HALF:
+            k_dd = 0.5
+        else:
+            k_dd = 1.0
+        ms["_peak"], ms["_out_days"] = pk, out
+        lev *= k_dd
+        diag["_drawdown_stop"] = {"peak": pk, "dd": dd, "mult": k_dd, "pause_days_left": out}
     scale = (sizing / eq0 if eq0 > 0 else 0.0) * lev    # позиции считаются от ступенчатой базы, остаток лежит в USDT
     if scale != 1:
         targets = {k: (None if v is None else v * scale) for k, v in targets.items()}
+    if base in ("TREND", "MEGA_SAFE"):                   # общий потолок плеча
+        g = sum(abs(v) for v in targets.values() if v)
+        if g > GROSS_CAP:
+            targets = {k: (None if v is None else v * GROSS_CAP / g) for k, v in targets.items()}
     if liq:
         diag["_liquidation"] = liq
     fills = execute(acct, targets, prices, books, m, day, rec, lev=model_spec(m)[1] if margin and not short else 1.0,
@@ -1124,7 +1299,14 @@ def atomic_write(path, text):
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    for attempt in range(10):                          # Windows: антивирус/индексатор может держать файл
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 # ====================================================================================== контекст дня
@@ -1174,7 +1356,21 @@ def load_state(a):
     p = state_path(a)
     if not p.exists():
         raise SystemExit(f"нет {p}: сначала python abtest.py init --capital 100 --coins BTC,ETH")
-    st = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:      # файл повреждён: последний целый бэкап
+        backups = sorted((Path(a.dir) / "state_backups").glob("state_*.json"), key=lambda x: x.stat().st_mtime)
+        for b in reversed(backups):
+            try:
+                st = json.loads(b.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            p.replace(p.with_name(f"state.broken_{now_utc():%Y%m%d%H%M}.json"))
+            atomic_write(p, b.read_text(encoding="utf-8"))
+            log(f"state.json повреждён ({e}), восстановлен из {b.name}; дни после бэкапа будут догнаны", "error")
+            break
+        else:
+            raise
     for m in MODELS:                                   # счета, добавленные в новой версии
         if m not in st["accounts"]:
             st["accounts"][m] = {"cash": st["capital"], "units": {}, "start": st["capital"], "base": st["capital"]}
@@ -1345,8 +1541,14 @@ def start_liquidation_stream(exchange, coins, root):
             proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
             if proxy:
                 ex.wss_proxy = proxy
-            await ex.load_markets()
-            LIQ_STATUS["connected"] = True
+            for attempt in range(10 ** 6):              # нет сети при старте: ждать, а не умирать
+                try:
+                    await ex.load_markets()
+                    break
+                except Exception as e:
+                    LIQ_STATUS["error"] = str(e)[:200]
+                    await asyncio.sleep(min(600, 30 * (attempt + 1)))
+            LIQ_STATUS["connected"], LIQ_STATUS["error"] = True, None
             syms = {Feed.psym(feed_sym, k): k for k in coins if Feed.psym(feed_sym, k) in ex.markets}
             if ex.has.get("watchLiquidationsForSymbols") is True:
                 await one(ex, syms)                     # одна подписка на все монеты (OKX)
@@ -1373,7 +1575,27 @@ def record_funding_history(feed, rec, coins):
             log(f"история funding {k}: {str(e)[:100]}", "warning")
 
 
+def keep_awake(on=True):
+    """Windows: не давать системе уснуть, пока идёт дневной цикл (после пробуждения в 00:03 она уснёт через ~2 мин)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    except Exception:
+        pass
+
+
 def cmd_cycle(a):
+    keep_awake(True)
+    try:
+        return _cmd_cycle(a)
+    finally:
+        keep_awake(False)
+
+
+def _cmd_cycle(a):
     st = load_state(a)
     feed = Feed(st["exchange"])
     rec = Recorder(Path(a.dir) / "data_lake")
@@ -1535,9 +1757,12 @@ MODEL_INFO = {
     "COMBO": ("Эксперименты", "M1 + сверху 1 BTC при сигнале FMIX (две некоррелированные части), до x2"),
     "MEGA": ("Эксперименты", "Портфель: тренд M1 + паника EXP + funding FMIX поровну, риск 20% годовых, до x2"),
     "MEGA_x5": ("Эксперименты", "MEGA агрессивная: риск 60% годовых, плечо до x5 (просадки до −60%)"),
+    "TREND": ("Эксперименты", "Предложение аудита: тренд BTC/ETH 20/60/120 дн., риск 20%, плечо ≤ 1.5"),
+    "MEGA_SAFE": ("Эксперименты", "MEGA с правилами аудита: риск 20%, плечо ≤ 1.5, стоп −15% / −25%"),
+    "CARRY": ("Эксперименты", "Только carry (спот BTC + шорт перпа) при funding > 8% годовых: доход без направления"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309", "#7f1d1d"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309", "#7f1d1d", "#047857", "#6d28d9", "#78716c"]
 
 
 def cmd_dashboard(a, st=None):
@@ -1662,6 +1887,19 @@ def cmd_dashboard(a, st=None):
            f"{len(cnt('market/derivs', '*.jsonl'))} дн · опционы Deribit: {len(cnt('market/options', '*.jsonl'))} дн · "
            f"ликвидации: {len(liq_files)} дн, {n_liq:,} за последний месяц · история funding: "
            f"{len(cnt('market/funding', '*.csv'))} монет · Earn: {'есть' if (root / 'data_lake/market/earn.jsonl').exists() else 'нет'}")
+    if LIQ_STATUS.get("error") or LIQ_STATUS.get("connected"):
+        acc += (f" · поток ликвидаций: {'подключён' if LIQ_STATUS.get('connected') and not LIQ_STATUS.get('error') else 'ошибка'}"
+                f"{' (' + LIQ_STATUS['error'][:80] + ')' if LIQ_STATUS.get('error') else ''}")
+    stress = []                                        # стресс-тест (аудит): что сделает обвал всех лонгов за день
+    for m in MODELS:
+        lv = float(pos.get(m, ({}, 0.0))[1] or 0.0)
+        if lv > 0.01:
+            cells = []
+            for sh in (0.20, 0.30, 0.45):
+                loss = lv * sh
+                cells.append('<td class="r neg">ликвидация</td>' if loss >= 0.995 else f'<td class="r">−{loss:.0%}</td>')
+            stress.append(f'<tr><td>{m}</td><td class="r">{lv:.2f}x</td>{"".join(cells)}</tr>')
+    stress_html = ("".join(stress) or '<tr><td class="mut">Сейчас ни одна стратегия не в рынке.</td></tr>')
     status = ""
     stf = root / "selftest.json"
     if stf.exists():
@@ -1713,6 +1951,9 @@ else e.textContent="● бот работает, последняя провер
 за позиции с плечом и шорты, раз в 8 часов (плюс = получено). Carry: свободные деньги стоят в связке «купить BTC + шорт BTC-перпа»,
 цена не влияет, доход даёт funding. Earn не используется.</div></div>
 <div class="card"><b>Последние операции</b><table>{ops_html}</table></div>
+<div class="card"><b>Стресс-тест текущих позиций</b> <span class="mut">(потеря капитала, если все монеты за день упадут на 20 / 30 / 45%;
+BTC так падал 12.03.2020 −45%, 19.05.2021 −32%)</span><table><tr><th>Стратегия</th><th class="r">Плечо</th>
+<th class="r">−20%</th><th class="r">−30%</th><th class="r">−45%</th></tr>{stress_html}</table></div>
 <div class="card"><b>Накоплено данных</b><div class="mut">{html.escape(acc)}</div></div>
 <div class="card"><b>Лог</b><pre>{html.escape(chr(10).join(tail)) or "пусто"}</pre></div>
 </div></body></html>"""
@@ -1801,8 +2042,13 @@ def cmd_loop(a):
         cmd_selftest(a)
     except Exception as e:
         log(f"тестовая сделка: {e}", "error")
+    update_watchdog(a)
+    t_start, survived = time.time(), False
     while True:
         try:
+            if not survived and time.time() - t_start > 3600:
+                update_watchdog(a, survived=True)
+                survived = True
             st = load_state(a)
             n = now_utc()
             if st["last_cycle"] != str((n - timedelta(days=1)).date()) and (n.hour > 0 or n.minute >= 5):
@@ -1924,14 +2170,21 @@ def cmd_replay(a):
             log(f"локальная история funding: {str(e)[:100]}", "warning")
     liqs = {m: 0 for m in MODELS}
     m4_rows, nfills = [], {m: 0 for m in MODELS}
+    fund_by_day = replay_funding(list(dfs))           # реальный funding (Binance), а не постоянные 0.01% за 8 ч
+    if a.cost_mult != 1:                               # стресс: издержки x N
+        global FEE, PERP_FEE, FALLBACK_SLIP
+        FEE, PERP_FEE, FALLBACK_SLIP = FEE * a.cost_mult, PERP_FEE * a.cost_mult, FALLBACK_SLIP * a.cost_mult
+        log(f"replay: издержки x{a.cost_mult}")
+    if a.lag:
+        log(f"replay: решения по данным на {a.lag} дн. раньше дня исполнения (стресс задержки)")
     for i, day in enumerate(days):
-        ctx["day"] = day
+        ctx["day"] = days[max(0, i - a.lag)]          # lag > 0: решение по вчерашним данным, сделка по сегодняшней цене
         prices = {k: float(v.close.loc[day]) for k, v in dfs.items() if day in v.index}
         lows = {k: float(dfs[k].low.loc[day]) for k in prices}
         highs = {k: float(dfs[k].high.loc[day]) for k in prices}
         for m in MODELS:
             targets, diag, fills, eq, paid, liq = step_model(m, accts[m], mstate[m], list(eqh[m].values()), ctx, day,
-                                                             prices, None, None, {}, lows, highs)
+                                                             prices, None, None, fund_by_day.get(day, {}), lows, highs)
             nfills[m] += len(fills)
             liqs[m] += bool(liq)
             eqh[m][day] = eq
@@ -2099,6 +2352,8 @@ def main():
     ap.add_argument("--days", type=int, default=1095)
     ap.add_argument("--dir", default="abtest")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--cost-mult", type=float, default=1.0, help="replay: умножить комиссии и проскальзывание")
+    ap.add_argument("--lag", type=int, default=0, help="replay: решение по данным на N дней раньше исполнения")
     a = ap.parse_args()
     setup_logging(a.dir)
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
