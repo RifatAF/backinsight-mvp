@@ -9,6 +9,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -84,7 +89,8 @@ object ChatLog {
 
     fun clear(ctx: android.content.Context) { msgs.clear(); save(ctx) }
 
-    fun send(ctx: android.content.Context, text: String) {
+    /** day: день, открытый на экране расписания, чтобы «сюда», «этот день» понимались правильно. */
+    fun send(ctx: android.content.Context, text: String, day: java.time.LocalDate? = null) {
         val t = text.trim()
         if (t.isEmpty() || busy) return
         val app = ctx.applicationContext
@@ -98,7 +104,8 @@ object ChatLog {
         scope.launch {
             val p = withContext(Dispatchers.IO) {
                 runCatching {
-                    Assistant.think(app, t, history, if (com.rifat.trainercount.geo.Wifi.isHome(app, com.rifat.trainercount.data.Store.data.value)) "дома" else "не дома")
+                    val where = if (com.rifat.trainercount.geo.Wifi.isHome(app, com.rifat.trainercount.data.Store.data.value)) "дома" else "не дома"
+                    Assistant.think(app, t, history, where + (day?.let { "\nНа экране открыто расписание на ${dayTitle(it)} ($it); «этот день», «сюда» значит он, если день не назван" } ?: ""))
                 }.getOrNull()
             }
             add(app, when {
@@ -138,8 +145,6 @@ fun ChatScreen(data: AppData, nav: Nav) {
         input = ""
         ChatLog.send(ctx, text)
     }
-
-    fun update(i: Int, f: (ChatLog.Msg) -> ChatLog.Msg) { msgs[i] = f(msgs[i]) }
 
     // Выбор сообщений, как в Telegram: долгое нажатие начинает выбор, нажатия добавляют и убирают.
     var picked by remember { mutableStateOf(setOf<Int>()) }
@@ -188,43 +193,7 @@ fun ChatScreen(data: AppData, nav: Nav) {
                     }
                 }
                 items(msgs.indices.toList()) { i ->
-                    val m = msgs[i]
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (m.mine) Arrangement.End else Arrangement.Start) {
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (m.mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            ),
-                            modifier = Modifier.widthIn(max = 330.dp).combinedClickable(
-                                onClick = { if (picked.isNotEmpty()) picked = if (i in picked) picked - i else picked + i },
-                                onLongClick = { picked = picked + i },
-                            ),
-                            border = if (i in picked) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                        ) {
-                            Column(Modifier.padding(10.dp)) {
-                                Text(m.text)
-                                when (m.st) {
-                                    ChatLog.St.ASK -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                                        Button(onClick = {
-                                            val (before, done) = Assistant.apply(ctx, m.proposal!!)
-                                            update(i) { it.copy(st = ChatLog.St.DONE, before = before) }
-                                            ChatLog.add(ctx, ChatLog.Msg(false, done))
-                                        }) { Text("Сделать") }
-                                        OutlinedButton(onClick = { update(i) { it.copy(st = ChatLog.St.SKIPPED) } }) { Text("Не надо") }
-                                    }
-                                    ChatLog.St.DONE -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
-                                        Text("✓ Сделано", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                                        OutlinedButton(onClick = {
-                                            m.before?.let { Assistant.undo(ctx, it) }
-                                            update(i) { it.copy(st = ChatLog.St.UNDONE) }
-                                        }) { Text("Отменить") }
-                                    }
-                                    ChatLog.St.SKIPPED -> Text("Не стал менять", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
-                                    ChatLog.St.UNDONE -> Text("Изменения отменены", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
-                                    ChatLog.St.NONE -> {}
-                                }
-                            }
-                        }
-                    }
+                    Bubble(i, i in picked, onClick = { if (picked.isNotEmpty()) picked = if (i in picked) picked - i else picked + i }, onLong = { picked = picked + i })
                 }
                 if (busy) item { Text("Думаю…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
@@ -237,6 +206,114 @@ fun ChatScreen(data: AppData, nav: Nav) {
                 IconButton(enabled = !busy && input.isNotBlank(), onClick = { send(input) }) {
                     Icon(Icons.AutoMirrored.Filled.Send, "Отправить")
                 }
+            }
+        }
+    }
+}
+
+/** Одно сообщение переписки с кнопками «Сделать» / «Отменить». */
+@Composable
+private fun Bubble(i: Int, selected: Boolean = false, onClick: () -> Unit = {}, onLong: () -> Unit = {}) {
+    val ctx = LocalContext.current
+    val msgs = ChatLog.msgs
+    val m = msgs.getOrNull(i) ?: return
+    fun update(f: (ChatLog.Msg) -> ChatLog.Msg) { if (i < msgs.size) msgs[i] = f(msgs[i]) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (m.mine) Arrangement.End else Arrangement.Start) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (m.mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            ),
+            modifier = Modifier.widthIn(max = 330.dp).combinedClickable(onClick = onClick, onLongClick = onLong),
+            border = if (selected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        ) {
+            Column(Modifier.padding(10.dp)) {
+                Text(m.text)
+                when (m.st) {
+                    ChatLog.St.ASK -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                        Button(onClick = {
+                            val (before, done) = Assistant.apply(ctx, m.proposal!!)
+                            update { it.copy(st = ChatLog.St.DONE, before = before) }
+                            ChatLog.add(ctx, ChatLog.Msg(false, done))
+                        }) { Text("Сделать") }
+                        OutlinedButton(onClick = { update { it.copy(st = ChatLog.St.SKIPPED) } }) { Text("Не надо") }
+                    }
+                    ChatLog.St.DONE -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                        Text("✓ Сделано", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                        OutlinedButton(onClick = {
+                            m.before?.let { Assistant.undo(ctx, it) }
+                            update { it.copy(st = ChatLog.St.UNDONE) }
+                        }) { Text("Отменить") }
+                    }
+                    ChatLog.St.SKIPPED -> Text("Не стал менять", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
+                    ChatLog.St.UNDONE -> Text("Изменения отменены", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
+                    ChatLog.St.NONE -> {}
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Помощник прямо под расписанием: последние сообщения и поле ввода.
+ * Свёрнут: видна строка ввода и последний ответ. Стрелка открывает всю переписку.
+ */
+@Composable
+fun AssistantPanel(data: AppData, nav: Nav, day: java.time.LocalDate) {
+    val ctx = LocalContext.current
+    LaunchedEffect(Unit) { ChatLog.load(ctx) }
+    var input by remember { mutableStateOf("") }
+    var open by remember { mutableStateOf(false) }
+    val msgs = ChatLog.msgs
+    val busy = ChatLog.busy
+    val list = rememberLazyListState()
+    // Ответ пришёл: панель раскрывается, чтобы его было видно.
+    LaunchedEffect(msgs.size) { if (msgs.isNotEmpty() && !msgs.last().mine) open = true }
+    LaunchedEffect(msgs.size, busy, open) { if (open && msgs.isNotEmpty()) list.scrollToItem(msgs.size - 1 + if (busy) 1 else 0) }
+    androidx.compose.material3.Surface(
+        tonalElevation = 3.dp,
+        shadowElevation = 8.dp,
+        modifier = Modifier.fillMaxWidth()
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.ime.union(androidx.compose.foundation.layout.WindowInsets.navigationBars)),
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 12.dp)) {
+                Text(
+                    if (busy) "Помощник думает…" else "Помощник",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f).combinedClickable(onClick = { open = !open }),
+                )
+                if (msgs.isNotEmpty()) androidx.compose.material3.TextButton(onClick = { open = !open }) { Text(if (open) "Свернуть" else "Показать") }
+                androidx.compose.material3.TextButton(onClick = { nav.go(Screen.Chat) }) { Text("Весь чат") }
+            }
+            if (data.settings.aiKey.isBlank()) {
+                Text(
+                    "Нужен ключ Gemini: Настройки → Telegram → «Помощь ИИ».",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            if (open && (msgs.isNotEmpty() || busy)) {
+                LazyColumn(
+                    Modifier.fillMaxWidth().heightIn(max = 260.dp),
+                    state = list,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(msgs.indices.toList()) { i -> Bubble(i) }
+                    if (busy) item { Text("Думаю…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = input, onValueChange = { input = it },
+                    placeholder = { Text("Что поменять?") },
+                    modifier = Modifier.weight(1f), maxLines = 4,
+                )
+                IconButton(enabled = !busy && input.isNotBlank(), onClick = {
+                    ChatLog.send(ctx, input, day)
+                    input = ""
+                    open = true
+                }) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить") }
             }
         }
     }

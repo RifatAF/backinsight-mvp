@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 
 package com.rifat.trainercount.ui
 
@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -151,8 +152,9 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
                 actions = { TextButton(onClick = { nav.go(Screen.FindWindow) }) { Text("Найти окно") } },
             )
         },
+        bottomBar = { AssistantPanel(data, nav, selected) },
         floatingActionButton = {
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (!androidx.compose.foundation.layout.WindowInsets.isImeVisible) Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 androidx.compose.material3.SmallFloatingActionButton(onClick = { dlg = SDlg.Event(null, null) }) {
                     Text("+ Дело", modifier = Modifier.padding(horizontal = 12.dp))
                 }
