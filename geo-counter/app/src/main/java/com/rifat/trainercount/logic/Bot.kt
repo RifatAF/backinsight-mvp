@@ -755,7 +755,11 @@ fun parseClientAi(json: String): Pair<String, Boolean>? {
 fun quickAnswer(d: AppData, text: String, now: Long, zone: ZoneId = ZoneId.systemDefault()): String? {
     val t = text.lowercase()
     if (t.split(Regex("\\s+")).size > 8) return null
-    if (Regex("запиш|перенес|отмен|удал|постав|добав|клиент|поменя|замени|сдвин|подбер|найди").containsMatchIn(t)) return null
+    if (Regex("запиш|перенес|отмен|удал|постав|добав|клиент|поменя|замени|сдвин|подбер|найди|убер|убра|не будет|не прид|не смож|заболе|болеет|однократ|вместо|будет только").containsMatchIn(t)) return null
+    // Названо имя клиента: это просьба про него, а не вопрос «что у меня завтра». Отвечает ИИ.
+    if (d.clients.any { c -> c.name.lowercase().split(Regex("[^а-яёa-z]+")).filter { it.length >= 3 }.any { w ->
+            Regex("(^|[^а-яёa-z])" + Regex.escape(if (w.length >= 4) w.dropLast(1) else w)).containsMatchIn(t)
+        } }) return null
     val cmd = parseBot(text, dayOf(now, zone))
     if (cmd !is BotCmd.Plan && cmd !is BotCmd.Week && cmd !is BotCmd.Free && cmd !is BotCmd.Balances &&
         cmd !is BotCmd.Summary && cmd !is BotCmd.Report) return null

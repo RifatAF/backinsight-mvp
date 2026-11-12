@@ -192,6 +192,9 @@ class BotTest {
         assertTrue(quickAnswer(data, "свободно в четверг?", now) != null)
         assertEquals(null, quickAnswer(data, "Виталия в среду в 16.00 и в вс 15.30", now))
         assertEquals(null, quickAnswer(data, "перенеси Ерлана на завтра", now))
+        assertEquals(null, quickAnswer(data, "Ерлан заболел в пятницу", now))
+        assertEquals(null, quickAnswer(data, "в пятницу не будет однократно", now))
+        assertEquals(null, quickAnswer(data, "Рита завтра", now))
         assertEquals(null, quickAnswer(data, "Анна в 17.30 в вс. заканчиваю в 16.30 час на дорогу все ок", now))
     }
 }
