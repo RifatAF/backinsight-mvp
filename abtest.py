@@ -57,11 +57,14 @@ BASE_MODELS = ["M1", "M2", "M3", "M4"]
 # _x3: та же логика, позиции ×3 (плечо, только лонг); _ls: плечо 1, но может и в шорт
 MODELS = (BASE_MODELS + [f"{m}_x3" for m in BASE_MODELS] + [f"{m}_ls" for m in BASE_MODELS]
           + ["M1_x5", "ROT3", "EXP", "ZONE", "FNEG", "FMIX", "COMBO", "MEGA", "MEGA_x5",
-             "TREND", "MEGA_SAFE", "CARRY"])
+             "TREND", "MEGA_SAFE", "CARRY", "CANDLE"])
 # ROT3: каждую неделю 3 самые сильные монеты из списка по росту за 90 дней (сигнал M1 на каждую), без плеча
 ROT_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "AVAX", "LINK", "DOT", "BCH", "TRX", "BNB", "NEAR",
                 "ATOM", "UNI", "SUI", "PEPE", "SHIB"]
 ROT_K, ROT_LOOKBACK, ROT_MIN_HISTORY = 3, 90, 250
+# CANDLE (candle_lab.py): «большая зелёная свеча» — рост за день больше 2× среднего |движения| за 20 дней. Держим монету
+# 3 дня после такой свечи, до 1/4 капитала на монету, только когда BTC выше SMA200. Монеты: ROT_UNIVERSE.
+CANDLE_MULT, CANDLE_HOLD, CANDLE_SLOTS = 2.0, 3, 4
 # EXP: покупка паники внутри бычьего рынка (против толпы и ортогонально тренду), плечо 2
 EXP_Z, EXP_HOLD, EXP_TAKE, EXP_LEV = -1.0, 14, 0.05, 2.0
 # ZONE: пробой зоны проторговки (профиль объёма 30 дней) + оценочная карта ликвидаций (60 дней) + перцентиль цены
@@ -712,6 +715,24 @@ def decide(model, ctx, mstate, equity_hist, short=False, bear_only=False):
         return targets, {"M1": d1, "FMIX": d2}
     if model == "CARRY":                                 # без позиций: все деньги свободны и идут в carry
         return {}, {"note": "только carry"}
+    if model == "CANDLE":
+        uni = ctx.get("uni") or {}
+        bb = btc.loc[:day]
+        bull = len(bb) >= 200 and bb.iloc[-1] > bb.iloc[-200:].mean()
+        hot = {}
+        for k, c in uni.items():
+            c = c.loc[:day]
+            if len(c) < 30 or c.index[-1] != day:
+                continue
+            r = c.pct_change().iloc[-(21 + CANDLE_HOLD):].values
+            big = [r[-1 - j] > 0 and abs(r[-1 - j]) > CANDLE_MULT * np.nanmean(np.abs(r[-21 - j:-1 - j]))
+                   for j in range(CANDLE_HOLD) if len(r) >= 21 + j]
+            if any(big):
+                hot[k] = round(float(r[-1]), 4)
+        w = 1.0 / max(len(hot), CANDLE_SLOTS) if bull else 0.0
+        targets = {k: (w if k in hot else 0.0) for k in uni}
+        diag["_candle"] = {"btc_above_sma200": bool(bull), "coins": hot, "weight_each": round(w, 4)}
+        return targets, diag
     if model == "TREND":
         for k in [c for c in coins if c in ("BTC", "ETH")]:
             c = closes[k].loc[:day]
@@ -1759,10 +1780,11 @@ MODEL_INFO = {
     "MEGA_x5": ("Эксперименты", "MEGA агрессивная: риск 60% годовых, плечо до x5 (просадки до −60%)"),
     "TREND": ("Эксперименты", "Предложение аудита: тренд BTC/ETH 20/60/120 дн., риск 20%, плечо ≤ 1.5"),
     "MEGA_SAFE": ("Эксперименты", "MEGA с правилами аудита: риск 20%, плечо ≤ 1.5, стоп −15% / −25%"),
+    "CANDLE": ("Эксперименты", "Свечи: 3 дня держим монету после большой зелёной свечи (BTC выше SMA200), до 1/4 на монету"),
     "CARRY": ("Эксперименты", "Только carry (спот BTC + шорт перпа) при funding > 8% годовых: доход без направления"),
 }
 PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#ca8a04", "#db2777",
-           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309", "#7f1d1d", "#047857", "#6d28d9", "#78716c"]
+           "#4f46e5", "#059669", "#b91c1c", "#7c3aed", "#0d9488", "#c2410c", "#64748b", "#a16207", "#be185d", "#15803d", "#1e3a8a", "#b45309", "#7f1d1d", "#047857", "#6d28d9", "#78716c", "#0e7490"]
 
 
 def cmd_dashboard(a, st=None):
