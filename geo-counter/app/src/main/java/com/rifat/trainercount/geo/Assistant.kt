@@ -24,16 +24,27 @@ object Assistant {
     class Proposal(val plan: AgentPlan, val actions: List<Any?>)
 
     @Volatile private var smart: List<String>? = null
+    // Для журнала: сколько ждали ИИ и какая модель ответила.
+    @Volatile private var lastMs = 0L
+    @Volatile private var lastModel = ""
+    @Volatile private var lastErr = ""
 
     private fun ask(prompt: String, think: Int = 0): String? {
         val s = Store.data.value.settings
         if (s.aiKey.isBlank()) return null
-        // Flash с коротким «обдумыванием»: отвечает за секунды. Pro и обычная модель про запас.
-        val models = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.also { smart = it }.orEmpty()
-        for (m in models + s.aiModel.ifBlank { null }.let { listOfNotNull(it) }) {
-            runCatching { Gemini.ask(s.aiKey, m, prompt, think) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        // Flash с коротким «обдумыванием»: отвечает за секунды. Pro медленный (до минуты), его не ждём:
+        // если Flash не ответил, сразу облегчённая модель.
+        val models = smart ?: runCatching { Gemini.pickSmart(s.aiKey) }.getOrNull()?.filter { "pro" !in it }?.also { smart = it }.orEmpty()
+        for (m in (models + s.aiModel.ifBlank { null }.let { listOfNotNull(it) }).distinct()) {
+            val t0 = System.currentTimeMillis()
+            runCatching { Gemini.ask(s.aiKey, m, prompt, think) }
+                .onFailure { lastErr = "$m: ${it.message?.take(80)}" }
+                .getOrNull()?.takeIf { it.isNotBlank() }?.let { lastModel = m; lastMs += System.currentTimeMillis() - t0; return it }
+            lastMs += System.currentTimeMillis() - t0
         }
-        return runCatching { Gemini.ask(s.aiKey, Gemini.pickModel(s.aiKey), prompt) }.getOrNull()
+        val t0 = System.currentTimeMillis()
+        return runCatching { Gemini.ask(s.aiKey, Gemini.pickModel(s.aiKey).also { lastModel = it }, prompt) }.getOrNull()
+            .also { lastMs += System.currentTimeMillis() - t0 }
     }
 
     private fun geocode(ctx: Context, place: String): Pair<Double, Double>? {
@@ -55,10 +66,26 @@ object Assistant {
     /** Подумать над сообщением. null: ИИ недоступен. status: где Рифат (для вопросов «где он»). */
     fun think(ctx: Context, text: String, history: List<Pair<String, String>>, status: String): Proposal? {
         val now = System.currentTimeMillis()
+        lastMs = 0; lastModel = ""; lastErr = ""
         val d = Store.data.value
         val context = agentContext(d, now, status)
+        return thinkInner(ctx, d, now, context, text, history).also {
+            val total = System.currentTimeMillis() - now
+            Diag.add(ctx, "Помощник: ${total / 1000.0} с (ИИ ${lastMs / 1000.0} с, $lastModel)" + if (lastErr.isNotBlank()) "; сбой $lastErr" else "")
+        }
+    }
+
+    private fun thinkInner(ctx: Context, d: com.rifat.trainercount.logic.AppData, now: Long, context: String, text: String, history: List<Pair<String, String>>): Proposal? {
         var r = parseAgent(ask(agentPrompt(context, history, text), think = 512) ?: return null) ?: return null
-        val router = Routes.router(ctx)
+        // Дороги для проверки «успеет ли»: из сети не дольше 8 секунд, дальше только сохранённые.
+        val online = Routes.router(ctx)
+        val offline = Routes.router(ctx, offline = true)
+        var until = 0L
+        val router = com.rifat.trainercount.logic.Router { a, b, t ->
+            val n = System.currentTimeMillis()
+            if (until == 0L) until = n + 8_000
+            if (n < until) online.leg(a, b, t) else offline.leg(a, b, t)
+        }
         // ИИ попросил окна или маршруты: считаем сами и отдаём ему.
         if (r.query != null || r.routes.isNotEmpty()) {
             val info = buildList {

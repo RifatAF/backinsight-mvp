@@ -12,7 +12,7 @@ object Gemini {
     private fun http(key: String, path: String, body: JSONObject?): JSONObject {
         val c = URL(BASE + path).openConnection() as HttpURLConnection
         c.connectTimeout = 15_000
-        c.readTimeout = 90_000
+        c.readTimeout = 40_000
         c.setRequestProperty("x-goog-api-key", key.trim())
         if (body != null) {
             c.requestMethod = "POST"
