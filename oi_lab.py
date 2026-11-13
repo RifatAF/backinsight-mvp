@@ -38,12 +38,17 @@ def load():
     return C[COINS], Fd[COINS], oc, ou, tk, ls
 
 
+def _sp(a, b):
+    m = a.notna() & b.notna()
+    return a[m].rank().corr(b[m].rank()) if m.sum() > 30 else np.nan
+
+
 def ic(sig, fwd):
     out = {}
     for name, sl in (("всё", slice(None)), ("2020–23", slice(None, "2023-12-31")), ("2024–26", slice(SPLIT, None))):
-        v = [sig[k].loc[sl].corr(fwd[k].loc[sl], method="spearman") for k in sig]
+        v = [_sp(sig[k].loc[sl], fwd[k].loc[sl]) for k in sig]
         out[name] = np.nanmean(v)
-    out["монет с IC>0"] = sum(sig[k].corr(fwd[k], method="spearman") > 0 for k in sig)
+    out["монет с IC>0"] = sum(_sp(sig[k], fwd[k]) > 0 for k in sig)
     return out
 
 
@@ -82,10 +87,10 @@ def main():
     for label, d in (("OI в монетах", d7c), ("OI в USD", d7u)):
         cells = {"цена↑ OI↑ (новые лонги)": (p7 > 0) & (d > 0), "цена↑ OI↓ (закрытие шортов)": (p7 > 0) & (d < 0),
                  "цена↓ OI↑ (новые шорты)": (p7 < 0) & (d > 0), "цена↓ OI↓ (ликвидация лонгов)": (p7 < 0) & (d < 0)}
-        base = fwd.loc[start:].stack().mean()
+        base = fwd.loc[start:][oc.loc[start:].notna()].stack().dropna().mean()
         print(f"   {label}: (средний 7д рост всех дней {base:+.2%})")
         for cn, m in cells.items():
-            v = fwd.loc[start:][m.loc[start:]].stack()
+            v = fwd.loc[start:][m.loc[start:]].stack().dropna()
             a = fwd.loc[start:"2023-12-31"][m.loc[start:"2023-12-31"]].stack().mean()
             b = fwd.loc[SPLIT:][m.loc[SPLIT:]].stack().mean()
             print(f"     {cn:34s} {v.mean():+6.2%}  дней {len(v):5d} | 20–23 {a:+6.2%} | 24–26 {b:+6.2%}")
@@ -100,7 +105,7 @@ def main():
                       "OI резко растёт + funding < 0 (толпа в шортах)": up & neg,
                       "OI резко падает + funding < 0 (капитуляция)": dn & neg,
                       "OI резко падает + funding высокий": dn & hi}.items():
-            v = fwd.loc[start:][m.loc[start:]].stack()
+            v = fwd.loc[start:][m.loc[start:]].stack().dropna()
             b = fwd.loc[SPLIT:][m.loc[SPLIT:]].stack().mean()
             print(f"   [{label:6s}] {cn:50s} {v.mean():+6.2%}  дней {len(v):4d} | 24–26 {b:+6.2%}")
 
