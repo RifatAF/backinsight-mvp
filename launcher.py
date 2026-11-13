@@ -152,6 +152,7 @@ def menu():
  6  Проверка доступа к бирже и данным
  7  Запустить бота в этом окне (если без автозапуска)
 10  Автообновление: включить / выключить
+11  Telegram: сводка на телефон (подключить / отключить)
  0  Выход""")
         print(f"Версия {abtest.CODE_VERSION}. Автообновление с GitHub: "
               f"{'выключено' if (DATA / 'autoupdate_off').exists() else 'включено (бот проверяет раз в час)'}")
@@ -187,6 +188,18 @@ def menu():
                 DATA.mkdir(exist_ok=True)
                 f.write_text("автообновление выключено из меню\n", encoding="utf-8")
                 print("Автообновление выключено.")
+        elif c == "11":
+            f = DATA / "telegram.json"
+            if f.exists() and input("Telegram подключён. Отключить? (д/н) ").strip().lower() in ("д", "y", "да"):
+                f.unlink()
+                print("Отключено. Бот в Telegram больше не отвечает (сам бот можно удалить в @BotFather).")
+            elif not f.exists():
+                print("1) В Telegram откройте @BotFather, отправьте /newbot, придумайте имя.\n"
+                      "2) Он пришлёт токен вида 123456:ABC... — скопируйте и вставьте сюда.")
+                tok = input("Токен: ").strip()
+                if tok:
+                    run("telegram", "--token", tok)
+                    print("Работающий бот подхватит подключение сам в течение минуты, перезапуск не нужен.")
         elif c == "0":
             return
 

@@ -2050,6 +2050,172 @@ def single_instance(base_dir):
         sys.exit(0)
 
 
+# ---------- Telegram: сводка на телефон ----------
+# Свой бот в Telegram: создать у @BotFather (команда /newbot), токен ввести в меню (пункт 11). Бот только отвечает
+# владельцу (chat_id сохраняется при подключении) и только читает: торговых команд нет, ключей биржи не касается.
+# Файл abtest/telegram.json: {"token", "chat_id", "offset"}. Удалить файл = отключить.
+TG_API = "https://api.telegram.org/bot{token}/{method}"
+TG_HELP = ("/status — сводка: версия, последний цикл, лидеры и аутсайдеры\n/all — все стратегии\n"
+           "/pos — позиции MEGA, M1, CANDLE\n/dash — прислать панель (откроется в браузере телефона)\n"
+           "/errors — последние ошибки")
+
+
+def tg_conf(a):
+    f = Path(a.dir) / "telegram.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    except Exception:
+        return None
+
+
+def tg_save(a, conf):
+    atomic_write(Path(a.dir) / "telegram.json", json.dumps(conf, ensure_ascii=False))
+
+
+def tg_call(token, method, http_timeout=20, files=None, **params):
+    """params уходят в Telegram как есть (у getUpdates свой параметр timeout — длинный опрос)."""
+    import requests
+    r = requests.post(TG_API.format(token=token, method=method), data=params, files=files, timeout=http_timeout)
+    return r.json()
+
+
+def tg_send(a, text):
+    """Отправить сообщение владельцу. Ничего не делает, если Telegram не подключён; ошибки сети только в лог."""
+    c = tg_conf(a)
+    if not c or not c.get("chat_id"):
+        return False
+    try:
+        for i in range(0, len(text), 3900):
+            tg_call(c["token"], "sendMessage", chat_id=c["chat_id"], text=text[i:i + 3900])
+        return True
+    except Exception as e:
+        log(f"telegram: не отправил: {e}", "warning")
+        return False
+
+
+def tg_summary(a, full=False):
+    st = load_state(a)
+    cap = st["capital"]
+    eq = {m: (list(st["equity_hist"].get(m, {}).values()) or [cap]) for m in MODELS}
+    cur = {m: v[-1] for m, v in eq.items()}
+    day = {m: (v[-1] / v[-2] - 1 if len(v) > 1 else 0.0) for m, v in eq.items()}
+    ranked = sorted(MODELS, key=lambda m: -cur[m])
+    line = lambda m: f"{m:10s} {cur[m] / cap - 1:+7.1%}  день {day[m]:+5.1%}"
+    days = len(eq["M1"]) - 1 if "M1" in eq else 0
+    err = Path(a.dir) / "logs/errors.log"
+    n_err = 0
+    if err.exists():
+        cutoff = (now_utc() - timedelta(days=1)).strftime("%Y-%m-%d %H")
+        n_err = sum(1 for s in err.read_text(encoding="utf-8", errors="ignore").splitlines()[-500:]
+                    if s[:13] >= cutoff and "ERROR" in s)
+    head = (f"backinsight {CODE_VERSION}\nсейчас {now_utc():%Y-%m-%d %H:%M} UTC, последний цикл {st['last_cycle']}\n"
+            f"дней теста {days}, капитал каждой {cap:g} USDT, ошибок за сутки {n_err}\n")
+    if full:
+        return head + "\n" + "\n".join(line(m) for m in ranked)
+    return head + "\nлидеры:\n" + "\n".join(line(m) for m in ranked[:5]) + \
+        "\n\nаутсайдеры:\n" + "\n".join(line(m) for m in ranked[-3:]) + "\n\n" + TG_HELP
+
+
+def tg_positions(a):
+    f = Path(a.dir) / "data_lake/equity/equity.csv"
+    if not f.exists():
+        return "позиций ещё нет"
+    last = pd.read_csv(f).groupby("model").tail(1).set_index("model")
+    out = []
+    for m in ("MEGA", "MEGA_SAFE", "M1", "CANDLE", "FMIX", "TREND"):
+        if m in last.index:
+            r = last.loc[m]
+            p = json.loads(r["positions"]) if isinstance(r.get("positions"), str) else {}
+            p = {k: v for k, v in p.items() if abs(float(v or 0)) > 1e-9}
+            out.append(f"{m}: {r.get('equity', float('nan')):.2f} USDT, плечо {float(r.get('leverage') or 0):.2f}, "
+                       f"позиции {', '.join(f'{k} {float(v):+.4g}' for k, v in p.items()) or 'нет (кэш)'}")
+    return "\n".join(out) or "позиций нет"
+
+
+def tg_handle(a, c, text):
+    cmd = (text or "").strip().split()[0].lower().split("@")[0] if text else ""
+    if cmd in ("/status", "/start", "статус"):
+        tg_send(a, tg_summary(a))
+    elif cmd == "/all":
+        tg_send(a, tg_summary(a, full=True))
+    elif cmd == "/pos":
+        tg_send(a, tg_positions(a))
+    elif cmd == "/dash":
+        p = Path(a.dir) / "dashboard.html"
+        try:
+            cmd_dashboard(a)
+            with open(p, "rb") as fh:
+                tg_call(c["token"], "sendDocument", http_timeout=60, chat_id=c["chat_id"],
+                        caption="Панель: открыть файл в браузере", files={"document": ("dashboard.html", fh)})
+        except Exception as e:
+            tg_send(a, f"не смог прислать панель: {e}")
+    elif cmd == "/errors":
+        err = Path(a.dir) / "logs/errors.log"
+        tail = err.read_text(encoding="utf-8", errors="ignore").splitlines()[-15:] if err.exists() else []
+        tg_send(a, "\n".join(s[:300] for s in tail) or "ошибок нет")
+    else:
+        tg_send(a, TG_HELP)
+
+
+def tg_listener(a):
+    """Фоновый поток в loop: длинный опрос Telegram, отвечает только владельцу."""
+    import threading
+
+    def run():
+        while True:
+            c = tg_conf(a)
+            if not c or not c.get("chat_id"):
+                time.sleep(60)
+                continue
+            try:
+                r = tg_call(c["token"], "getUpdates", http_timeout=60, offset=c.get("offset", 0), timeout=50)
+                for u in r.get("result", []):
+                    c["offset"] = u["update_id"] + 1
+                    msg = u.get("message") or {}
+                    if str(msg.get("chat", {}).get("id")) == str(c["chat_id"]):
+                        tg_handle(a, c, msg.get("text"))
+                tg_save(a, c)
+            except Exception as e:
+                log(f"telegram: {e}", "warning")
+                time.sleep(30)
+
+    threading.Thread(target=run, daemon=True, name="telegram").start()
+
+
+def cmd_telegram(a):
+    """Подключение: токен от @BotFather, затем написать боту любое сообщение — его chat_id станет владельцем."""
+    token = (a.token or "").strip()
+    if not token:
+        c = tg_conf(a)
+        print("Telegram " + (f"подключён (chat {c['chat_id']})" if c and c.get("chat_id") else "не подключён"))
+        return
+    try:
+        me = tg_call(token, "getMe")
+    except Exception as e:
+        print(f"нет связи с Telegram: {e}")
+        return False
+    if not me.get("ok"):
+        print("Telegram не принял токен. Скопируйте его из @BotFather целиком.")
+        return False
+    name = me["result"].get("username")
+    old = tg_call(token, "getUpdates").get("result", [])
+    offset = old[-1]["update_id"] + 1 if old else 0
+    print(f"Бот @{name} найден. Откройте его в Telegram на телефоне и отправьте /start (жду 3 минуты)...")
+    t_end = time.time() + 180
+    while time.time() < t_end:
+        r = tg_call(token, "getUpdates", http_timeout=40, offset=offset, timeout=30).get("result", [])
+        for u in r:
+            offset = u["update_id"] + 1
+            chat = (u.get("message") or {}).get("chat", {})
+            if chat.get("id"):
+                tg_save(a, {"token": token, "chat_id": chat["id"], "offset": offset})
+                tg_send(a, "Подключено. Бот будет присылать сводку каждый день после цикла.\n\n" + TG_HELP)
+                print("Готово: телефон подключён. Сводка будет приходить сама, команды — в чате с ботом.")
+                return
+    print("Сообщение не пришло за 3 минуты. Повторите пункт меню.")
+    return False
+
+
 def cmd_loop(a):
     single_instance(a.dir)
     log("loop: снимок рынка каждый час, дневной цикл в 00:05 UTC. Ctrl+C для остановки")
@@ -2065,6 +2231,8 @@ def cmd_loop(a):
     except Exception as e:
         log(f"тестовая сделка: {e}", "error")
     update_watchdog(a)
+    tg_listener(a)
+    tg_send(a, f"бот запущен, версия {CODE_VERSION}")
     t_start, survived = time.time(), False
     while True:
         try:
@@ -2075,6 +2243,10 @@ def cmd_loop(a):
             n = now_utc()
             if st["last_cycle"] != str((n - timedelta(days=1)).date()) and (n.hour > 0 or n.minute >= 5):
                 cmd_cycle(a)                       # вчерашняя свеча закрыта и ещё не обработана (догоняет пропуски)
+                try:
+                    tg_send(a, "дневной цикл выполнен\n" + tg_summary(a))
+                except Exception as e:
+                    log(f"telegram: сводка: {e}", "warning")
                 month = f"{n:%Y%m}"
                 if not list((Path(a.dir) / "exports").glob(f"abtest_export_{month}*.zip")):
                     cmd_export(a)                  # резервный архив раз в месяц
@@ -2367,7 +2539,9 @@ def cmd_export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["init", "cycle", "snapshot", "loop", "report", "replay", "dataset", "doctor",
-                                    "health", "export", "dashboard", "selftest", "streamtest", "version", "update"])
+                                    "health", "export", "dashboard", "selftest", "streamtest", "version", "update",
+                                    "telegram"])
+    ap.add_argument("--token", default="", help="telegram: токен бота от @BotFather")
     ap.add_argument("--exchange", default="bybit")
     ap.add_argument("--coins", default="BTC,ETH")
     ap.add_argument("--capital", type=float, default=100)
@@ -2381,10 +2555,12 @@ def main():
     fn = {"init": cmd_init, "cycle": cmd_cycle, "snapshot": cmd_snapshot, "loop": cmd_loop, "report": cmd_report,
           "replay": cmd_replay, "dataset": cmd_dataset, "doctor": cmd_doctor, "health": cmd_health,
           "export": cmd_export, "dashboard": cmd_dashboard, "selftest": cmd_selftest, "streamtest": cmd_streamtest,
-          "version": lambda a: print(f"backinsight {CODE_VERSION}"), "update": auto_update}[a.cmd]
+          "version": lambda a: print(f"backinsight {CODE_VERSION}"), "update": auto_update,
+          "telegram": cmd_telegram}[a.cmd]
     if a.cmd == "version":
         return fn(a) or 0
-    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest", "streamtest", "update"):
+    if a.cmd in ("report", "doctor", "health", "export", "replay", "dashboard", "selftest", "streamtest", "update",
+                 "telegram"):
         return 1 if fn(a) is False else 0
     t0, status, err = time.time(), "ok", None
     try:
