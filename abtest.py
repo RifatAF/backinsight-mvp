@@ -311,7 +311,12 @@ def auto_update(a):
         res = fetch_update(new, current=cur, skip=skip, min_published=hist.get("max_published", ""))
     except Exception as e:
         log(f"автообновление: проверка не удалась ({str(e)[:160]}), работаю на {CODE_VERSION}", "warning")
+        hist["last_check"] = {"ts": now_utc().isoformat(), "result": f"ошибка связи: {str(e)[:80]}"}
+        atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
         return
+    hist["last_check"] = {"ts": now_utc().isoformat(),
+                          "result": "новых нет" if res[1] is None else f"найдена {res[0]}, ставлю"}
+    atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
     if res[1] is None:
         return
     ver, path, published = res
@@ -2056,6 +2061,7 @@ def single_instance(base_dir):
 # Файл abtest/telegram.json: {"token", "chat_id", "offset"}. Удалить файл = отключить.
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 TG_HELP = ("/status — сводка: версия, последний цикл, лидеры и аутсайдеры\n/all — все стратегии\n"
+           "/updates — когда приходили обновления и когда была последняя проверка\n"
            "/pos — позиции MEGA, M1, CANDLE\n/dash — прислать панель (откроется в браузере телефона)\n"
            "/errors — последние ошибки")
 
@@ -2093,6 +2099,27 @@ def tg_send(a, text):
         return False
 
 
+def tg_updates(a, n=3):
+    """Строки про обновления: последние установки и последняя проверка GitHub."""
+    root = Path(a.dir)
+    h = _read_json(root / "update.json", {})
+    fmt = lambda ts: pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M") + " UTC"
+    done = h.get("done", [])[-n:][::-1]
+    lines = [f"обновление {d['from']} → {d['to']}: {fmt(d['ts'])}" for d in done] or ["обновлений ещё не было"]
+    if (root / "autoupdate_off").exists():
+        lines.append("автообновление выключено (меню, пункт 10)")
+    elif not getattr(sys, "frozen", False):
+        lines.append("автообновление работает только в exe")
+    elif h.get("last_check"):
+        lines.append(f"последняя проверка: {fmt(h['last_check']['ts'])}, {h['last_check']['result']}")
+    else:
+        lines.append("проверок ещё не было (раз в час)")
+    bad = {v: k for v, k in h.get("failed", {}).items() if k}
+    if bad:
+        lines.append("неудачные попытки: " + ", ".join(f"{v} ×{k}" for v, k in bad.items()))
+    return "\n".join(lines)
+
+
 def tg_summary(a, full=False):
     st = load_state(a)
     cap = st["capital"]
@@ -2109,7 +2136,8 @@ def tg_summary(a, full=False):
         n_err = sum(1 for s in err.read_text(encoding="utf-8", errors="ignore").splitlines()[-500:]
                     if s[:13] >= cutoff and "ERROR" in s)
     head = (f"backinsight {CODE_VERSION}\nсейчас {now_utc():%Y-%m-%d %H:%M} UTC, последний цикл {st['last_cycle']}\n"
-            f"дней теста {days}, капитал каждой {cap:g} USDT, ошибок за сутки {n_err}\n")
+            f"дней теста {days}, капитал каждой {cap:g} USDT, ошибок за сутки {n_err}\n"
+            + tg_updates(a, n=1) + "\n")
     if full:
         return head + "\n" + "\n".join(line(m) for m in ranked)
     return head + "\nлидеры:\n" + "\n".join(line(m) for m in ranked[:5]) + \
@@ -2140,6 +2168,8 @@ def tg_handle(a, c, text):
         tg_send(a, tg_summary(a, full=True))
     elif cmd == "/pos":
         tg_send(a, tg_positions(a))
+    elif cmd == "/updates":
+        tg_send(a, f"версия сейчас {CODE_VERSION}\n" + tg_updates(a, n=20))
     elif cmd == "/dash":
         p = Path(a.dir) / "dashboard.html"
         try:
@@ -2232,7 +2262,10 @@ def cmd_loop(a):
         log(f"тестовая сделка: {e}", "error")
     update_watchdog(a)
     tg_listener(a)
-    tg_send(a, f"бот запущен, версия {CODE_VERSION}")
+    last = (_read_json(Path(a.dir) / "update.json", {}).get("done") or [{}])[-1]
+    tg_send(a, f"бот запущен, версия {CODE_VERSION}"
+               + (f"\nобновился {last['from']} → {CODE_VERSION} ({pd.Timestamp(last['ts']):%Y-%m-%d %H:%M} UTC)"
+                  if last.get("to") == CODE_VERSION else ""))
     t_start, survived = time.time(), False
     while True:
         try:
