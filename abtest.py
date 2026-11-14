@@ -318,6 +318,7 @@ def auto_update(a):
                           "result": "новых нет" if res[1] is None else f"найдена {res[0]}, ставлю"}
     atomic_write(hist_p, json.dumps(hist, indent=2, ensure_ascii=False))
     if res[1] is None:
+        log(f"автообновление: проверено, новых версий нет (стоит {CODE_VERSION})")
         return
     ver, path, published = res
     import shutil
@@ -406,9 +407,17 @@ class Feed:
         return f"{coin}/{self.quote}"
 
     def psym(self, coin):
-        if coin in ("PEPE", "SHIB") and self.name == "bybit":   # на Bybit перпы этих монет в тысячах: 1000PEPEUSDT
-            return f"1000{coin}/USDT:USDT"
-        return f"{coin}/USDT:USDT"
+        """Символ перпа. У дешёвых монет он бывает в тысячах и по-разному: Bybit 1000PEPEUSDT, но SHIB1000USDT."""
+        cands = [f"{coin}/USDT:USDT", f"1000{coin}/USDT:USDT", f"{coin}1000/USDT:USDT"]
+        perp = getattr(self, "perp", None)
+        mk = getattr(perp, "markets", None) or {}
+        if mk:
+            for c in cands:
+                if c in mk:
+                    return c
+        if coin in ("PEPE", "SHIB") and self.name == "bybit":
+            return f"1000{coin}/USDT:USDT" if coin == "PEPE" else f"{coin}1000/USDT:USDT"
+        return cands[0]
 
     def derivs(self, coin):
         """Компактный снимок деривативов: funding, mark/index, открытый интерес, лонг/шорт. Ошибки по полям."""
@@ -1558,7 +1567,12 @@ def start_liquidation_stream(exchange, coins, root):
                         save(ex, q, syms.get(q.get("symbol"), q.get("symbol")))
                         LIQ_STATUS["n"] += 1
                 except Exception as e:
-                    log(f"поток ликвидаций: {str(e)[:120]}, переподключение через 30 с", "warning")
+                    msg = str(e)[:120]
+                    t = time.time()
+                    if LIQ_STATUS.get("_last_msg") != msg or t - LIQ_STATUS.get("_last_t", 0) > 300:
+                        LIQ_STATUS["_last_msg"], LIQ_STATUS["_last_t"] = msg, t
+                        log(f"поток ликвидаций: {msg}, переподключение через 30 с", "warning")
+                    LIQ_STATUS["reconnects"] = LIQ_STATUS.get("reconnects", 0) + 1
                     await asyncio.sleep(30)
 
         async def main():
@@ -2282,16 +2296,25 @@ def cmd_loop(a):
                     log(f"telegram: сводка: {e}", "warning")
                 month = f"{n:%Y%m}"
                 if not list((Path(a.dir) / "exports").glob(f"abtest_export_{month}*.zip")):
-                    cmd_export(a)                  # резервный архив раз в месяц
+                    try:
+                        cmd_export(a)              # резервный архив раз в месяц
+                    except Exception as e:
+                        log(f"экспорт не удался: {e}", "error")
             else:
                 cmd_snapshot(a)
-            cmd_dashboard(a)
-            auto_update(a)
         except SystemExit:
             raise
         except Exception as e:
             import traceback
             log(f"ошибка: {e}\n{traceback.format_exc()}", "error")
+        for step in (cmd_dashboard, auto_update):  # каждый шаг отдельно: сбой одного не отменяет остальные
+            try:
+                step(a)
+            except SystemExit:
+                raise
+            except Exception as e:
+                import traceback
+                log(f"ошибка {step.__name__}: {e}\n{traceback.format_exc()}", "error")
         nxt = (now_utc() + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
         while now_utc() < nxt:                     # короткие паузы: после сна/гибернации проснётся сразу
             time.sleep(30)
@@ -2545,12 +2568,19 @@ def cmd_export(a):
     import zipfile
     base = Path(a.dir)
     st = load_state(a)
-    files = [p for p in base.rglob("*") if p.is_file() and p.suffix not in (".tmp", ".zip") and "exports" not in p.parts]
+    files = [p for p in base.rglob("*") if p.is_file() and p.suffix not in (".tmp", ".zip", ".lock", ".part")
+             and "exports" not in p.parts and not p.name.endswith(".exe")]
     manifest = {"exported": now_utc().isoformat(), "code_version": CODE_VERSION, "schema_version": SCHEMA_VERSION,
                 "test_started": st["created"], "coins": st["coins"], "exchange": st["exchange"], "capital": st["capital"],
                 "last_cycle": st["last_cycle"], "files": []}
-    for p in files:
-        h = hashlib.sha256(p.read_bytes()).hexdigest()
+    skipped = []
+    for p in list(files):
+        try:
+            h = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError as e:                        # файл занят другим процессом (Windows): пропустить, не падать
+            skipped.append(f"{p.relative_to(base)}: {e}")
+            files.remove(p)
+            continue
         rows = None
         if p.suffix in (".csv", ".jsonl", ".log"):
             rows = sum(1 for _ in open(p, encoding="utf-8", errors="ignore"))
@@ -2560,6 +2590,7 @@ def cmd_export(a):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for p in files:
             z.write(p, p.relative_to(base))
+        manifest["skipped"] = skipped
         z.writestr("MANIFEST.json", json.dumps(manifest, indent=2, ensure_ascii=False))
         for doc in ("DATA_SCHEMA.md", "ABTEST.md"):
             src = Path(__file__).parent / doc
