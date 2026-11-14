@@ -1,0 +1,127 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches: [ccr-bcd12257-71rrmp]
+    paths: ["abtest.py", "system.py", "launcher.py", "laptop/**", "requirements.txt", ".github/workflows/build-exe.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write          # публикация релизов exe-<версия> для автообновления
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # аудит: токен с правом записи не остаётся в .git/config во время сборки
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build backinsight.exe
+        shell: pwsh
+        run: |
+          python -m pip install -q -r requirements.txt pyinstaller
+          git rev-parse --short HEAD | Out-File -Encoding ascii VERSION
+          pyinstaller -y --onefile --name backinsight `
+            --add-data "laptop/autostart_windows.ps1;laptop" --add-data "DATA_SCHEMA.md;." `
+            --add-data "ABTEST.md;." --add-data "VERSION;." --add-data "data/onchain_seed.csv;data" --collect-submodules ccxt.pro launcher.py
+      - name: Smoke test exe
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory t | Out-Null
+          Copy-Item dist\backinsight.exe t\
+          Set-Location t
+          .\backinsight.exe doctor --exchange okx
+          .\backinsight.exe init --exchange okx
+          $n = @((Get-Content abtest\state.json -Raw -Encoding UTF8 | ConvertFrom-Json).accounts.PSObject.Properties).Count
+          Write-Host "accounts: $n"
+          if ($n -ne 25) { throw "need 25 accounts, got $n" }
+          .\backinsight.exe cycle --exchange okx
+          .\backinsight.exe health
+          .\backinsight.exe selftest
+          .\backinsight.exe streamtest
+          .\backinsight.exe dashboard
+          if (-not (Test-Path abtest\dashboard.html)) { throw "no dashboard" }
+          .\backinsight.exe export
+          if (-not (Test-Path abtest\exports\*.zip)) { throw "export failed" }
+      - name: Test autostart task from exe (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $d = (Resolve-Path t).Path
+          powershell -NoProfile -ExecutionPolicy Bypass -File laptop\autostart_windows.ps1 -Exe "$d\backinsight.exe" -WorkDir $d -NoPower -Quiet
+          Get-ScheduledTask -TaskName backinsight-abtest | Format-List TaskName, State
+          (Get-ScheduledTask -TaskName backinsight-abtest).Triggers | Format-Table -AutoSize
+          (Get-ScheduledTask -TaskName backinsight-abtest).Principal | Format-List UserId, LogonType
+          Start-Sleep 60
+          $info = Get-ScheduledTaskInfo -TaskName backinsight-abtest
+          $info | Format-List LastRunTime, LastTaskResult
+          Get-Content "$d\abtest\logs\abtest.log" -Tail 8 -Encoding UTF8
+          if ((Get-ScheduledTask -TaskName backinsight-abtest).State -ne "Running") { throw "task not running" }
+          Select-String -Path "$d\abtest\logs\abtest.log" -Pattern "loop:" | Select-Object -Last 1
+          Stop-ScheduledTask -TaskName backinsight-abtest
+          Unregister-ScheduledTask -TaskName backinsight-abtest -Confirm:$false
+      - name: Test script install (setup.ps1)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File laptop\setup.ps1 -Exchange okx
+          if ($LASTEXITCODE -ne 0) { throw "setup.ps1 failed" }
+          if (-not (Test-Path abtest\state.json)) { throw "no state" }
+      - name: Test version command of exe
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          $out = & dist\backinsight.exe version
+          Write-Host $out
+          if ("$out" -notmatch $v) { throw "version mismatch: $out vs $v" }
+      - name: Publish release exe-<version> (laptop updates itself from the newest one)
+        if: github.ref == 'refs/heads/ccr-bcd12257-71rrmp'   # релизы только с этой ветки (аудит)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          $h = (Get-FileHash dist\backinsight.exe -Algorithm SHA256).Hash.ToLower()
+          gh release create "exe-$v" dist\backinsight.exe --target $env:GITHUB_SHA --title "backinsight $v" `
+            --notes "version: $v`nsha256: $h`nСобрано и проверено CI (selftest, streamtest, dashboard, export, автозапуск)."
+          if ($LASTEXITCODE -ne 0) { throw "release failed" }
+      - name: Test auto-update from the published release (old version pretends to be older)
+        if: github.ref == 'refs/heads/ccr-bcd12257-71rrmp'   # релизы только с этой ветки (аудит)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory u | Out-Null
+          Copy-Item dist\backinsight.exe u\
+          Copy-Item -Recurse t\abtest u\abtest
+          Set-Location u
+          $v = (Get-Content ..\VERSION).Trim()
+          for ($i = 0; $i -lt 30; $i++) {             # список релизов у GitHub обновляется с задержкой
+            $tags = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=10").tag_name
+            if ($tags -contains "exe-$v") { break }
+            Start-Sleep 10
+          }
+          $before = (Get-FileHash abtest\state.json).Hash
+          $env:BACKINSIGHT_FAKE_VERSION = "0000000"
+          $p = Start-Process .\backinsight.exe -ArgumentList "update" -Wait -PassThru -NoNewWindow
+          Remove-Item Env:BACKINSIGHT_FAKE_VERSION
+          Write-Host "exit code: $($p.ExitCode)"
+          Get-Content abtest\logs\abtest.log -Tail 5 -Encoding UTF8
+          if ($p.ExitCode -ne 3) { throw "updater did not swap the exe" }
+          if (-not (Test-Path backinsight.old.exe)) { throw "no rollback copy" }
+          if (-not (Test-Path abtest\state_backups\state_before_update_0000000_*.json)) { throw "no state backup" }
+          if ((Get-FileHash abtest\state.json).Hash -ne $before) { throw "state.json changed" }
+          $out = & .\backinsight.exe version
+          if ("$out" -notmatch $v) { throw "new exe is not the newest build: $out vs $v" }
+          Get-Content abtest\update.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backinsight-exe
+          path: dist/backinsight.exe
+          retention-days: 90
