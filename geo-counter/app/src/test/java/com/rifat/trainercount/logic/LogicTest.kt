@@ -601,4 +601,56 @@ class LogicTest {
         assertTrue("Перерывы: 11:30–13:30" in txt, txt)
         assertEquals("План на завтра, пт 09.10:\nЗанятий нет", familyText(d, t(21, day = 8), true))
     }
+
+    // ---------- Переносы: разово и постоянно ----------
+
+    @Test fun oneTimeMovesDoNotDropRegularDay() {
+        // Светлана по понедельникам в 10:00. Три понедельника подряд переносили на вторник 11:00: понедельник остаётся её.
+        val moved = listOf(12, 19, 26)
+        val vs = listOf(auto("a", "s", 5, 10, 0)) + moved.map { auto("m$it", "s", it + 1, 11, 0) }
+        val ch = moved.map { Change("c$it", "s", ChangeKind.MOVE, java.time.LocalDate.of(2026, 10, it).toEpochDay(), 600,
+            java.time.LocalDate.of(2026, 10, it + 1).toEpochDay(), 660) }
+        val d = learnRules(base.copy(visits = vs, changes = ch), t(20, day = 28))
+        // Раньше здесь выходило «через неделю» (parity = 0), и клиент пропадал с каждого второго понедельника.
+        assertTrue(d.rules.any { it.clientId == "s" && it.day == 1 && it.min == 600 && it.parity == null }, d.rules.toString())
+        assertTrue(d.rules.none { it.clientId == "s" && it.day == 2 }, "разовые переносы не делают вторник постоянным")
+    }
+
+    @Test fun permanentNewTimeSameDayReplacesOld() {
+        val d0 = base.copy(rules = listOf(Rule("r", "s", 2, 15 * 60, manual = true)))
+        val d1 = addRule(d0, "s", 2, 17 * 60, null)
+        val tue = d1.rules.filter { it.clientId == "s" && it.day == 2 && !it.off }
+        assertEquals(listOf(17 * 60), tue.map { it.min })
+        // Выученное занятие гасится, а не остаётся вторым.
+        val d2 = addRule(base.copy(rules = listOf(Rule("auto-s-2-900", "s", 2, 900))), "s", 2, 1020, null)
+        assertEquals(listOf(1020), d2.rules.filter { it.day == 2 && !it.off }.map { it.min })
+        assertEquals(listOf(1020), occurrences(d2, java.time.LocalDate.of(2026, 10, 13)).map { it.min })
+    }
+
+    @Test fun oneTimeMoveTouchesOnlyThatDay() {
+        val d0 = base.copy(rules = listOf(Rule("r", "s", 1, 600, manual = true)))
+        val mon = java.time.LocalDate.of(2026, 10, 12)
+        val occ = occurrences(d0, mon).single()
+        val d1 = moveOnce(d0, occ, mon, mon.plusDays(1), 660)
+        assertTrue(occurrences(d1, mon).isEmpty())
+        assertEquals(listOf(660), occurrences(d1, mon.plusDays(1)).map { it.min })
+        for (w in 1..4L) assertEquals(listOf(600), occurrences(d1, mon.plusWeeks(w)).map { it.min }, "неделя +$w")
+        assertEquals(listOf(600), occurrences(d1, mon.minusWeeks(1)).map { it.min })
+    }
+
+    @Test fun planKeysAreUniqueEvenForTwinLessons() {
+        // Обычное занятие и перенесённое на тот же день в то же время: раньше экран падал с «Key was already used».
+        val day = java.time.LocalDate.of(2026, 10, 12)
+        val d0 = base.copy(
+            rules = listOf(Rule("r", "s", 1, 600, manual = true)),
+            changes = listOf(Change("x", "s", ChangeKind.EXTRA, day.toEpochDay(), 630)),
+            visits = listOf(Visit("v", "s", t(10, 30, day = 12), t(11, 30, day = 12), 1)),
+        )
+        val plan = dayPlan(d0, day, t(20, day = 12))
+        val keys = planItemKeys(plan).map { it.first }
+        assertEquals(keys.size, keys.toSet().size, keys.toString())
+        val twin = listOf(PlanItem.Window(600, 660), PlanItem.Window(600, 660))
+        assertEquals(2, planItemKeys(twin).map { it.first }.toSet().size)
+    }
 }
+

@@ -142,6 +142,8 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
     var dlg by remember { mutableStateOf<SDlg?>(null) }
     val weekStart = selected.minusDays((selected.dayOfWeek.value - 1).toLong())
     val plan = dayPlan(data, selected, now)
+    // Ключи строк должны быть уникальны: у клиента бывает два занятия в день (обычное и перенесённое).
+    val keyedPlan = remember(plan) { planItemKeys(plan) }
     val ready = readyInDays(data, now)
 
     Scaffold(
@@ -220,7 +222,7 @@ fun ScheduleScreen(data: AppData, nav: Nav) {
                     )
                 }
             }
-            items(plan, key = { it.javaClass.simpleName + it.from + ((it as? PlanItem.Lesson)?.occ?.clientId ?: (it as? PlanItem.Unplanned)?.visit?.id ?: "") }) { item ->
+            items(keyedPlan, key = { it.first }) { (_, item) ->
                 TimelineRow(data, item) {
                     dlg = when (item) {
                         is PlanItem.Lesson -> SDlg.Lesson(item.occ, item.status)

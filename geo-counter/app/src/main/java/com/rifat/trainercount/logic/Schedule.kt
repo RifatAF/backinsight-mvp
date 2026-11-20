@@ -72,6 +72,9 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
 
     for (c in d.clients.filter { !it.archived }) {
         val planned = d.changes.filter { it.clientId == c.id && (it.kind == ChangeKind.MOVE || it.kind == ChangeKind.EXTRA) }
+        // Недели, когда занятие этого дня отменили или перенесли разово: пропуск в них не значит, что день больше не его.
+        val excused = d.changes.filter { it.clientId == c.id && (it.kind == ChangeKind.MOVE || it.kind == ChangeKind.CANCEL) }
+            .map { LocalDate.ofEpochDay(it.date) }.map { weekIndex(it) to it.dayOfWeek.value }.toSet()
         fun byChange(date: LocalDate) = planned.any { ch -> (if (ch.kind == ChangeKind.MOVE) ch.toDate else ch.date) == date.toEpochDay() }
         // Ручные записи вне рабочего времени внесены задним числом: ни дня, ни времени по ним не понять.
         val visits = d.visits.filter { it.clientId == c.id && it.kind != VisitKind.BURNED }
@@ -109,7 +112,7 @@ fun learnRules(d: AppData, now: Long, zone: ZoneId = ZoneId.systemDefault()): Ap
             if (curWeek - byWeek.keys.max() > STALE_WEEKS || slotRules.any { it.day == day }) continue
             val observed = active.filter { w ->
                 val date = LocalDate.ofEpochDay(w * 7 - 3 + (day - 1))
-                date >= firstMonday && date < today
+                date >= firstMonday && date < today && (w to day) !in excused
             }.toSet() + byWeek.keys
             fun often(weeks: Collection<Long>, base: Collection<Long>) = weeks.size * 2 >= base.size
             val pars = byWeek.keys.map(::par).toSet()
@@ -204,6 +207,24 @@ sealed class PlanItem {
     data class Event(val ev: Personal) : PlanItem() {
         override val from get() = ev.min
         override val to get() = ev.min + ev.duration
+    }
+}
+
+/**
+ * Уникальные ключи строк плана для списка на экране. Обычный ключ: вид строки, время и клиент; если такой уже был
+ * (у клиента два занятия в одно время, занятие и приход совпали), добавляется номер, чтобы экран не падал.
+ */
+fun planItemKeys(plan: List<PlanItem>): List<Pair<String, PlanItem>> {
+    val seen = mutableMapOf<String, Int>()
+    return plan.map { p ->
+        val base = when (p) {
+            is PlanItem.Lesson -> "L${p.from}-${p.occ.clientId}-${p.occ.min}"
+            is PlanItem.Unplanned -> "U${p.from}-${p.visit.id}"
+            is PlanItem.Window -> "W${p.from}-${p.to}"
+            is PlanItem.Event -> "E${p.ev.id}"
+        }
+        val n = seen.merge(base, 1, Int::plus)!!
+        (if (n == 1) base else "$base#$n") to p
     }
 }
 
@@ -312,9 +333,17 @@ fun addExtra(d: AppData, clientId: String, date: LocalDate, min: Int): AppData =
     d.copy(changes = d.changes + Change(newId(), clientId, ChangeKind.EXTRA, date.toEpochDay(), min))
 
 /** Постоянное занятие вручную. parity: null каждую неделю, иначе чётность недели первого занятия. */
-fun addRule(d: AppData, clientId: String, day: Int, min: Int, parity: Int?): AppData =
-    d.copy(rules = d.rules.filterNot { it.clientId == clientId && it.day == day && it.min == min } +
+fun addRule(d: AppData, clientId: String, day: Int, min: Int, parity: Int?): AppData {
+    // У клиента одно занятие в день: новое время в этот день заменяет старое (ручное удаляется, выученное гасится),
+    // иначе после «Стас теперь по вторникам в 17:00» он висел бы во вторник дважды.
+    val same = d.rules.filter {
+        it.clientId == clientId && it.day == day && !it.off && (it.parity == null || parity == null || it.parity == parity)
+    }
+    var nd = d
+    same.forEach { nd = removeRule(nd, it) }
+    return nd.copy(rules = nd.rules.filterNot { it.clientId == clientId && it.day == day && it.min == min && !it.off } +
         Rule(newId(), clientId, day, min, parity, manual = true))
+}
 
 /** Изменить постоянное занятие: теперь оно ручное, автоматика его не перезапишет. */
 fun editRule(d: AppData, rule: Rule, day: Int, min: Int, parity: Int?): AppData {
