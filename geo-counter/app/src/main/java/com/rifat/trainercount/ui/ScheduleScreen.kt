@@ -87,6 +87,7 @@ import com.rifat.trainercount.logic.lessonMin
 import com.rifat.trainercount.logic.moveOnce
 import com.rifat.trainercount.logic.occurrences
 import com.rifat.trainercount.logic.parityOf
+import com.rifat.trainercount.logic.planItemKeys
 import com.rifat.trainercount.logic.readyInDays
 import com.rifat.trainercount.logic.removeRule
 import com.rifat.trainercount.logic.roundSlot
